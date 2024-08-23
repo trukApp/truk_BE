@@ -6,7 +6,7 @@ const cors = require('cors');
 require('dotenv').config();
 
 
-const uri=process.env.MONGO_URI;
+const uri="mongodb+srv://jaimptrust:R1c312qPF6CPTs96@jaimp-dev.k7qfi2a.mongodb.net/?retryWrites=true&w=majority&appName=jaiMP-dev";
 
 mongoose.set("strictQuery", false);
  mongoose.connect(uri)

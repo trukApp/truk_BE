@@ -18,7 +18,6 @@ mongoose.set("strictQuery", false);
    console.log("error db is not connected")
 });
 
-
 app.use(cors({
     origin:"*"
 }));

@@ -1,0 +1,38 @@
+name: Deploy Backend Service
+
+on:
+  push:
+    branches:
+      - dev_branch
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Create SSH key files
+      run: |
+        echo "${{ secrets.EC2_SSH_KEY }}" > ec2_key.pem
+        chmod 600 ec2_key.pem
+        echo "${{ secrets.DEVOPS_SSH_KEY }}" > devops_key
+        chmod 600 devops_key
+
+    - name: Deploy the backend service
+      run: |
+        ssh -i ec2_key.pem -o StrictHostKeyChecking=no ubuntu@${{ secrets.EC2_HOST }} "
+        ssh -i devops_key -o StrictHostKeyChecking=no devops@localhost << EOF
+        set -e
+        cd /home/devops/jaiMP_BE
+        echo 'Current branch:'
+        git branch --show-current
+        echo 'Pulling latest changes...'
+        git pull origin dev_branch
+        echo 'Installing dependencies...'
+        npm install
+        echo 'Restarting PM2 processes...'
+        pm2 restart all
+        echo 'PM2 status:'
+        pm2 status
+        EOF
+        "
+      shell: bash

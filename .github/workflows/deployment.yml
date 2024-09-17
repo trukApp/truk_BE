@@ -12,14 +12,14 @@ jobs:
     steps:
     - name: Create SSH key files
       run: |
-        echo "${{ secrets.EC2_SSH_KEY }}" > ec2_key.pem
-        chmod 600 ec2_key.pem
+        echo "${{ secrets.EC2_SSH_KEY }}" > key.pem
+        chmod 600 key.pem
         echo "${{ secrets.DEVOPS_SSH_KEY }}" > devops_key
         chmod 600 devops_key
 
     - name: Deploy the backend service
       run: |
-        ssh -i ec2_key.pem -o StrictHostKeyChecking=no ubuntu@${{ secrets.EC2_HOST }} "
+        ssh -i key.pem -o StrictHostKeyChecking=no ubuntu@${{ secrets.EC2_HOST }} "
         ssh -i devops_key -o StrictHostKeyChecking=no devops@localhost << EOF
         set -e
         cd /home/devops/jaiMP_BE

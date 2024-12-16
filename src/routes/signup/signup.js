@@ -13,6 +13,7 @@ router.post('/signup', async (req, res) => {
         return res.status(400).json({ message: 'Name, surname, mobile and user_type are required.' });
     }
 
+    
     try {
         const [existingUser] = await connection.query('SELECT * FROM login_data WHERE mobile = ?', [mobile]);
         if (existingUser.length > 0) {

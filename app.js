@@ -32,7 +32,7 @@ app.use(bodyParser.json());
 
 app.get("/", (req, res, next)=>{
     res.json({
-        name:"jaiMp",
+        name:"Truk",
         message:"Hii, I'm working"
     })
 })
@@ -41,11 +41,13 @@ app.get("/", (req, res, next)=>{
 const signup = require('./src/routes/signup/signup');
 const login = require('./src/routes/login/login');
 const userData = require('./src/routes/user/userData');
+const masLocation = require('./src/routes/masterLocations/masLocations');
 
 
-app.use('/jaiMp/reg',signup);
-app.use('/jaiMp/log',login);
-app.use('/jaiMp/user',userData);
+app.use('/truk/reg',signup);
+app.use('/truk/log',login);
+app.use('/truk/user',userData);
+app.use('/truk/masLoc',masLocation);
 
 
 module.exports = app;

@@ -5,6 +5,47 @@ const jwtAuth = require('../../JWT/jwtAuth');
 const messages = require('../../responses/res_messages');
 
 
+router.post('/login', async (req, res) => {
+  const { email, mobile, password } = req.body;
+
+  if ((!email && !mobile) || !password) {
+      return res.status(400).json({ message: 'Email/Mobile and password are required.' });
+  }
+
+  try {
+      // Fetch user based on email or mobile
+      const [userResult] = await db.query(
+          'SELECT * FROM dummy_signup WHERE (email = ? OR mobile = ?)',
+          [email, mobile]
+      );
+
+      if (userResult.length === 0) {
+          return res.status(404).json({ message: 'User not found. Please sign up first.' });
+      }
+
+      const user = userResult[0];
+
+      // Compare the provided password directly
+      if (user.password !== password) {
+          return res.status(401).json({ message: 'Invalid password.' });
+      }
+
+      // Generate JWT token
+      const accessToken = jwtAuth.generateToken(user.profile_id, user.user_type);
+      const refreshToken = jwtAuth.generateRefreshToken(user.profile_id, user.user_type);
+
+      return res.status(200).json({
+          message: 'Login successful.',
+          accessToken,
+          refreshToken,
+          user: user,
+      });
+  } catch (error) {
+      console.error('Login error:', error);
+      return res.status(500).json({ message: 'Server error. Please try again later.' });
+  }
+});
+
 router.post('/user-check', async (req, res) => {
   const { mobile } = req.body;
 

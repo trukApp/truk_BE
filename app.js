@@ -42,12 +42,14 @@ const signup = require('./src/routes/signup/signup');
 const login = require('./src/routes/login/login');
 const userData = require('./src/routes/user/userData');
 const masLocation = require('./src/routes/masterLocations/masLocations');
+const businessPartner = require('./src/routes/businessPartner/businessPartner');
 
 
 app.use('/truk/reg',signup);
 app.use('/truk/log',login);
 app.use('/truk/user',userData);
 app.use('/truk/masLoc',masLocation);
+app.use('/truk/business',businessPartner);
 
 
 module.exports = app;

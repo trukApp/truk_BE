@@ -1,14 +1,13 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../../../dbConnection');
-const logger = require('../../logger/logger');
+const {logger} = require('../../logger/logger');
 const jwtAuth = require('../../JWT/jwtAuth');
 
 
-// POST API to create one or multiple locations
-router.post('/create-location', async (req, res) => {
+router.post('/create-location',jwtAuth.verifyToken, async (req, res) => {
     try {
-        const locations = req.body.locations; // Expecting an array of locations
+        const locations = req.body.locations; 
 
         if (!Array.isArray(locations) || locations.length === 0) {
             return res.status(400).json({ message: 'Invalid input. Provide at least one location.' });
@@ -35,7 +34,6 @@ router.post('/create-location', async (req, res) => {
             ]);
         });
 
-        // Insert all locations into the database
         await db.query(
             "INSERT INTO dummy_master_locations (loc_ID, loc_desc, longitude, latitude, time_zone, city, state, country, pincode, loc_type, gln_code, iata_code) VALUES ?",
             [insertValues]
@@ -43,24 +41,36 @@ router.post('/create-location', async (req, res) => {
 
         res.status(201).json({ message: 'Locations created successfully.', count: insertValues.length });
     } catch (error) {
-        console.error(error);
+        logger.error(error);
         res.status(500).json({ message: error.message || 'Server error.' });
     }
 });
 
-// GET API to fetch all locations
-router.get('/all-locations', async (req, res) => {
+
+router.get('/all-locations',jwtAuth.verifyToken, async (req, res) => {
     try {
         const [locations] = await db.query("SELECT * FROM dummy_master_locations");
         res.status(200).json({ locations });
     } catch (error) {
-        console.error(error);
+        logger.error(error);
         res.status(500).json({ message: 'Server error.' });
     }
 });
 
-// PUT API to edit a location
-router.put('/edit-location', async (req, res) => {
+router.get('/location-ID',jwtAuth.verifyToken, async (req, res) => {
+    const {loc_ID} = req.query;
+    try {
+        const query ="SELECT * FROM dummy_master_locations where loc_ID = ?";
+        const [locations] = await db.query(query,loc_ID);
+        res.status(200).json({ locations });
+    } catch (error) {
+        logger.error(error);
+        res.status(500).json({ message: 'Server error.' });
+    }
+});
+
+
+router.put('/edit-location',jwtAuth.verifyToken, async (req, res) => {
     try {
         const { id } = req.query;
         const {
@@ -78,13 +88,13 @@ router.put('/edit-location', async (req, res) => {
 
         res.status(200).json({ message: 'Location updated successfully.' });
     } catch (error) {
-        console.error(error);
+        logger.error(error);
         res.status(500).json({ message: 'Server error.' });
     }
 });
 
-// DELETE API to remove a location
-router.delete('/delete-location', async (req, res) => {
+
+router.delete('/delete-location',jwtAuth.verifyToken, async (req, res) => {
     try {
         const { id } = req.query;
 
@@ -99,12 +109,10 @@ router.delete('/delete-location', async (req, res) => {
 
         res.status(200).json({ message: 'Location deleted successfully.' });
     } catch (error) {
-        console.error(error);
+        logger.error(error);
         res.status(500).json({ message: 'Server error.' });
     }
 });
-
-
 
 
 

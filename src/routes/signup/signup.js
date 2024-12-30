@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const connection = require('../../../dbConnection');
-const logger = require('../../logger/logger');
+const {logger} = require('../../logger/logger');
 const responses = require('../../responses/res_messages');
 
 

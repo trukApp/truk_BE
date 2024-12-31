@@ -43,6 +43,7 @@ const login = require('./src/routes/login/login');
 const userData = require('./src/routes/user/userData');
 const masLocation = require('./src/routes/masterLocations/masLocations');
 const businessPartner = require('./src/routes/businessPartner/businessPartner');
+const drivers = require('./src/routes/businessPartner/drivers');
 
 
 app.use('/truk/reg',signup);
@@ -50,6 +51,6 @@ app.use('/truk/log',login);
 app.use('/truk/user',userData);
 app.use('/truk/masLoc',masLocation);
 app.use('/truk/business',businessPartner);
-
+app.use('/truk/driver',drivers);
 
 module.exports = app;

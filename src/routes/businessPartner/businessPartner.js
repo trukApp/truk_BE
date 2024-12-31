@@ -87,75 +87,6 @@ router.post('/create-partners', jwtAuth.verifyToken, async (req, res) => {
 });
 
 
-// router.get('/get-partners', jwtAuth.verifyToken, async (req, res) => {
-//     const { partner_type } = req.query;
-
-//     if (!partner_type) {
-//         return res.status(400).json({ message: 'partner_type is required in query parameters' });
-//     }
-
-//     try {
-//         const [partners] = await db.query(
-//             `
-//             SELECT 
-//                 bp.partner_id,
-//                 bp.supplier_id,
-//                 bp.customer_id,
-//                 bp.name,
-//                 bp.partner_type,
-//                 bp.location_id,
-//                 bp.correspondence,
-//                 bp.loc_of_source,
-//                 bp.pod_relevant,
-//                 bp.partner_functions,
-//                 loc1.loc_ID AS location_loc_ID,
-//                 loc1.loc_desc AS location_loc_desc,
-//                 loc1.longitude AS location_longitude,
-//                 loc1.latitude AS location_latitude,
-//                 loc1.time_zone AS location_time_zone,
-//                 loc1.city AS location_city,
-//                 loc1.state AS location_state,
-//                 loc1.country AS location_country,
-//                 loc1.pincode AS location_pincode,
-//                 loc1.loc_type AS location_loc_type,
-//                 loc1.gln_code AS location_gln_code,
-//                 loc1.iata_code AS location_iata_code,
-//                 loc2.loc_ID AS loc_of_source_loc_ID,
-//                 loc2.loc_desc AS loc_of_source_loc_desc,
-//                 loc2.longitude AS loc_of_source_longitude,
-//                 loc2.latitude AS loc_of_source_latitude,
-//                 loc2.time_zone AS loc_of_source_time_zone,
-//                 loc2.city AS loc_of_source_city,
-//                 loc2.state AS loc_of_source_state,
-//                 loc2.country AS loc_of_source_country,
-//                 loc2.pincode AS loc_of_source_pincode,
-//                 loc2.loc_type AS loc_of_source_loc_type,
-//                 loc2.gln_code AS loc_of_source_gln_code,
-//                 loc2.iata_code AS loc_of_source_iata_code
-//             FROM 
-//                 dummy_business_partners bp
-//             LEFT JOIN 
-//                 dummy_master_locations loc1 ON bp.location_id = loc1.location_id
-//             LEFT JOIN 
-//                 dummy_master_locations loc2 ON bp.loc_of_source = loc2.location_id
-//             WHERE 
-//                 bp.partner_type = ?
-//             ORDER BY 
-//                 bp.partner_id DESC
-//             `,
-//             [partner_type]
-//         );
-
-//         res.status(200).json({
-//             message: 'Business partners retrieved successfully',
-//             partners,
-//         });
-//     } catch (error) {
-//         logger.error('Error retrieving business partners:', error);
-//         res.status(500).json({ message: 'An error occurred while retrieving business partners', error: error.message });
-//     }
-// });
-
 
 router.get('/get-partners', jwtAuth.verifyToken, async (req, res) => {
     const { partner_type, supplier_id, customer_id } = req.query;
@@ -245,6 +176,95 @@ router.get('/get-partners', jwtAuth.verifyToken, async (req, res) => {
     } catch (error) {
         logger.error('Error retrieving business partners:', error);
         res.status(500).json({ message: 'An error occurred while retrieving business partners', error: error.message });
+    }
+});
+
+
+router.put('/edit-partner', jwtAuth.verifyToken, async (req, res) => {
+    const { partner_id } = req.query;
+    const {
+        supplier_id,
+        customer_id,
+        name,
+        partner_type,
+        location_id,
+        correspondence,
+        loc_of_source,
+        pod_relevant,
+        partner_functions,
+    } = req.body;
+
+    if (!partner_id) {
+        return res.status(400).json({ message: 'partner_id is required in query parameters' });
+    }
+
+    try {
+        const [result] = await db.query(
+            `
+            UPDATE dummy_business_partners
+            SET 
+                supplier_id = ?,
+                customer_id = ?,
+                name = ?,
+                partner_type = ?,
+                location_id = ?,
+                correspondence = ?,
+                loc_of_source = ?,
+                pod_relevant = ?,
+                partner_functions = ?
+            WHERE partner_id = ?
+            `,
+            [
+                supplier_id,
+                customer_id,
+                name,
+                partner_type,
+                location_id,
+                JSON.stringify(correspondence),
+                loc_of_source,
+                pod_relevant,
+                JSON.stringify(partner_functions),
+                partner_id,
+            ]
+        );
+
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ message: 'No partner found with the given partner_id' });
+        }
+
+        res.status(200).json({ message: 'Business partner updated successfully' });
+    } catch (error) {
+        logger.error('Error updating business partner:', error);
+        res.status(500).json({ message: 'An error occurred while updating the business partner', error: error.message });
+    }
+});
+
+
+
+router.delete('/delete-partner', jwtAuth.verifyToken, async (req, res) => {
+    const { partner_id } = req.query;
+
+    if (!partner_id) {
+        return res.status(400).json({ message: 'partner_id is required in query parameters' });
+    }
+
+    try {
+        const [result] = await db.query(
+            `
+            DELETE FROM dummy_business_partners
+            WHERE partner_id = ?
+            `,
+            [partner_id]
+        );
+
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ message: 'No partner found with the given partner_id' });
+        }
+
+        res.status(200).json({ message: 'Business partner deleted successfully' });
+    } catch (error) {
+        logger.error('Error deleting business partner:', error);
+        res.status(500).json({ message: 'An error occurred while deleting the business partner', error: error.message });
     }
 });
 

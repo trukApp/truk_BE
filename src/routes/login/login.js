@@ -24,7 +24,7 @@ router.post('/login', async (req, res) => {
 
   try {
       const [userResult] = await db.query(
-          'SELECT * FROM dummy_signup WHERE (email = ? OR mobile = ?)',
+          'SELECT * FROM signup WHERE (email = ? OR mobile = ?)',
           [email, mobile]
       );
 
@@ -133,7 +133,7 @@ router.post('/forgot-pin', async (req, res) => {
   }
 
   try {
-    const [userRows] = await db.query('SELECT * FROM dummy_signup WHERE email = ?', [email]);
+    const [userRows] = await db.query('SELECT * FROM signup WHERE email = ?', [email]);
 
     if (userRows.length === 0) {
       return res.status(404).json({ message: 'User not found' });
@@ -141,7 +141,7 @@ router.post('/forgot-pin', async (req, res) => {
 
     const otp = Math.floor(100000 + Math.random() * 900000);
 
-    await db.query('UPDATE dummy_signup SET otp = ? WHERE email = ?', [otp, email]);
+    await db.query('UPDATE signup SET otp = ? WHERE email = ?', [otp, email]);
 
     const mailOptions = {
       from: 'jaimptrust@gmail.com',
@@ -174,7 +174,7 @@ router.post('/verify-otp', async (req, res) => {
   }
 
   try {
-    const [userRows] = await db.query('SELECT * FROM dummy_signup WHERE email = ? AND otp = ?', [email, otp]);
+    const [userRows] = await db.query('SELECT * FROM signup WHERE email = ? AND otp = ?', [email, otp]);
 
     if (userRows.length === 0) {
       return res.status(400).json({ message: 'Invalid OTP or email' });
@@ -197,7 +197,7 @@ router.put('/reset-password', async (req, res) => {
   }
 
   try {
-    const [userRows] = await db.query('SELECT password FROM dummy_signup WHERE email = ?', [email]);
+    const [userRows] = await db.query('SELECT password FROM signup WHERE email = ?', [email]);
 
     if (userRows.length === 0) {
       return res.status(404).json({ message: 'User not found' });
@@ -209,7 +209,7 @@ router.put('/reset-password', async (req, res) => {
       return res.status(400).json({ message: 'New Password cannot be the same as the current PIN' });
     }
 
-    await db.query('UPDATE dummy_signup SET password = ?, otp = NULL WHERE email = ?', [newPassword, email]);
+    await db.query('UPDATE signup SET password = ?, otp = NULL WHERE email = ?', [newPassword, email]);
 
     return res.status(200).json({ message: 'PIN reset successfully' });
 

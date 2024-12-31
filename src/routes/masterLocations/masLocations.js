@@ -15,7 +15,7 @@ router.post('/create-location',jwtAuth.verifyToken, async (req, res) => {
 
         const insertValues = [];
         const [result] = await db.query(
-            "SELECT loc_ID FROM dummy_master_locations ORDER BY location_id DESC LIMIT 1"
+            "SELECT loc_ID FROM master_locations ORDER BY location_id DESC LIMIT 1"
         );
         let lastLocID = result[0]?.loc_ID || 'LOC0000';
 
@@ -35,7 +35,7 @@ router.post('/create-location',jwtAuth.verifyToken, async (req, res) => {
         });
 
         await db.query(
-            "INSERT INTO dummy_master_locations (loc_ID, loc_desc, longitude, latitude, time_zone, city, state, country, pincode, loc_type, gln_code, iata_code) VALUES ?",
+            "INSERT INTO master_locations (loc_ID, loc_desc, longitude, latitude, time_zone, city, state, country, pincode, loc_type, gln_code, iata_code) VALUES ?",
             [insertValues]
         );
 
@@ -49,7 +49,7 @@ router.post('/create-location',jwtAuth.verifyToken, async (req, res) => {
 
 router.get('/all-locations',jwtAuth.verifyToken, async (req, res) => {
     try {
-        const [locations] = await db.query("SELECT * FROM dummy_master_locations");
+        const [locations] = await db.query("SELECT * FROM master_locations");
         res.status(200).json({ locations });
     } catch (error) {
         logger.error(error);
@@ -60,7 +60,7 @@ router.get('/all-locations',jwtAuth.verifyToken, async (req, res) => {
 router.get('/location-ID',jwtAuth.verifyToken, async (req, res) => {
     const {loc_ID} = req.query;
     try {
-        const query ="SELECT * FROM dummy_master_locations where loc_ID = ?";
+        const query ="SELECT * FROM master_locations where loc_ID = ?";
         const [locations] = await db.query(query,loc_ID);
         res.status(200).json({ locations });
     } catch (error) {
@@ -78,7 +78,7 @@ router.put('/edit-location',jwtAuth.verifyToken, async (req, res) => {
         } = req.body;
 
         const [updateResult] = await db.query(
-            "UPDATE dummy_master_locations SET loc_desc = ?, longitude = ?, latitude = ?, time_zone = ?, city = ?, state = ?, country = ?, pincode = ?, loc_type = ?, gln_code = ?, iata_code = ? WHERE location_id = ?",
+            "UPDATE master_locations SET loc_desc = ?, longitude = ?, latitude = ?, time_zone = ?, city = ?, state = ?, country = ?, pincode = ?, loc_type = ?, gln_code = ?, iata_code = ? WHERE location_id = ?",
             [loc_desc, longitude, latitude, time_zone, city, state, country, pincode, loc_type, gln_code, iata_code, id]
         );
 
@@ -99,7 +99,7 @@ router.delete('/delete-location',jwtAuth.verifyToken, async (req, res) => {
         const { id } = req.query;
 
         const [deleteResult] = await db.query(
-            "DELETE FROM dummy_master_locations WHERE location_id = ?",
+            "DELETE FROM master_locations WHERE location_id = ?",
             [id]
         );
 

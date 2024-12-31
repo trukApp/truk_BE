@@ -35,14 +35,14 @@ router.post('/create-partners', jwtAuth.verifyToken, async (req, res) => {
             if (partner_type.toLowerCase() === 'vendor') {
                 const [result] = await db.query(
                     `SELECT MAX(CAST(SUBSTRING(supplier_id, 4) AS UNSIGNED)) AS maxSupplierId 
-                     FROM dummy_business_partners WHERE supplier_id IS NOT NULL`
+                     FROM business_partners WHERE supplier_id IS NOT NULL`
                 );
                 const maxSupplierId = result[0]?.maxSupplierId || 0;
                 supplier_id = `SUP${(maxSupplierId + 1).toString().padStart(4, '0')}`;
             } else if (partner_type.toLowerCase() === 'customer') {
                 const [result] = await db.query(
                     `SELECT MAX(CAST(SUBSTRING(customer_id, 5) AS UNSIGNED)) AS maxCustomerId 
-                     FROM dummy_business_partners WHERE customer_id IS NOT NULL`
+                     FROM business_partners WHERE customer_id IS NOT NULL`
                 );
                 const maxCustomerId = result[0]?.maxCustomerId || 0;
                 customer_id = `CUST${(maxCustomerId + 1).toString().padStart(4, '0')}`;
@@ -51,7 +51,7 @@ router.post('/create-partners', jwtAuth.verifyToken, async (req, res) => {
             }
 
             const [insertResult] = await db.query(
-                `INSERT INTO dummy_business_partners 
+                `INSERT INTO business_partners 
                 (supplier_id, customer_id, name, partner_type, location_id, correspondence, loc_of_source, pod_relevant, partner_functions) 
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                 [
@@ -157,11 +157,11 @@ router.get('/get-partners', jwtAuth.verifyToken, async (req, res) => {
                 loc2.gln_code AS loc_of_source_gln_code,
                 loc2.iata_code AS loc_of_source_iata_code
             FROM 
-                dummy_business_partners bp
+                business_partners bp
             LEFT JOIN 
-                dummy_master_locations loc1 ON bp.location_id = loc1.location_id
+                master_locations loc1 ON bp.location_id = loc1.location_id
             LEFT JOIN 
-                dummy_master_locations loc2 ON bp.loc_of_source = loc2.location_id
+                master_locations loc2 ON bp.loc_of_source = loc2.location_id
             ${whereClause}
             ORDER BY 
                 bp.partner_id DESC
@@ -201,7 +201,7 @@ router.put('/edit-partner', jwtAuth.verifyToken, async (req, res) => {
     try {
         const [result] = await db.query(
             `
-            UPDATE dummy_business_partners
+            UPDATE business_partners
             SET 
                 supplier_id = ?,
                 customer_id = ?,
@@ -251,7 +251,7 @@ router.delete('/delete-partner', jwtAuth.verifyToken, async (req, res) => {
     try {
         const [result] = await db.query(
             `
-            DELETE FROM dummy_business_partners
+            DELETE FROM business_partners
             WHERE partner_id = ?
             `,
             [partner_id]

@@ -15,7 +15,7 @@ router.post('/add-drivers', jwtAuth.verifyToken, async (req, res) => {
     try {
         const [latestDriver] = await db.query(`
             SELECT dri_ID 
-            FROM dummy_master_drivers 
+            FROM master_drivers 
             ORDER BY driver_id DESC 
             LIMIT 1
         `);
@@ -39,7 +39,7 @@ router.post('/add-drivers', jwtAuth.verifyToken, async (req, res) => {
         });
 
         await db.query(`
-            INSERT INTO dummy_master_drivers (
+            INSERT INTO master_drivers (
                 dri_ID,
                 location_id,
                 driver_name,
@@ -85,9 +85,9 @@ router.get('/get-drivers', jwtAuth.verifyToken, async (req, res) => {
                 l.gln_code AS location_gln_code,
                 l.iata_code AS location_iata_code
             FROM 
-                dummy_master_drivers d
+                master_drivers d
             LEFT JOIN 
-                dummy_master_locations l ON d.location_id = l.location_id
+                master_locations l ON d.location_id = l.location_id
             ORDER BY 
                 d.driver_id DESC
         `);
@@ -133,9 +133,9 @@ router.get('/get-driver', jwtAuth.verifyToken, async (req, res) => {
                 l.gln_code AS location_gln_code,
                 l.iata_code AS location_iata_code
             FROM 
-                dummy_master_drivers d
+                master_drivers d
             LEFT JOIN 
-                dummy_master_locations l ON d.location_id = l.location_id
+                master_locations l ON d.location_id = l.location_id
             WHERE 
                 d.dri_ID = ?
         `, [dri_ID]);
@@ -166,7 +166,7 @@ router.put('/edit-driver', jwtAuth.verifyToken, async (req, res) => {
     try {
         const [result] = await db.query(`
             UPDATE 
-                dummy_master_drivers 
+                master_drivers 
             SET 
                 location_id = ?, 
                 driver_name = ?, 
@@ -208,7 +208,7 @@ router.delete('/delete-driver', jwtAuth.verifyToken, async (req, res) => {
     try {
         const [result] = await db.query(`
             DELETE FROM 
-                dummy_master_drivers 
+                master_drivers 
             WHERE 
                 driver_id = ?
         `, [driver_id]);

@@ -13,18 +13,18 @@ router.post('/signup', async (req, res) => {
     }
 
     try {
-        const [existingUser] = await connection.query('SELECT * FROM dummy_signup WHERE mobile = ?', [mobile]);
+        const [existingUser] = await connection.query('SELECT * FROM signup WHERE mobile = ?', [mobile]);
         if (existingUser.length > 0) {
             return res.status(400).json({ message: 'Mobile number already registered.' });
         }
         
-        const [existingMail] = await connection.query('SELECT * FROM dummy_signup WHERE email = ?', [email]);
+        const [existingMail] = await connection.query('SELECT * FROM signup WHERE email = ?', [email]);
         if (existingMail.length > 0) {
             return res.status(400).json({ message: 'Email already registered.' });
         }
         
         const [result] = await connection.query(
-            'INSERT INTO dummy_signup (first_name, last_name, gender, mobile, email, password, user_type) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            'INSERT INTO signup (first_name, last_name, gender, mobile, email, password, user_type) VALUES (?, ?, ?, ?, ?, ?, ?)',
             [first_name, last_name, gender, mobile, email, password, user_type]
         );
         

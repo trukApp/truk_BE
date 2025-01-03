@@ -154,7 +154,7 @@ router.get('/get-driver', jwtAuth.verifyToken, async (req, res) => {
     }
 });
 
-// Edit call for driver
+
 router.put('/edit-driver', jwtAuth.verifyToken, async (req, res) => {
     const { driver_id } = req.query;
     const { location_id, driver_name, address, driver_correspondence, vehicle_types, logged_in } = req.body;

@@ -33,7 +33,7 @@ router.post('/add-drivers', jwtAuth.verifyToken, async (req, res) => {
                 driver.driver_name,
                 driver.address,
                 JSON.stringify(driver.driver_correspondence),
-                driver.vehicle_types,
+                JSON.stringify(driver.vehicle_types),
                 driver.logged_in || 0 
             ];
         });
@@ -181,7 +181,7 @@ router.put('/edit-driver', jwtAuth.verifyToken, async (req, res) => {
             driver_name,
             address,
             JSON.stringify(driver_correspondence),
-            vehicle_types,
+            JSON.stringify(vehicle_types),
             logged_in,
             driver_id,
         ]);

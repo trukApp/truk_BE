@@ -24,7 +24,7 @@ router.post('/add-vehicle', jwtAuth.verifyToken, async (req, res) => {
         }
 
         const newVehicles = vehicleData.map((vehicle, index) => {
-            const vehicle_ID = `VEH${String(lastVehicleNumber + index + 1).padStart(4, '0')}`;
+            const vehicle_ID = `VEH${String(lastVehicleNumber + index + 1).padStart(6, '0')}`;
             return {
                 ...vehicle,
                 vehicle_ID,

@@ -45,7 +45,7 @@ router.post('/login', async (req, res) => {
           message: 'Login successful.',
           accessToken,
           refreshToken,
-          user: user,
+         "profile_id": user.profile_id
       });
   } catch (error) {
       logger.error('Login error:', error);

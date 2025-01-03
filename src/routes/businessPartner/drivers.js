@@ -25,7 +25,7 @@ router.post('/add-drivers', jwtAuth.verifyToken, async (req, res) => {
             : 1;
 
         const values = drivers.map(driver => {
-            const dri_ID = `DRI${nextId.toString().padStart(4, '0')}`;
+            const dri_ID = `DRI${nextId.toString().padStart(6, '0')}`;
             nextId++; 
             return [
                 dri_ID,

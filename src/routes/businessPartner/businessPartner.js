@@ -38,14 +38,14 @@ router.post('/create-partners', jwtAuth.verifyToken, async (req, res) => {
                      FROM business_partners WHERE supplier_id IS NOT NULL`
                 );
                 const maxSupplierId = result[0]?.maxSupplierId || 0;
-                supplier_id = `SUP${(maxSupplierId + 1).toString().padStart(4, '0')}`;
+                supplier_id = `SUP${(maxSupplierId + 1).toString().padStart(6, '0')}`;
             } else if (partner_type.toLowerCase() === 'customer') {
                 const [result] = await db.query(
                     `SELECT MAX(CAST(SUBSTRING(customer_id, 5) AS UNSIGNED)) AS maxCustomerId 
                      FROM business_partners WHERE customer_id IS NOT NULL`
                 );
                 const maxCustomerId = result[0]?.maxCustomerId || 0;
-                customer_id = `CUST${(maxCustomerId + 1).toString().padStart(4, '0')}`;
+                customer_id = `CUST${(maxCustomerId + 1).toString().padStart(6, '0')}`;
             } else {
                 throw new Error('Invalid Partner Type');
             }

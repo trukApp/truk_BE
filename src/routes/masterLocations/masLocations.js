@@ -28,7 +28,7 @@ router.post('/create-location',jwtAuth.verifyToken, async (req, res) => {
                 throw new Error('Missing required fields in one of the locations.');
             }
 
-            lastLocID = `LOC${String(parseInt(lastLocID.slice(3)) + 1).padStart(4, '0')}`;
+            lastLocID = `LOC${String(parseInt(lastLocID.slice(3)) + 1).padStart(6, '0')}`;
             insertValues.push([
                 lastLocID, loc_desc, longitude, latitude, time_zone, city, state, country, pincode, loc_type, gln_code, iata_code
             ]);

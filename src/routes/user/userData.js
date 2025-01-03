@@ -15,7 +15,7 @@ router.get('/get-user', verifyToken, async (req, res) => {
 
     try {
         const [profileData] = await connection.query(
-            'SELECT * FROM profile_data WHERE profile_id = ?', 
+            'SELECT * FROM signup WHERE profile_id = ?', 
             [profile_id]
         );
 
@@ -23,23 +23,9 @@ router.get('/get-user', verifyToken, async (req, res) => {
             return res.status(404).json({ message: 'User not found.' });
         }
 
-        const loginId = profileData[0].login_id;
-
-        const [loginData] = await connection.query(
-            'SELECT * FROM login_data WHERE login_id = ?', 
-            [loginId]
-        );
-
-        if (loginData.length === 0) {
-            return res.status(404).json({ message: 'Login data not found for this user.' });
-        }
-
-        const userData = {
-            ...loginData[0],
-            ...profileData[0]
-        };
-
-        return res.status(200).json(userData);
+        return res.status(200).json({message: 'user verification successful.',
+            profileData
+          });
     } catch (error) {
         logger.error('Error fetching user data: ' + error.message);
         return res.status(500).json({ message: responses.FAILED });

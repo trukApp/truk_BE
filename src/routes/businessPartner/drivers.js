@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../../../dbConnection');
-const {logger} = require('../../logger/logger');
+const { logger } = require('../../logger/logger');
 const jwtAuth = require('../../JWT/jwtAuth');
 
 
@@ -20,13 +20,13 @@ router.post('/add-drivers', jwtAuth.verifyToken, async (req, res) => {
             LIMIT 1
         `);
 
-        let nextId = latestDriver.length > 0 
-            ? parseInt(latestDriver[0].dri_ID.replace('DRI', '')) + 1 
+        let nextId = latestDriver.length > 0
+            ? parseInt(latestDriver[0].dri_ID.replace('DRI', '')) + 1
             : 1;
 
         const values = drivers.map(driver => {
             const dri_ID = `DRI${nextId.toString().padStart(4, '0')}`;
-            nextId++; 
+            nextId++;
             return [
                 dri_ID,
                 driver.location_id,
@@ -34,7 +34,7 @@ router.post('/add-drivers', jwtAuth.verifyToken, async (req, res) => {
                 driver.address,
                 JSON.stringify(driver.driver_correspondence),
                 JSON.stringify(driver.vehicle_types),
-                driver.logged_in || 0 
+                driver.logged_in || 0
             ];
         });
 
@@ -154,7 +154,7 @@ router.get('/get-driver', jwtAuth.verifyToken, async (req, res) => {
     }
 });
 
-
+// Edit call for driver
 router.put('/edit-driver', jwtAuth.verifyToken, async (req, res) => {
     const { driver_id } = req.query;
     const { location_id, driver_name, address, driver_correspondence, vehicle_types, logged_in } = req.body;

@@ -67,6 +67,7 @@ router.get('/get-drivers', jwtAuth.verifyToken, async (req, res) => {
             SELECT 
                 d.driver_id,
                 d.dri_ID,
+                d.location_id,
                 d.driver_name,
                 d.address,
                 d.driver_correspondence,
@@ -115,6 +116,7 @@ router.get('/get-driver', jwtAuth.verifyToken, async (req, res) => {
             SELECT 
                 d.driver_id,
                 d.dri_ID,
+                d.location_id,
                 d.driver_name,
                 d.address,
                 d.driver_correspondence,

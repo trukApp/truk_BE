@@ -40,6 +40,7 @@ router.post('/add-vehicle', jwtAuth.verifyToken, async (req, res) => {
                 capacity,
                 physical_properties,
                 downtimes,
+                vehicle_group,
                 additional_details,
             } = vehicle;
 
@@ -54,8 +55,9 @@ router.post('/add-vehicle', jwtAuth.verifyToken, async (req, res) => {
                     capacity, 
                     physical_properties, 
                     downtimes, 
+                    vehicle_group,
                     additional_details
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 `,
                 [
                     vehicle.vehicle_ID,
@@ -66,6 +68,7 @@ router.post('/add-vehicle', jwtAuth.verifyToken, async (req, res) => {
                     JSON.stringify(capacity || {}),
                     JSON.stringify(physical_properties || {}),
                     JSON.stringify(downtimes || {}),
+                    JSON.stringify(vehicle_group || {}),
                     JSON.stringify(additional_details || {}),
                 ]
             );
@@ -152,6 +155,7 @@ router.put('/edit-vehicle', jwtAuth.verifyToken, async (req, res) => {
         capacity,
         physical_properties,
         downtimes,
+        vehicle_group,
         additional_details,
     } = req.body;
 
@@ -170,6 +174,7 @@ router.put('/edit-vehicle', jwtAuth.verifyToken, async (req, res) => {
                 capacity = ?, 
                 physical_properties = ?, 
                 downtimes = ?, 
+                vehicle_group = ?,
                 additional_details = ?
             WHERE veh_id = ?
         `, [
@@ -180,6 +185,7 @@ router.put('/edit-vehicle', jwtAuth.verifyToken, async (req, res) => {
             JSON.stringify(capacity || {}),
             JSON.stringify(physical_properties || {}),
             JSON.stringify(downtimes || {}),
+            JSON.stringify(vehicle_group || {}),
             JSON.stringify(additional_details || {}),
             veh_id,
         ]);

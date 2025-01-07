@@ -45,6 +45,7 @@ const masLocation = require('./src/routes/masterLocations/masLocations');
 const businessPartner = require('./src/routes/businessPartner/businessPartner');
 const drivers = require('./src/routes/businessPartner/drivers');
 const vehicles = require('./src/routes/vehicles/vehicle');
+const packages = require('c:/Users/jayad/Desktop/web_truk_BE/src/routes/packages/packageinfo');
 
 
 app.use('/truk/reg',signup);
@@ -54,5 +55,6 @@ app.use('/truk/masLoc',masLocation);
 app.use('/truk/business',businessPartner);
 app.use('/truk/driver',drivers);
 app.use('/truk/vehicle',vehicles);
+app.use('/truk/package',packages);
 
 module.exports = app;

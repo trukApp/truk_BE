@@ -48,6 +48,7 @@ const drivers = require('./src/routes/businessPartner/drivers');
 const vehicles = require('./src/routes/vehicles/vehicle');
 const packages = require('./src/routes/packages/packageinfo');
 const lanes = require('./src/routes/masterLocations/lanes');
+const devices = require('./src/routes/devices/masterDevices');
 
 
 app.use('/truk/reg',signup);
@@ -60,5 +61,6 @@ app.use('/truk/vehicle',vehicles);
 app.use('/truk/package',packages);
 app.use('/truk/carrier',carrier);
 app.use('/truk/lane',lanes);
+app.use('/truk/device',devices);
 
 module.exports = app;

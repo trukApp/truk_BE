@@ -29,7 +29,7 @@ router.post('/add-drivers', jwtAuth.verifyToken, async (req, res) => {
             nextId++;
             return [
                 dri_ID,
-                driver.location_id,
+                JSON.stringify(driver.locations),
                 driver.driver_name,
                 driver.address,
                 JSON.stringify(driver.driver_correspondence),
@@ -41,7 +41,7 @@ router.post('/add-drivers', jwtAuth.verifyToken, async (req, res) => {
         await db.query(`
             INSERT INTO master_drivers (
                 dri_ID,
-                location_id,
+                locations,
                 driver_name,
                 address,
                 driver_correspondence,
@@ -64,33 +64,7 @@ router.post('/add-drivers', jwtAuth.verifyToken, async (req, res) => {
 router.get('/get-drivers', jwtAuth.verifyToken, async (req, res) => {
     try {
         const [drivers] = await db.query(`
-            SELECT 
-                d.driver_id,
-                d.dri_ID,
-                d.location_id,
-                d.driver_name,
-                d.address,
-                d.driver_correspondence,
-                d.vehicle_types,
-                d.logged_in,
-                l.loc_ID AS location_loc_ID,
-                l.loc_desc AS location_loc_desc,
-                l.longitude AS location_longitude,
-                l.latitude AS location_latitude,
-                l.time_zone AS location_time_zone,
-                l.city AS location_city,
-                l.state AS location_state,
-                l.country AS location_country,
-                l.pincode AS location_pincode,
-                l.loc_type AS location_loc_type,
-                l.gln_code AS location_gln_code,
-                l.iata_code AS location_iata_code
-            FROM 
-                master_drivers d
-            LEFT JOIN 
-                master_locations l ON d.location_id = l.location_id
-            ORDER BY 
-                d.driver_id DESC
+            SELECT * FROM master_drivers
         `);
 
         res.status(200).json({
@@ -108,58 +82,70 @@ router.get('/get-driver', jwtAuth.verifyToken, async (req, res) => {
     const { dri_ID } = req.query;
 
     if (!dri_ID) {
-        return res.status(400).json({ message: 'dri_ID is required in query parameters' });
+        return res.status(400).json({ message: 'dri_ID is required in query parameters.' });
     }
 
     try {
-        const [driver] = await db.query(`
+        const [drivers] = await db.query(`
             SELECT 
-                d.driver_id,
-                d.dri_ID,
-                d.location_id,
-                d.driver_name,
-                d.address,
-                d.driver_correspondence,
-                d.vehicle_types,
-                d.logged_in,
-                l.loc_ID AS location_loc_ID,
-                l.loc_desc AS location_loc_desc,
-                l.longitude AS location_longitude,
-                l.latitude AS location_latitude,
-                l.time_zone AS location_time_zone,
-                l.city AS location_city,
-                l.state AS location_state,
-                l.country AS location_country,
-                l.pincode AS location_pincode,
-                l.loc_type AS location_loc_type,
-                l.gln_code AS location_gln_code,
-                l.iata_code AS location_iata_code
+                driver_id,
+                dri_ID,
+                locations,
+                driver_name,
+                address,
+                driver_correspondence,
+                vehicle_types,
+                logged_in
             FROM 
-                master_drivers d
-            LEFT JOIN 
-                master_locations l ON d.location_id = l.location_id
+                master_drivers
             WHERE 
-                d.dri_ID = ?
+                dri_ID = ?
         `, [dri_ID]);
 
-        if (driver.length === 0) {
-            return res.status(404).json({ message: 'Driver not found' });
+        if (drivers.length === 0) {
+            return res.status(404).json({ message: 'Driver not found.' });
         }
+
+        const driver = drivers[0];
+
+        // Parse JSON fields safely
+        const parseJson = (data) => {
+            if (!data) return [];
+            if (typeof data === 'string') {
+                try {
+                    return JSON.parse(data);
+                } catch {
+                    return data.split(',').map((item) => item.trim().replace(/["[\]]/g, ''));
+                }
+            }
+            return Array.isArray(data) ? data : [];
+        };
+
+        const driverLocations = parseJson(driver.locations);
+
+        // Fetch locations based on driver's locations
+        const [locations] = driverLocations.length
+            ? await db.query(`SELECT * FROM master_locations WHERE loc_ID IN (?)`, [driverLocations])
+            : [[], []]; // Return empty array if no locations
 
         res.status(200).json({
             message: 'Driver retrieved successfully',
-            driver: driver[0],
+            driver: {
+                ...driver,
+                locations: locations,
+            },
         });
     } catch (error) {
         logger.error('Error retrieving driver:', error);
-        res.status(500).json({ message: 'An error occurred while retrieving the driver', error: error.message });
+        res.status(500).json({ message: 'An error occurred while retrieving the driver.', error: error.message });
     }
 });
 
 
+
 router.put('/edit-driver', jwtAuth.verifyToken, async (req, res) => {
     const { driver_id } = req.query;
-    const { location_id, driver_name, address, driver_correspondence, vehicle_types, logged_in } = req.body;
+    const { locations, driver_name, address, driver_correspondence, vehicle_types, logged_in } = req.body;
 
     if (!driver_id) {
         return res.status(400).json({ message: 'driver_id is required in query parameters' });
@@ -170,7 +156,7 @@ router.put('/edit-driver', jwtAuth.verifyToken, async (req, res) => {
             UPDATE 
                 master_drivers 
             SET 
-                location_id = ?, 
+                locations = ?, 
                 driver_name = ?, 
                 address = ?, 
                 driver_correspondence = ?, 
@@ -179,7 +165,7 @@ router.put('/edit-driver', jwtAuth.verifyToken, async (req, res) => {
             WHERE 
                 driver_id = ?
         `, [
-            location_id,
+            JSON.stringify(locations),
             driver_name,
             address,
             JSON.stringify(driver_correspondence),

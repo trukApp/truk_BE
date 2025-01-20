@@ -35,21 +35,21 @@ router.post('/create-lanes', jwtAuth.verifyToken, async (req, res) => {
 
         // Insert all lanes into the database
         const insertPromises = newLanes.map(async (lane) => {
-            const { src_loc_id, des_loc_id, lane_transport_data } = lane;
+            const { src_loc_ID, des_loc_ID, lane_transport_data } = lane;
 
             return db.query(
                 `
                 INSERT INTO master_lanes (
                     lane_ID, 
-                    src_loc_id, 
-                    des_loc_id, 
+                    src_loc_ID, 
+                    des_loc_ID, 
                     lane_transport_data
                 ) VALUES (?, ?, ?, ?)
                 `,
                 [
                     lane.lane_ID,
-                    src_loc_id,
-                    des_loc_id,
+                    src_loc_ID,
+                    des_loc_ID,
                     JSON.stringify(lane_transport_data || {}),
                 ]
             );
@@ -75,14 +75,14 @@ router.get('/all-lanes', jwtAuth.verifyToken, async (req, res) => {
                 ml.ln_id, 
                 ml.lane_ID, 
                 ml.lane_transport_data,
-                ml.src_loc_id, 
+                ml.src_loc_ID, 
                 src.loc_ID AS src_loc_ID, 
                 src.loc_desc AS src_loc_desc, 
                 src.longitude AS src_longitude, 
                 src.latitude AS src_latitude, 
                 src.city AS src_city, 
                 src.state AS src_state,
-                ml.des_loc_id, 
+                ml.des_loc_ID, 
                 des.loc_ID AS des_loc_ID, 
                 des.loc_desc AS des_loc_desc, 
                 des.longitude AS des_longitude, 
@@ -90,8 +90,8 @@ router.get('/all-lanes', jwtAuth.verifyToken, async (req, res) => {
                 des.city AS des_city, 
                 des.state AS des_state
             FROM master_lanes ml
-            LEFT JOIN master_locations src ON ml.src_loc_id = src.location_id
-            LEFT JOIN master_locations des ON ml.des_loc_id = des.location_id
+            LEFT JOIN master_locations src ON ml.src_loc_ID = src.loc_ID
+            LEFT JOIN master_locations des ON ml.des_loc_ID = des.loc_ID
         `;
 
         const [lanes] = await db.query(query);
@@ -120,7 +120,7 @@ router.get('/lane-by-id', jwtAuth.verifyToken, async (req, res) => {
                 ml.ln_id, 
                 ml.lane_ID, 
                 ml.lane_transport_data, 
-                ml.src_loc_id, 
+                ml.src_loc_ID, 
                 src.loc_ID AS src_loc_ID, 
                 src.loc_desc AS src_loc_desc, 
                 src.longitude AS src_longitude, 
@@ -133,7 +133,7 @@ router.get('/lane-by-id', jwtAuth.verifyToken, async (req, res) => {
                 src.loc_type AS src_loc_type, 
                 src.gln_code AS src_gln_code, 
                 src.iata_code AS src_iata_code, 
-                ml.des_loc_id,  
+                ml.des_loc_ID,  
                 des.loc_ID AS des_loc_ID, 
                 des.loc_desc AS des_loc_desc, 
                 des.longitude AS des_longitude, 
@@ -147,8 +147,8 @@ router.get('/lane-by-id', jwtAuth.verifyToken, async (req, res) => {
                 des.gln_code AS des_gln_code, 
                 des.iata_code AS des_iata_code
             FROM master_lanes ml
-            LEFT JOIN master_locations src ON ml.src_loc_id = src.location_id
-            LEFT JOIN master_locations des ON ml.des_loc_id = des.location_id
+            LEFT JOIN master_locations src ON ml.src_loc_ID = src.loc_ID
+            LEFT JOIN master_locations des ON ml.des_loc_ID = des.loc_ID
             WHERE ml.lane_ID = ?
         `;
 
@@ -171,7 +171,7 @@ router.get('/lane-by-id', jwtAuth.verifyToken, async (req, res) => {
 
 router.put('/edit-lane', jwtAuth.verifyToken, async (req, res) => {
     const { ln_id } = req.query;
-    const { src_loc_id, des_loc_id, lane_transport_data } = req.body;
+    const { src_loc_ID, des_loc_ID, lane_transport_data } = req.body;
 
     if (!ln_id) {
         return res.status(400).json({ message: 'Please provide ln_id in query parameters.' });
@@ -181,16 +181,16 @@ router.put('/edit-lane', jwtAuth.verifyToken, async (req, res) => {
         const updateQuery = `
             UPDATE master_lanes 
             SET 
-                src_loc_id = ?, 
-                des_loc_id = ?, 
-                lane_transport_data = ?
+                src_loc_ID = COALESCE(?, src_loc_ID), 
+                des_loc_ID = COALESCE(?, des_loc_ID), 
+                lane_transport_data = COALESCE(?, lane_transport_data)
             WHERE ln_id = ?
         `;
 
         const [result] = await db.query(updateQuery, [
-            src_loc_id || null,
-            des_loc_id || null,
-            lane_transport_data ? JSON.stringify(lane_transport_data) : '{}',
+            src_loc_ID || null,
+            des_loc_ID || null,
+            JSON.stringify(lane_transport_data || {}),
             ln_id,
         ]);
 
@@ -204,6 +204,7 @@ router.put('/edit-lane', jwtAuth.verifyToken, async (req, res) => {
         res.status(500).json({ message: 'An error occurred while updating the lane.', error: error.message });
     }
 });
+
 
 
 router.delete('/delete-lane', jwtAuth.verifyToken, async (req, res) => {

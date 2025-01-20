@@ -5,7 +5,7 @@ const {logger} = require('../../logger/logger');
 const jwtAuth = require('../../JWT/jwtAuth');
 
 router.post('/add-vehicle', jwtAuth.verifyToken, async (req, res) => {
-    const vehicles = req.body.vehicles; 
+    const vehicles = req.body.vehicles;
 
     if (!vehicles || vehicles.length === 0) {
         return res.status(400).json({ message: 'Please provide vehicle data.' });
@@ -33,7 +33,7 @@ router.post('/add-vehicle', jwtAuth.verifyToken, async (req, res) => {
 
         const insertPromises = newVehicles.map(async (vehicle) => {
             const {
-                location_id,
+                loc_ID,
                 unlimited_usage,
                 individual_resource,
                 transportation_details,
@@ -48,7 +48,7 @@ router.post('/add-vehicle', jwtAuth.verifyToken, async (req, res) => {
                 `
                 INSERT INTO master_vehicles (
                     vehicle_ID, 
-                    location_id, 
+                    loc_ID, 
                     unlimited_usage, 
                     individual_resource, 
                     transportation_details, 
@@ -61,9 +61,9 @@ router.post('/add-vehicle', jwtAuth.verifyToken, async (req, res) => {
                 `,
                 [
                     vehicle.vehicle_ID,
-                    location_id,
-                    unlimited_usage,
-                    individual_resource,
+                    loc_ID || null,
+                    unlimited_usage || null,
+                    individual_resource || null,
                     JSON.stringify(transportation_details || {}),
                     JSON.stringify(capacity || {}),
                     JSON.stringify(physical_properties || {}),
@@ -96,7 +96,7 @@ router.get('/vehicles', jwtAuth.verifyToken, async (req, res) => {
                 l.city, l.state, l.country, l.pincode, l.loc_type, 
                 l.gln_code, l.iata_code
             FROM master_vehicles v
-            LEFT JOIN master_locations l ON v.location_id = l.location_id
+            LEFT JOIN master_locations l ON v.loc_ID = l.loc_ID
         `);
 
         res.status(200).json({
@@ -126,17 +126,17 @@ router.get('/vehicle', jwtAuth.verifyToken, async (req, res) => {
                 l.city, l.state, l.country, l.pincode, l.loc_type, 
                 l.gln_code, l.iata_code
             FROM master_vehicles v
-            LEFT JOIN master_locations l ON v.location_id = l.location_id
+            LEFT JOIN master_locations l ON v.loc_ID = l.loc_ID
             WHERE v.vehicle_ID = ?
         `, [vehicle_ID]);
 
-        if (!vehicle) {
+        if (vehicle.length === 0) {
             return res.status(404).json({ message: 'Vehicle not found.' });
         }
 
         res.status(200).json({
             message: 'Vehicle fetched successfully',
-            vehicle,
+            vehicle: vehicle[0],
         });
     } catch (error) {
         logger.error('Error fetching vehicle:', error);
@@ -148,7 +148,7 @@ router.get('/vehicle', jwtAuth.verifyToken, async (req, res) => {
 router.put('/edit-vehicle', jwtAuth.verifyToken, async (req, res) => {
     const { veh_id } = req.query;
     const {
-        location_id,
+        loc_ID,
         unlimited_usage,
         individual_resource,
         transportation_details,
@@ -167,20 +167,20 @@ router.put('/edit-vehicle', jwtAuth.verifyToken, async (req, res) => {
         const updateResult = await db.query(`
             UPDATE master_vehicles 
             SET 
-                location_id = ?, 
-                unlimited_usage = ?, 
-                individual_resource = ?, 
-                transportation_details = ?, 
-                capacity = ?, 
-                physical_properties = ?, 
-                downtimes = ?, 
-                vehicle_group = ?,
-                additional_details = ?
+                loc_ID = COALESCE(?, loc_ID), 
+                unlimited_usage = COALESCE(?, unlimited_usage), 
+                individual_resource = COALESCE(?, individual_resource), 
+                transportation_details = COALESCE(?, transportation_details), 
+                capacity = COALESCE(?, capacity), 
+                physical_properties = COALESCE(?, physical_properties), 
+                downtimes = COALESCE(?, downtimes), 
+                vehicle_group = COALESCE(?, vehicle_group),
+                additional_details = COALESCE(?, additional_details)
             WHERE veh_id = ?
         `, [
-            location_id,
-            unlimited_usage,
-            individual_resource,
+            loc_ID || null,
+            unlimited_usage || null,
+            individual_resource || null,
             JSON.stringify(transportation_details || {}),
             JSON.stringify(capacity || {}),
             JSON.stringify(physical_properties || {}),
@@ -200,6 +200,7 @@ router.put('/edit-vehicle', jwtAuth.verifyToken, async (req, res) => {
         res.status(500).json({ message: 'An error occurred while updating the vehicle.', error: error.message });
     }
 });
+
 
 
 router.delete('/delete-vehicle', jwtAuth.verifyToken, async (req, res) => {

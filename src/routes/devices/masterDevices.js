@@ -39,8 +39,8 @@ router.post('/add-devices', jwtAuth.verifyToken, async (req, res) => {
                 device_UID,
                 sim_imei_num,
                 vehicle_number,
-                carrier_id,
-                location_id,
+                carrier_ID,
+                loc_ID,
             } = device;
 
             return db.query(
@@ -51,8 +51,8 @@ router.post('/add-devices', jwtAuth.verifyToken, async (req, res) => {
                     device_UID,
                     sim_imei_num,
                     vehicle_number,
-                    carrier_id,
-                    location_id
+                    carrier_ID,
+                    loc_ID
                 ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 `,
                 [
@@ -61,8 +61,8 @@ router.post('/add-devices', jwtAuth.verifyToken, async (req, res) => {
                     device_UID || null,
                     sim_imei_num || null,
                     vehicle_number || null,
-                    carrier_id || null,
-                    location_id || null,
+                    carrier_ID || null,
+                    loc_ID || null,
                 ]
             );
         });
@@ -85,12 +85,12 @@ router.get('/all-devices', jwtAuth.verifyToken, async (req, res) => {
         const query = `
             SELECT 
                 d.device_id, d.dev_ID, d.device_type, d.device_UID, d.sim_imei_num, 
-                d.vehicle_number, d.carrier_id, d.location_id,
-                c.cr_id, c.carrier_ID,
-                l.location_id, l.loc_ID
+                d.vehicle_number, d.carrier_ID, d.loc_ID,
+                c.carrier_name, c.carrier_address,
+                l.loc_desc AS location_desc, l.city, l.state, l.country
             FROM master_devices d
-            LEFT JOIN carriers c ON d.carrier_id = c.cr_id
-            LEFT JOIN master_locations l ON d.location_id = l.location_id
+            LEFT JOIN carriers c ON d.carrier_ID = c.carrier_ID
+            LEFT JOIN master_locations l ON d.loc_ID = l.loc_ID
         `;
 
         const [devices] = await db.query(query);
@@ -118,15 +118,16 @@ router.get('/device', jwtAuth.verifyToken, async (req, res) => {
         const query = `
             SELECT 
                 d.device_id, d.dev_ID, d.device_type, d.device_UID, d.sim_imei_num, 
-                d.vehicle_number, d.carrier_id, d.location_id,
-                c.cr_id, c.carrier_ID, c.carrier_name, c.carrier_address, 
+                d.vehicle_number, d.carrier_ID, d.loc_ID,
+                c.carrier_name, c.carrier_address, 
                 c.carrier_correspondence, c.carrier_network_portal, c.vehicle_types_handling, 
                 c.carrier_loc_of_operation, c.carrier_lanes,
-                l.location_id, l.loc_ID, l.loc_desc, l.longitude, l.latitude, l.time_zone, 
-                l.city, l.state, l.country, l.pincode, l.loc_type, l.gln_code, l.iata_code
+                l.loc_desc AS location_desc, l.longitude, 
+                l.latitude, l.time_zone, l.city, l.state, l.country, l.pincode, l.loc_type, 
+                l.gln_code, l.iata_code
             FROM master_devices d
-            LEFT JOIN carriers c ON d.carrier_id = c.cr_id
-            LEFT JOIN master_locations l ON d.location_id = l.location_id
+            LEFT JOIN carriers c ON d.carrier_ID = c.carrier_ID
+            LEFT JOIN master_locations l ON d.loc_ID = l.loc_ID
             WHERE d.dev_ID = ?
         `;
 
@@ -155,8 +156,8 @@ router.put('/edit-device', jwtAuth.verifyToken, async (req, res) => {
         device_UID,
         sim_imei_num,
         vehicle_number,
-        carrier_id,
-        location_id,
+        carrier_ID,
+        loc_ID,
     } = req.body;
 
     if (!device_id) {
@@ -172,8 +173,8 @@ router.put('/edit-device', jwtAuth.verifyToken, async (req, res) => {
                 device_UID = COALESCE(?, device_UID),
                 sim_imei_num = COALESCE(?, sim_imei_num),
                 vehicle_number = COALESCE(?, vehicle_number),
-                carrier_id = COALESCE(?, carrier_id),
-                location_id = COALESCE(?, location_id)
+                carrier_ID = COALESCE(?, carrier_ID),
+                loc_ID = COALESCE(?, loc_ID)
             WHERE device_id = ?
         `;
 
@@ -183,8 +184,8 @@ router.put('/edit-device', jwtAuth.verifyToken, async (req, res) => {
             device_UID,
             sim_imei_num,
             vehicle_number,
-            carrier_id,
-            location_id,
+            carrier_ID,
+            loc_ID,
             device_id,
         ]);
 
@@ -198,6 +199,7 @@ router.put('/edit-device', jwtAuth.verifyToken, async (req, res) => {
         res.status(500).json({ message: 'An error occurred while updating the device.', error: error.message });
     }
 });
+
 
 
 router.delete('/delete-device', jwtAuth.verifyToken, async (req, res) => {

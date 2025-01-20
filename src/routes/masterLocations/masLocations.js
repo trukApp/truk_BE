@@ -5,9 +5,9 @@ const {logger} = require('../../logger/logger');
 const jwtAuth = require('../../JWT/jwtAuth');
 
 
-router.post('/create-location',jwtAuth.verifyToken, async (req, res) => {
+router.post('/create-location', jwtAuth.verifyToken, async (req, res) => {
     try {
-        const locations = req.body.locations; 
+        const locations = req.body.locations;
 
         if (!Array.isArray(locations) || locations.length === 0) {
             return res.status(400).json({ message: 'Invalid input. Provide at least one location.' });
@@ -21,7 +21,8 @@ router.post('/create-location',jwtAuth.verifyToken, async (req, res) => {
 
         locations.forEach(location => {
             const {
-                loc_desc, longitude, latitude, time_zone, city, state, country, pincode, loc_type, gln_code, iata_code
+                loc_desc, longitude, latitude, time_zone, city, state, country, pincode, loc_type,
+                gln_code, iata_code, address_1, address_2
             } = location;
 
             if (!loc_desc || !longitude || !latitude || !city || !state || !country || !pincode || !loc_type) {
@@ -30,12 +31,13 @@ router.post('/create-location',jwtAuth.verifyToken, async (req, res) => {
 
             lastLocID = `LOC${String(parseInt(lastLocID.slice(3)) + 1).padStart(6, '0')}`;
             insertValues.push([
-                lastLocID, loc_desc, longitude, latitude, time_zone, city, state, country, pincode, loc_type, gln_code, iata_code
+                lastLocID, loc_desc, longitude, latitude, time_zone, city, state, country, pincode, loc_type,
+                gln_code, iata_code, address_1 || null, address_2 || null
             ]);
         });
 
         await db.query(
-            "INSERT INTO master_locations (loc_ID, loc_desc, longitude, latitude, time_zone, city, state, country, pincode, loc_type, gln_code, iata_code) VALUES ?",
+            "INSERT INTO master_locations (loc_ID, loc_desc, longitude, latitude, time_zone, city, state, country, pincode, loc_type, gln_code, iata_code, address_1, address_2) VALUES ?",
             [insertValues]
         );
 
@@ -45,6 +47,7 @@ router.post('/create-location',jwtAuth.verifyToken, async (req, res) => {
         res.status(500).json({ message: error.message || 'Server error.' });
     }
 });
+
 
 
 router.get('/all-locations',jwtAuth.verifyToken, async (req, res) => {
@@ -70,16 +73,40 @@ router.get('/location-ID',jwtAuth.verifyToken, async (req, res) => {
 });
 
 
-router.put('/edit-location',jwtAuth.verifyToken, async (req, res) => {
+router.put('/edit-location', jwtAuth.verifyToken, async (req, res) => {
     try {
         const { id } = req.query;
         const {
-            loc_desc, longitude, latitude, time_zone, city, state, country, pincode, loc_type, gln_code, iata_code
+            loc_desc, longitude, latitude, time_zone, city, state, country, pincode, loc_type,
+            gln_code, iata_code, address_1, address_2
         } = req.body;
 
+        if (!id) {
+            return res.status(400).json({ message: 'location_id is required in the query.' });
+        }
+
         const [updateResult] = await db.query(
-            "UPDATE master_locations SET loc_desc = ?, longitude = ?, latitude = ?, time_zone = ?, city = ?, state = ?, country = ?, pincode = ?, loc_type = ?, gln_code = ?, iata_code = ? WHERE location_id = ?",
-            [loc_desc, longitude, latitude, time_zone, city, state, country, pincode, loc_type, gln_code, iata_code, id]
+            `UPDATE master_locations 
+            SET 
+                loc_desc = COALESCE(?, loc_desc), 
+                longitude = COALESCE(?, longitude), 
+                latitude = COALESCE(?, latitude), 
+                time_zone = COALESCE(?, time_zone), 
+                city = COALESCE(?, city), 
+                state = COALESCE(?, state), 
+                country = COALESCE(?, country), 
+                pincode = COALESCE(?, pincode), 
+                loc_type = COALESCE(?, loc_type), 
+                gln_code = COALESCE(?, gln_code), 
+                iata_code = COALESCE(?, iata_code),
+                address_1 = COALESCE(?, address_1),
+                address_2 = COALESCE(?, address_2)
+            WHERE location_id = ?`,
+            [
+                loc_desc || null, longitude || null, latitude || null, time_zone || null,
+                city || null, state || null, country || null, pincode || null, loc_type || null,
+                gln_code || null, iata_code || null, address_1 || null, address_2 || null, id
+            ]
         );
 
         if (updateResult.affectedRows === 0) {
@@ -92,6 +119,7 @@ router.put('/edit-location',jwtAuth.verifyToken, async (req, res) => {
         res.status(500).json({ message: 'Server error.' });
     }
 });
+
 
 
 router.delete('/delete-location',jwtAuth.verifyToken, async (req, res) => {

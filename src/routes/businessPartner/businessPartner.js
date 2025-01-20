@@ -18,15 +18,15 @@ router.post('/create-partners', jwtAuth.verifyToken, async (req, res) => {
             const {
                 name,
                 partner_type,
-                location_id,
+                loc_ID,
                 correspondence,
                 loc_of_source,
                 pod_relevant,
-                partner_functions
+                partner_functions,
             } = partner;
 
-            if (!name || !partner_type) {
-                throw new Error('Name and Partner Type are required for each partner');
+            if (!name || !partner_type || !loc_ID || !loc_of_source) {
+                throw new Error('Name, Partner Type, loc_ID, and loc_of_source are required for each partner');
             }
 
             let supplier_id = null;
@@ -52,18 +52,18 @@ router.post('/create-partners', jwtAuth.verifyToken, async (req, res) => {
 
             const [insertResult] = await db.query(
                 `INSERT INTO business_partners 
-                (supplier_id, customer_id, name, partner_type, location_id, correspondence, loc_of_source, pod_relevant, partner_functions) 
+                (supplier_id, customer_id, name, partner_type, loc_ID, correspondence, loc_of_source, pod_relevant, partner_functions) 
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                 [
                     supplier_id,
                     customer_id,
                     name,
                     partner_type,
-                    location_id || null,
+                    loc_ID,
                     JSON.stringify(correspondence || {}),
-                    loc_of_source || null,
+                    loc_of_source,
                     pod_relevant || 0,
-                    JSON.stringify(partner_functions || {})
+                    JSON.stringify(partner_functions || {}),
                 ]
             );
 
@@ -71,14 +71,14 @@ router.post('/create-partners', jwtAuth.verifyToken, async (req, res) => {
                 partnerId: insertResult.insertId,
                 supplier_id,
                 customer_id,
-                name
+                name,
             });
         }
 
         logger.info('Business partners created successfully:', results);
         res.status(201).json({
             message: 'Business partners created successfully',
-            partners: results
+            partners: results,
         });
     } catch (error) {
         logger.error('Error creating business partners:', error);
@@ -88,7 +88,7 @@ router.post('/create-partners', jwtAuth.verifyToken, async (req, res) => {
 
 
 
-router.get('/get-partners', jwtAuth.verifyToken, async (req, res) => {
+router.get('/business-partners', jwtAuth.verifyToken, async (req, res) => {
     const { partner_type, supplier_id, customer_id } = req.query;
 
     if (!partner_type && !supplier_id && !customer_id) {
@@ -119,15 +119,14 @@ router.get('/get-partners', jwtAuth.verifyToken, async (req, res) => {
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
     try {
-        const [partners] = await db.query(
-            `
+        const query = `
             SELECT 
                 bp.partner_id,
                 bp.supplier_id,
                 bp.customer_id,
                 bp.name,
                 bp.partner_type,
-                bp.location_id,
+                bp.loc_ID,
                 bp.correspondence,
                 bp.loc_of_source,
                 bp.pod_relevant,
@@ -159,15 +158,16 @@ router.get('/get-partners', jwtAuth.verifyToken, async (req, res) => {
             FROM 
                 business_partners bp
             LEFT JOIN 
-                master_locations loc1 ON bp.location_id = loc1.location_id
+                master_locations loc1 ON bp.loc_ID = loc1.loc_ID
             LEFT JOIN 
-                master_locations loc2 ON bp.loc_of_source = loc2.location_id
+                master_locations loc2 ON bp.loc_of_source = loc2.loc_ID
             ${whereClause}
             ORDER BY 
                 bp.partner_id DESC
-            `,
-            queryParams
-        );
+        `;
+
+        // Execute query
+        const [partners] = await db.query(query, queryParams);
 
         res.status(200).json({
             message: 'Business partners retrieved successfully',
@@ -175,7 +175,10 @@ router.get('/get-partners', jwtAuth.verifyToken, async (req, res) => {
         });
     } catch (error) {
         logger.error('Error retrieving business partners:', error);
-        res.status(500).json({ message: 'An error occurred while retrieving business partners', error: error.message });
+        res.status(500).json({
+            message: 'An error occurred while retrieving business partners',
+            error: error.message,
+        });
     }
 });
 
@@ -187,7 +190,7 @@ router.put('/edit-partner', jwtAuth.verifyToken, async (req, res) => {
         customer_id,
         name,
         partner_type,
-        location_id,
+        loc_ID,
         correspondence,
         loc_of_source,
         pod_relevant,
@@ -207,7 +210,7 @@ router.put('/edit-partner', jwtAuth.verifyToken, async (req, res) => {
                 customer_id = ?,
                 name = ?,
                 partner_type = ?,
-                location_id = ?,
+                loc_ID = ?,
                 correspondence = ?,
                 loc_of_source = ?,
                 pod_relevant = ?,
@@ -219,11 +222,11 @@ router.put('/edit-partner', jwtAuth.verifyToken, async (req, res) => {
                 customer_id,
                 name,
                 partner_type,
-                location_id,
-                JSON.stringify(correspondence),
+                loc_ID,
+                JSON.stringify(correspondence || {}),
                 loc_of_source,
-                pod_relevant,
-                JSON.stringify(partner_functions),
+                pod_relevant || 0,
+                JSON.stringify(partner_functions || {}),
                 partner_id,
             ]
         );
@@ -238,6 +241,7 @@ router.put('/edit-partner', jwtAuth.verifyToken, async (req, res) => {
         res.status(500).json({ message: 'An error occurred while updating the business partner', error: error.message });
     }
 });
+
 
 
 

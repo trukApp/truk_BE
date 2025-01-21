@@ -52,6 +52,7 @@ const devices = require('./src/routes/devices/masterDevices');
 const masterUom = require('./src/routes/masterUom/uom');
 
 
+
 app.use('/truk/reg',signup);
 app.use('/truk/log',login);
 app.use('/truk/user',userData);

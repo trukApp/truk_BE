@@ -15,7 +15,7 @@ router.post('/create-location', jwtAuth.verifyToken, async (req, res) => {
 
         const insertValues = [];
         const [result] = await db.query(
-            "SELECT loc_ID FROM master_locations ORDER BY location_id DESC LIMIT 1"
+            "SELECT loc_ID FROM master_locations ORDER BY location_id DESC LIMIT 1 FOR UPDATE"
         );
         let lastLocID = result[0]?.loc_ID || 'LOC0000';
 

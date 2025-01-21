@@ -17,7 +17,7 @@ router.post('/create-lanes', jwtAuth.verifyToken, async (req, res) => {
 
         // Fetch the last `lane_ID` from the database
         const [lastLane] = await db.query(`
-            SELECT lane_ID FROM master_lanes ORDER BY ln_id DESC LIMIT 1
+            SELECT lane_ID FROM master_lanes ORDER BY ln_id DESC LIMIT 1 FOR UPDATE
         `);
 
         let lastLaneNumber = 0;

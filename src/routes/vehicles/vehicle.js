@@ -13,9 +13,8 @@ router.post('/add-vehicle', jwtAuth.verifyToken, async (req, res) => {
 
     try {
         const vehicleData = Array.isArray(vehicles) ? vehicles : [vehicles];
-
         const [lastVehicle] = await db.query(`
-            SELECT vehicle_ID FROM master_vehicles ORDER BY veh_id DESC LIMIT 1
+            SELECT vehicle_ID FROM master_vehicles ORDER BY veh_id DESC LIMIT 1 FOR UPDATE
         `);
 
         let lastVehicleNumber = 0;

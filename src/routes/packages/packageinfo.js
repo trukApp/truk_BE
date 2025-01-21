@@ -16,7 +16,7 @@ router.post('/create-package', jwtAuth.verifyToken, async (req, res) => {
         const packageData = Array.isArray(packages) ? packages : [packages];
 
         const [lastPackage] = await db.query(`
-            SELECT pac_ID FROM master_package_info ORDER BY package_id DESC LIMIT 1
+            SELECT pac_ID FROM master_package_info ORDER BY package_id DESC LIMIT 1 FOR UPDATE
         `);
 
         let lastPackageNumber = 0;

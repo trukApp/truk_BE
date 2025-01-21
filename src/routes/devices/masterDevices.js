@@ -16,7 +16,7 @@ router.post('/add-devices', jwtAuth.verifyToken, async (req, res) => {
         const deviceData = Array.isArray(devices) ? devices : [devices];
 
         const [lastDevice] = await db.query(`
-            SELECT dev_ID FROM master_devices ORDER BY device_id DESC LIMIT 1
+            SELECT dev_ID FROM master_devices ORDER BY device_id DESC LIMIT 1 FOR UPDATE
         `);
 
         let lastDeviceNumber = 0;

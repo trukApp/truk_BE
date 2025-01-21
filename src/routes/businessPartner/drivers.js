@@ -17,7 +17,7 @@ router.post('/add-drivers', jwtAuth.verifyToken, async (req, res) => {
             SELECT dri_ID 
             FROM master_drivers 
             ORDER BY driver_id DESC 
-            LIMIT 1
+            LIMIT 1 FOR UPDATE
         `);
 
         let nextId = latestDriver.length > 0

@@ -16,7 +16,7 @@ router.post('/create-carriers', jwtAuth.verifyToken, async (req, res) => {
         const carrierData = Array.isArray(carriers) ? carriers : [carriers];
 
         const [lastCarrier] = await db.query(`
-            SELECT carrier_ID FROM carriers ORDER BY cr_id DESC LIMIT 1
+            SELECT carrier_ID FROM carriers ORDER BY cr_id DESC LIMIT 1 FOR UPDATE
         `);
 
         let lastCarrierNumber = 0;

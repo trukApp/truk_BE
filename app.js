@@ -50,7 +50,7 @@ const packages = require('./src/routes/packages/packageinfo');
 const lanes = require('./src/routes/masterLocations/lanes');
 const devices = require('./src/routes/devices/masterDevices');
 const masterUom = require('./src/routes/masterUom/uom');
-
+const products = require('./src/routes/masterProducts/products');
 
 
 app.use('/truk/reg',signup);
@@ -65,5 +65,6 @@ app.use('/truk/carrier',carrier);
 app.use('/truk/lane',lanes);
 app.use('/truk/device',devices);
 app.use('/truk/masterUom',masterUom);
+app.use('/truk/masterProducts',products);
 
 module.exports = app;

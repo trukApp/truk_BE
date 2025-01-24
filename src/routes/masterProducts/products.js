@@ -36,6 +36,7 @@ router.post('/add-products', jwtAuth.verifyToken, async (req, res) => {
         const insertPromises = newProducts.map(async (product) => {
             const {
                 product_ID,
+                product_name,
                 product_desc,
                 basic_uom,
                 sales_uom,
@@ -63,6 +64,7 @@ router.post('/add-products', jwtAuth.verifyToken, async (req, res) => {
                 `
                 INSERT INTO master_products (
                     product_ID, 
+                    product_name,
                     product_desc, 
                     basic_uom, 
                     sales_uom, 
@@ -88,6 +90,7 @@ router.post('/add-products', jwtAuth.verifyToken, async (req, res) => {
                 `,
                 [
                     product_ID,
+                    product_name || null,
                     product_desc || null,
                     basic_uom || null,
                     sales_uom || null,
@@ -190,6 +193,7 @@ router.get('/product', jwtAuth.verifyToken, async (req, res) => {
 router.put('/edit-product', jwtAuth.verifyToken, async (req, res) => {
     const { prod_id } = req.query; // Product ID to update
     const {
+        product_name,
         product_desc,
         basic_uom,
         sales_uom,
@@ -222,6 +226,7 @@ router.put('/edit-product', jwtAuth.verifyToken, async (req, res) => {
             `
             UPDATE master_products
             SET 
+                product_name = ?,
                 product_desc = ?,
                 basic_uom = ?,
                 sales_uom = ?,
@@ -246,6 +251,7 @@ router.put('/edit-product', jwtAuth.verifyToken, async (req, res) => {
             WHERE prod_id = ?
             `,
             [
+                product_name || null,
                 product_desc || null,
                 basic_uom || null,
                 sales_uom || null,

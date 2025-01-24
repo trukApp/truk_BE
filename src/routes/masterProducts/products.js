@@ -7,7 +7,6 @@ const jwtAuth = require('../../JWT/jwtAuth');
 
 router.post('/add-products', jwtAuth.verifyToken, async (req, res) => {
     const { products } = req.body;
-    console.log("products: ", products)
 
     if (!products || !Array.isArray(products) || products.length === 0) {
         return res.status(400).json({ message: 'Invalid input. Please provide an array of products.' });

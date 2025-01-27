@@ -1,35 +1,66 @@
-// utils/unitParser.js (for example)
+/**
+ * Utility to extract numeric values from strings
+ * E.g. "7.5 ton" => 7.5
+ */
+function extractNumber(str = "") {
+  const match = str.match(/(\d+(?:\.\d+)?)/);
+  if (!match) return 0;
+  return parseFloat(match[1]) || 0;
+}
+
+/**
+ * Convert weight strings to kg
+ * Handles "ton", "kg", or numeric-only fallback
+ */
 function parseWeightToKg(weightString = "") {
-    const lower = weightString.toLowerCase().trim();
-    if (lower.includes("ton")) {
-      // e.g. "7 ton" => 7000 kg (1 metric ton = 1000 kg)
-      const numericVal = parseFloat(lower) || 0;
-      return numericVal * 1000;
-    } else if (lower.includes("kg")) {
-      // e.g. "10 kg" => 10
-      return parseFloat(lower) || 0;
-    }
-    // Fallback (just parse float if no recognized unit)
-    return parseFloat(lower) || 0;
+  const lower = weightString.toLowerCase();
+  const num = extractNumber(lower);
+
+  if (lower.includes("ton")) {
+    return num * 1000; // Convert tons to kg
+  } else if (lower.includes("kg")) {
+    return num; // Already in kg
   }
-  
-  function parseVolumeToM3(volumeString = "") {
-    const lower = volumeString.toLowerCase().trim();
-    if (lower.includes("m")) {
-      // e.g. "3 m^3" => 3. 
-      // If your data says "m" but actually means "m^3", confirm your usage.
-      return parseFloat(lower) || 0;
-    } else if (lower.includes("l")) {
-      // e.g. "500 l" => 0.5 m^3 (1 m^3 = 1000 L)
-      const numericVal = parseFloat(lower) || 0;
-      return numericVal / 1000;
-    }
-    // Fallback
-    return parseFloat(lower) || 0;
+  return num; // Fallback to numeric value
+}
+
+/**
+ * Convert volume strings to m^3
+ * Handles "m^3", "l", or numeric-only fallback
+ */
+function parseVolumeToM3(volumeString = "") {
+  const lower = volumeString.toLowerCase();
+  const num = extractNumber(lower);
+
+  if (lower.includes("m")) {
+    return num; // Already in m^3
+  } else if (lower.includes("l")) {
+    return num / 1000; // Convert liters to m^3
   }
-  
-  module.exports = {
-    parseWeightToKg,
-    parseVolumeToM3,
-  };
-  
+  return num; // Fallback to numeric value
+}
+
+/**
+ * Combine weight value and unit to parse into kg
+ * E.g., weight="50", weight_uom="KG" => "50 KG"
+ */
+function parseWeightAndUOM(weightVal = "0", weightUOM = "") {
+  const combined = `${weightVal} ${weightUOM}`.trim();
+  return parseWeightToKg(combined);
+}
+
+/**
+ * Combine volume value and unit to parse into m^3
+ * E.g., volume="15", volume_uom="m^3" => "15 m^3"
+ */
+function parseVolumeAndUOM(volumeVal = "0", volumeUOM = "") {
+  const combined = `${volumeVal} ${volumeUOM}`.trim();
+  return parseVolumeToM3(combined);
+}
+
+module.exports = {
+  parseWeightToKg,
+  parseVolumeToM3,
+  parseWeightAndUOM,
+  parseVolumeAndUOM,
+};

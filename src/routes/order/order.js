@@ -77,7 +77,7 @@ const getOptimizedRouteWithLoad = async (locations, vehicleLoadLimit, shipmentLo
 };
 
 // Create Order API
-router.post('/create-order-product', async (req, res) => {
+router.post('/create-order', async (req, res) => {
   try {
     const { source, products } = req.body;
 

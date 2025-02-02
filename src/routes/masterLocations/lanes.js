@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const db = require('../../../dbConnection');
 const {logger} = require('../../logger/logger');
+const {applyPagination} = require('../../pagination/paginate');
 const jwtAuth = require('../../JWT/jwtAuth');
 
 
@@ -68,8 +69,48 @@ router.post('/create-lanes', jwtAuth.verifyToken, async (req, res) => {
 });
 
 
+// router.get('/all-lanes', jwtAuth.verifyToken, async (req, res) => {
+//     try {
+//         const query = `
+//             SELECT 
+//                 ml.ln_id, 
+//                 ml.lane_ID, 
+//                 ml.lane_transport_data,
+//                 ml.src_loc_ID, 
+//                 src.loc_ID AS src_loc_ID, 
+//                 src.loc_desc AS src_loc_desc, 
+//                 src.longitude AS src_longitude, 
+//                 src.latitude AS src_latitude, 
+//                 src.city AS src_city, 
+//                 src.state AS src_state,
+//                 ml.des_loc_ID, 
+//                 des.loc_ID AS des_loc_ID, 
+//                 des.loc_desc AS des_loc_desc, 
+//                 des.longitude AS des_longitude, 
+//                 des.latitude AS des_latitude, 
+//                 des.city AS des_city, 
+//                 des.state AS des_state
+//             FROM master_lanes ml
+//             LEFT JOIN master_locations src ON ml.src_loc_ID = src.loc_ID
+//             LEFT JOIN master_locations des ON ml.des_loc_ID = des.loc_ID
+//         `;
+
+//         const [lanes] = await db.query(query);
+
+//         res.status(200).json({
+//             message: 'Lanes retrieved successfully',
+//             lanes,
+//         });
+//     } catch (error) {
+//         logger.error('Error retrieving lanes:', error);
+//         res.status(500).json({ message: 'An error occurred while retrieving lanes.', error: error.message });
+//     }
+// });
+
+
 router.get('/all-lanes', jwtAuth.verifyToken, async (req, res) => {
     try {
+        const { page = 1, limit = 10 } = req.query;
         const query = `
             SELECT 
                 ml.ln_id, 
@@ -93,8 +134,8 @@ router.get('/all-lanes', jwtAuth.verifyToken, async (req, res) => {
             LEFT JOIN master_locations src ON ml.src_loc_ID = src.loc_ID
             LEFT JOIN master_locations des ON ml.des_loc_ID = des.loc_ID
         `;
-
-        const [lanes] = await db.query(query);
+        const paginatedQuery = applyPagination(query, page, limit);
+        const [lanes] = await db.query(paginatedQuery);
 
         res.status(200).json({
             message: 'Lanes retrieved successfully',
@@ -105,6 +146,7 @@ router.get('/all-lanes', jwtAuth.verifyToken, async (req, res) => {
         res.status(500).json({ message: 'An error occurred while retrieving lanes.', error: error.message });
     }
 });
+
 
 
 router.get('/lane-by-id', jwtAuth.verifyToken, async (req, res) => {

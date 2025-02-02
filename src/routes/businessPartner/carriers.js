@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const db = require('../../../dbConnection');
 const {logger} = require('../../logger/logger');
+const {applyPagination} = require('../../pagination/paginate');
 const jwtAuth = require('../../JWT/jwtAuth');
 
 
@@ -84,9 +85,31 @@ router.post('/create-carriers', jwtAuth.verifyToken, async (req, res) => {
 });
 
 
+// router.get('/all-carriers', jwtAuth.verifyToken, async (req, res) => {
+//     try {
+//         const [carriers] = await db.query(`SELECT * FROM carriers`);
+
+//         if (carriers.length === 0) {
+//             return res.status(404).json({ message: 'No carriers found.' });
+//         }
+
+//         res.status(200).json({
+//             message: 'Carriers retrieved successfully',
+//             carriers,
+//         });
+//     } catch (error) {
+//         logger.error('Error retrieving carriers:', error);
+//         res.status(500).json({ message: 'An error occurred while retrieving carriers.', error: error.message });
+//     }
+// });
+
+
 router.get('/all-carriers', jwtAuth.verifyToken, async (req, res) => {
     try {
-        const [carriers] = await db.query(`SELECT * FROM carriers`);
+        const { page = 1, limit = 10 } = req.query;
+        const query = `SELECT * FROM carriers`;
+        const paginatedQuery = applyPagination(query, page, limit);
+        const [carriers] = await db.query(paginatedQuery);
 
         if (carriers.length === 0) {
             return res.status(404).json({ message: 'No carriers found.' });
@@ -101,6 +124,7 @@ router.get('/all-carriers', jwtAuth.verifyToken, async (req, res) => {
         res.status(500).json({ message: 'An error occurred while retrieving carriers.', error: error.message });
     }
 });
+
 
 
 router.get('/carrier-by-id', jwtAuth.verifyToken, async (req, res) => {

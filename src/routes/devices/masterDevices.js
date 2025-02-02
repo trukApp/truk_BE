@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const db = require('../../../dbConnection');
 const {logger} = require('../../logger/logger');
+const {applyPagination} = require('../../pagination/paginate');
 const jwtAuth = require('../../JWT/jwtAuth');
 
 
@@ -80,8 +81,35 @@ router.post('/add-devices', jwtAuth.verifyToken, async (req, res) => {
 });
 
 
+// router.get('/all-devices', jwtAuth.verifyToken, async (req, res) => {
+//     try {
+//         const query = `
+//             SELECT 
+//                 d.device_id, d.dev_ID, d.device_type, d.device_UID, d.sim_imei_num, 
+//                 d.vehicle_number, d.carrier_ID, d.loc_ID,
+//                 c.carrier_name, c.carrier_address,
+//                 l.loc_desc AS location_desc, l.city, l.state, l.country
+//             FROM master_devices d
+//             LEFT JOIN carriers c ON d.carrier_ID = c.carrier_ID
+//             LEFT JOIN master_locations l ON d.loc_ID = l.loc_ID
+//         `;
+
+//         const [devices] = await db.query(query);
+
+//         res.status(200).json({
+//             message: 'Devices retrieved successfully',
+//             devices,
+//         });
+//     } catch (error) {
+//         logger.error('Error fetching devices:', error);
+//         res.status(500).json({ message: 'An error occurred while fetching devices.', error: error.message });
+//     }
+// });
+
+
 router.get('/all-devices', jwtAuth.verifyToken, async (req, res) => {
     try {
+        const { page = 1, limit = 10 } = req.query;
         const query = `
             SELECT 
                 d.device_id, d.dev_ID, d.device_type, d.device_UID, d.sim_imei_num, 
@@ -92,8 +120,8 @@ router.get('/all-devices', jwtAuth.verifyToken, async (req, res) => {
             LEFT JOIN carriers c ON d.carrier_ID = c.carrier_ID
             LEFT JOIN master_locations l ON d.loc_ID = l.loc_ID
         `;
-
-        const [devices] = await db.query(query);
+        const paginatedQuery = applyPagination(query, page, limit);
+        const [devices] = await db.query(paginatedQuery);
 
         res.status(200).json({
             message: 'Devices retrieved successfully',

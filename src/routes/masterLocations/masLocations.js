@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const db = require('../../../dbConnection');
 const {logger} = require('../../logger/logger');
+const {applyPagination} = require('../../pagination/paginate');
 const jwtAuth = require('../../JWT/jwtAuth');
 
 
@@ -50,15 +51,34 @@ router.post('/create-location', jwtAuth.verifyToken, async (req, res) => {
 
 
 
-router.get('/all-locations',jwtAuth.verifyToken, async (req, res) => {
+// router.get('/all-locations',jwtAuth.verifyToken, async (req, res) => {
+//     try {
+//         const [locations] = await db.query("SELECT * FROM master_locations");
+//         res.status(200).json({ locations });
+//     } catch (error) {
+//         logger.error(error);
+//         res.status(500).json({ message: 'Server error.' });
+//     }
+// });
+
+router.get('/all-locations', jwtAuth.verifyToken, async (req, res) => {
     try {
-        const [locations] = await db.query("SELECT * FROM master_locations");
-        res.status(200).json({ locations });
+        const { page = 1, limit = 10 } = req.query;
+        const query = `SELECT * FROM master_locations`;
+        const paginatedQuery = applyPagination(query, page, limit);
+        const [locations] = await db.query(paginatedQuery);
+
+        res.status(200).json({
+            message: 'Locations retrieved successfully',
+            locations,
+        });
     } catch (error) {
-        logger.error(error);
-        res.status(500).json({ message: 'Server error.' });
+        logger.error('Error fetching locations:', error);
+        res.status(500).json({ message: 'An error occurred while fetching locations.', error: error.message });
     }
 });
+
+
 
 router.get('/location-ID',jwtAuth.verifyToken, async (req, res) => {
     const {loc_ID} = req.query;

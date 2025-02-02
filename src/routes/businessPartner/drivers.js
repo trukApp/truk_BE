@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const db = require('../../../dbConnection');
 const { logger } = require('../../logger/logger');
+const {applyPagination} = require('../../pagination/paginate');
 const jwtAuth = require('../../JWT/jwtAuth');
 
 
@@ -61,11 +62,29 @@ router.post('/add-drivers', jwtAuth.verifyToken, async (req, res) => {
 });
 
 
+// router.get('/get-drivers', jwtAuth.verifyToken, async (req, res) => {
+//     try {
+//         const [drivers] = await db.query(`
+//             SELECT * FROM master_drivers
+//         `);
+
+//         res.status(200).json({
+//             message: 'Drivers retrieved successfully',
+//             drivers,
+//         });
+//     } catch (error) {
+//         logger.error('Error retrieving drivers:', error);
+//         res.status(500).json({ message: 'An error occurred while retrieving drivers', error: error.message });
+//     }
+// });
+
+
 router.get('/get-drivers', jwtAuth.verifyToken, async (req, res) => {
     try {
-        const [drivers] = await db.query(`
-            SELECT * FROM master_drivers
-        `);
+        const { page = 1, limit = 10 } = req.query;
+        const query = `SELECT * FROM master_drivers`;
+        const paginatedQuery = applyPagination(query, page, limit);
+        const [drivers] = await db.query(paginatedQuery);
 
         res.status(200).json({
             message: 'Drivers retrieved successfully',
@@ -76,6 +95,7 @@ router.get('/get-drivers', jwtAuth.verifyToken, async (req, res) => {
         res.status(500).json({ message: 'An error occurred while retrieving drivers', error: error.message });
     }
 });
+
 
 
 router.get('/get-driver', jwtAuth.verifyToken, async (req, res) => {

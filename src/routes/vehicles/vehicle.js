@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const db = require('../../../dbConnection');
 const {logger} = require('../../logger/logger');
+const {applyPagination} = require('../../pagination/paginate');
 const jwtAuth = require('../../JWT/jwtAuth');
 
 router.post('/add-vehicle', jwtAuth.verifyToken, async (req, res) => {
@@ -86,9 +87,33 @@ router.post('/add-vehicle', jwtAuth.verifyToken, async (req, res) => {
 });
 
 
+// router.get('/vehicles', jwtAuth.verifyToken, async (req, res) => {
+//     try {
+//         const [vehicles] = await db.query(`
+//             SELECT 
+//                 v.*, 
+//                 l.loc_ID, l.loc_desc, l.longitude, l.latitude, l.time_zone, 
+//                 l.city, l.state, l.country, l.pincode, l.loc_type, 
+//                 l.gln_code, l.iata_code
+//             FROM master_vehicles v
+//             LEFT JOIN master_locations l ON v.loc_ID = l.loc_ID
+//         `);
+
+//         res.status(200).json({
+//             message: 'Vehicles fetched successfully',
+//             vehicles,
+//         });
+//     } catch (error) {
+//         logger.error('Error fetching vehicles:', error);
+//         res.status(500).json({ message: 'An error occurred while fetching vehicles.', error: error.message });
+//     }
+// });
+
+
 router.get('/vehicles', jwtAuth.verifyToken, async (req, res) => {
     try {
-        const [vehicles] = await db.query(`
+        const { page = 1, limit = 10 } = req.query;
+        const query = `
             SELECT 
                 v.*, 
                 l.loc_ID, l.loc_desc, l.longitude, l.latitude, l.time_zone, 
@@ -96,7 +121,9 @@ router.get('/vehicles', jwtAuth.verifyToken, async (req, res) => {
                 l.gln_code, l.iata_code
             FROM master_vehicles v
             LEFT JOIN master_locations l ON v.loc_ID = l.loc_ID
-        `);
+        `;
+        const paginatedQuery = applyPagination(query, page, limit);
+        const [vehicles] = await db.query(paginatedQuery);
 
         res.status(200).json({
             message: 'Vehicles fetched successfully',

@@ -52,6 +52,7 @@ const devices = require('./src/routes/devices/masterDevices');
 const masterUom = require('./src/routes/masterUom/uom');
 const products = require('./src/routes/masterProducts/products');
 const order = require('./src/routes/order/order');
+const data = require('./src/routes/data/dataCount');
 
 
 app.use('/truk/reg',signup);
@@ -68,5 +69,6 @@ app.use('/truk/device',devices);
 app.use('/truk/masterUom',masterUom);
 app.use('/truk/masterProducts',products);
 app.use('/truk/createOrder',order);
+app.use('/truk/data',data);
 
 module.exports = app;

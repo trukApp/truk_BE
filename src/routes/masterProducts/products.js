@@ -149,7 +149,7 @@ router.post('/add-products', jwtAuth.verifyToken, async (req, res) => {
 
 router.get('/all-products', jwtAuth.verifyToken, async (req, res) => {
     try {
-        const { page = 1, limit = 10 } = req.query;
+        const { page , limit  } = req.query;
         const query = `SELECT * FROM master_products`;
         const paginatedQuery = applyPagination(query, page, limit);
         const [products] = await db.query(paginatedQuery);

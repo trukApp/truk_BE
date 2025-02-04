@@ -81,7 +81,7 @@ router.post('/add-drivers', jwtAuth.verifyToken, async (req, res) => {
 
 router.get('/get-drivers', jwtAuth.verifyToken, async (req, res) => {
     try {
-        const { page = 1, limit = 10 } = req.query;
+        const { page , limit  } = req.query;
         const query = `SELECT * FROM master_drivers`;
         const paginatedQuery = applyPagination(query, page, limit);
         const [drivers] = await db.query(paginatedQuery);

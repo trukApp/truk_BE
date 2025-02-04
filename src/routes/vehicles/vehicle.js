@@ -112,7 +112,7 @@ router.post('/add-vehicle', jwtAuth.verifyToken, async (req, res) => {
 
 router.get('/vehicles', jwtAuth.verifyToken, async (req, res) => {
     try {
-        const { page = 1, limit = 10 } = req.query;
+        const { page , limit  } = req.query;
         const query = `
             SELECT 
                 v.*, 

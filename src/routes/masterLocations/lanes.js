@@ -110,7 +110,7 @@ router.post('/create-lanes', jwtAuth.verifyToken, async (req, res) => {
 
 router.get('/all-lanes', jwtAuth.verifyToken, async (req, res) => {
     try {
-        const { page = 1, limit = 10 } = req.query;
+        const { page , limit  } = req.query;
         const query = `
             SELECT 
                 ml.ln_id, 

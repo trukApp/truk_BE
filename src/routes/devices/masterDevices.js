@@ -109,7 +109,7 @@ router.post('/add-devices', jwtAuth.verifyToken, async (req, res) => {
 
 router.get('/all-devices', jwtAuth.verifyToken, async (req, res) => {
     try {
-        const { page = 1, limit = 10 } = req.query;
+        const { page , limit  } = req.query;
         const query = `
             SELECT 
                 d.device_id, d.dev_ID, d.device_type, d.device_UID, d.sim_imei_num, 

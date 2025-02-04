@@ -106,7 +106,7 @@ router.post('/create-carriers', jwtAuth.verifyToken, async (req, res) => {
 
 router.get('/all-carriers', jwtAuth.verifyToken, async (req, res) => {
     try {
-        const { page = 1, limit = 10 } = req.query;
+        const { page , limit  } = req.query;
         const query = `SELECT * FROM carriers`;
         const paginatedQuery = applyPagination(query, page, limit);
         const [carriers] = await db.query(paginatedQuery);

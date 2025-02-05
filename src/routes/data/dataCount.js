@@ -6,7 +6,7 @@ const jwtAuth = require('../../JWT/jwtAuth');
 
 router.get('/count-data', jwtAuth.verifyToken, async (req, res) => {
     try {
-        // Queries to count data for all tables
+
         const queries = {
             vehicles: `SELECT COUNT(*) AS count FROM master_vehicles`,
             products: `SELECT COUNT(*) AS count FROM master_products`,
@@ -14,7 +14,11 @@ router.get('/count-data', jwtAuth.verifyToken, async (req, res) => {
             lanes: `SELECT COUNT(*) AS count FROM master_lanes`,
             devices: `SELECT COUNT(*) AS count FROM master_devices`,
             drivers: `SELECT COUNT(*) AS count FROM master_drivers`,
-            carriers: `SELECT COUNT(*) AS count FROM carriers`
+            carriers: `SELECT COUNT(*) AS count FROM carriers`,
+            customers: `SELECT COUNT(*) AS count FROM business_partners WHERE partner_type = 'customer'`,
+            vendors: `SELECT COUNT(*) AS count FROM business_partners WHERE partner_type = 'vendor'`,
+            packages: `SELECT COUNT(*) AS count FROM packages`,
+            uoms: `SELECT COUNT(*) AS count FROM master_uom`
         };
 
         const results = await Promise.all(Object.values(queries).map(query => db.query(query)));
@@ -27,13 +31,17 @@ router.get('/count-data', jwtAuth.verifyToken, async (req, res) => {
             devices: results[4][0][0].count || 0,
             drivers: results[5][0][0].count || 0,
             carriers: results[6][0][0].count || 0,
+            customers: results[7][0][0].count || 0, 
+            vendors: results[8][0][0].count || 0,  
+            packages: results[9][0][0].count || 0,
+            uoms: results[10][0][0].count || 0
         };
-
 
         res.status(200).json({
             message: 'Counts retrieved successfully',
-            counts,
+            counts
         });
+
     } catch (error) {
         logger.error('Error retrieving counts:', error);
         res.status(500).json({
@@ -42,6 +50,7 @@ router.get('/count-data', jwtAuth.verifyToken, async (req, res) => {
         });
     }
 });
+
 
 
 

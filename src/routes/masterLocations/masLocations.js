@@ -53,7 +53,7 @@ router.post('/create-location', jwtAuth.verifyToken, async (req, res) => {
         res.status(201).json({
             message: 'Locations created successfully.',
             count: insertValues.length,
-            created_reecords: createdRecords.map(record => record.loc_ID)
+            created_records: createdRecords.map(record => record.loc_ID)
         });
     } catch (error) {
         logger.error(error);

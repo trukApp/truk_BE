@@ -1,8 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../../../dbConnection');
-const {logger} = require('../../logger/logger');
-const {applyPagination} = require('../../pagination/paginate');
+const { logger } = require('../../logger/logger');
+const { applyPagination } = require('../../pagination/paginate');
 const jwtAuth = require('../../JWT/jwtAuth');
 
 
@@ -15,6 +15,7 @@ router.post('/create-location', jwtAuth.verifyToken, async (req, res) => {
         }
 
         const insertValues = [];
+        const insertredLocationIDs = []
         const [result] = await db.query(
             "SELECT loc_ID FROM master_locations ORDER BY location_id DESC LIMIT 1 FOR UPDATE"
         );
@@ -23,26 +24,37 @@ router.post('/create-location', jwtAuth.verifyToken, async (req, res) => {
         locations.forEach(location => {
             const {
                 loc_desc, longitude, latitude, time_zone, city, state, country, pincode, loc_type,
-                gln_code, iata_code, address_1, address_2
+                gln_code, iata_code, address_1, address_2, contact_name, contact_phone_number, contact_email
             } = location;
 
-            if (!loc_desc || !longitude || !latitude || !city || !state || !country || !pincode || !loc_type) {
+            if (!loc_desc || !longitude || !latitude || !city || !state || !country || !pincode || !loc_type || !contact_name || !contact_phone_number || !contact_email) {
                 throw new Error('Missing required fields in one of the locations.');
             }
 
             lastLocID = `LOC${String(parseInt(lastLocID.slice(3)) + 1).padStart(6, '0')}`;
+            insertredLocationIDs.push(lastLocID);
+
             insertValues.push([
                 lastLocID, loc_desc, longitude, latitude, time_zone, city, state, country, pincode, loc_type,
-                gln_code, iata_code, address_1 || null, address_2 || null
+                gln_code, iata_code, address_1 || null, address_2 || null, contact_name || null, contact_phone_number || null, contact_email || null
             ]);
         });
 
         await db.query(
-            "INSERT INTO master_locations (loc_ID, loc_desc, longitude, latitude, time_zone, city, state, country, pincode, loc_type, gln_code, iata_code, address_1, address_2) VALUES ?",
+            "INSERT INTO master_locations (loc_ID, loc_desc, longitude, latitude, time_zone, city, state, country, pincode, loc_type, gln_code, iata_code, address_1, address_2,  contact_name, contact_phone_number, contact_email) VALUES ?",
             [insertValues]
         );
 
-        res.status(201).json({ message: 'Locations created successfully.', count: insertValues.length });
+        const [createdRecords] = await db.query(
+            `SELECT * FROM master_locations WHERE loc_ID IN (?)`,
+            [insertredLocationIDs]
+        );
+
+        res.status(201).json({
+            message: 'Locations created successfully.',
+            count: insertValues.length,
+            created_reecords: createdRecords.map(record => record.loc_ID)
+        });
     } catch (error) {
         logger.error(error);
         res.status(500).json({ message: error.message || 'Server error.' });
@@ -63,7 +75,7 @@ router.post('/create-location', jwtAuth.verifyToken, async (req, res) => {
 
 router.get('/all-locations', jwtAuth.verifyToken, async (req, res) => {
     try {
-        const { page , limit  } = req.query;
+        const { page, limit } = req.query;
         const query = `SELECT * FROM master_locations`;
         const paginatedQuery = applyPagination(query, page, limit);
         const [locations] = await db.query(paginatedQuery);
@@ -80,11 +92,11 @@ router.get('/all-locations', jwtAuth.verifyToken, async (req, res) => {
 
 
 
-router.get('/location-ID',jwtAuth.verifyToken, async (req, res) => {
-    const {loc_ID} = req.query;
+router.get('/location-ID', jwtAuth.verifyToken, async (req, res) => {
+    const { loc_ID } = req.query;
     try {
-        const query ="SELECT * FROM master_locations where loc_ID = ?";
-        const [locations] = await db.query(query,loc_ID);
+        const query = "SELECT * FROM master_locations where loc_ID = ?";
+        const [locations] = await db.query(query, loc_ID);
         res.status(200).json({ locations });
     } catch (error) {
         logger.error(error);
@@ -98,7 +110,7 @@ router.put('/edit-location', jwtAuth.verifyToken, async (req, res) => {
         const { id } = req.query;
         const {
             loc_desc, longitude, latitude, time_zone, city, state, country, pincode, loc_type,
-            gln_code, iata_code, address_1, address_2
+            gln_code, iata_code, address_1, address_2, contact_name, contact_email, contact_phone_number
         } = req.body;
 
         if (!id) {
@@ -120,12 +132,16 @@ router.put('/edit-location', jwtAuth.verifyToken, async (req, res) => {
                 gln_code = COALESCE(?, gln_code), 
                 iata_code = COALESCE(?, iata_code),
                 address_1 = COALESCE(?, address_1),
-                address_2 = COALESCE(?, address_2)
+                address_2 = COALESCE(?, address_2),
+                contact_name = COALESCE(?, contact_name),
+                contact_phone_number = COALESCE(?, contact_phone_number),
+                contact_email = COALESCE(?, contact_email)
             WHERE location_id = ?`,
             [
                 loc_desc || null, longitude || null, latitude || null, time_zone || null,
                 city || null, state || null, country || null, pincode || null, loc_type || null,
-                gln_code || null, iata_code || null, address_1 || null, address_2 || null, id
+                gln_code || null, iata_code || null, address_1 || null, address_2 || null,
+                contact_name || null, contact_phone_number || null, contact_email || null, id
             ]
         );
 
@@ -142,7 +158,7 @@ router.put('/edit-location', jwtAuth.verifyToken, async (req, res) => {
 
 
 
-router.delete('/delete-location',jwtAuth.verifyToken, async (req, res) => {
+router.delete('/delete-location', jwtAuth.verifyToken, async (req, res) => {
     try {
         const { id } = req.query;
 
@@ -164,4 +180,4 @@ router.delete('/delete-location',jwtAuth.verifyToken, async (req, res) => {
 
 
 
-module.exports=router;
+module.exports = router;

@@ -103,7 +103,7 @@ router.post('/generate-package', jwtAuth.verifyToken, async (req, res) => {
         res.status(201).json({
             message: 'Packages created successfully.',
             count: insertedPackIDs.length,
-            pack_IDs: createdRecords.map(record => record.pack_ID)
+            created_records: createdRecords.map(record => record.pack_ID)
         });
     } catch (error) {
         logger.error(error);
@@ -254,7 +254,15 @@ router.put('/edit-package', jwtAuth.verifyToken, async (req, res) => {
             return res.status(404).json({ message: 'Package not found or no changes made.' });
         }
 
-        res.status(200).json({ message: 'Package updated successfully.' });
+        const [updatedRecord] = await db.query(
+            `SELECT * FROM master_locations WHERE pac_id = ?`,
+            [pac_id]
+        );
+
+        res.status(200).json({
+            message: 'Package updated successfully.',
+            updated_record: updatedRecord[0].pack_ID
+        });
 
     } catch (error) {
         logger.error('Error updating package:', error);
@@ -266,6 +274,8 @@ router.put('/edit-package', jwtAuth.verifyToken, async (req, res) => {
 router.delete('/delete-package', jwtAuth.verifyToken, async (req, res) => {
     try {
         const { pac_id } = req.query;
+        const query = "SELECT * FROM packages where pac_id = ?";
+        const [recordData] = await db.query(query, pac_id);
 
         if (!pac_id) {
             return res.status(400).json({ message: 'pac_id is required in the query.' });
@@ -280,7 +290,10 @@ router.delete('/delete-package', jwtAuth.verifyToken, async (req, res) => {
             return res.status(404).json({ message: 'Package not found.' });
         }
 
-        res.status(200).json({ message: 'Package deleted successfully.' });
+        res.status(200).json({
+            message: 'Package deleted successfully.',
+            deleted_record: recordData[0].pack_ID
+        });
 
     } catch (error) {
         logger.error('Error deleting package:', error);

@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../../../dbConnection');
-const {logger} = require('../../logger/logger');
+const { logger } = require('../../logger/logger');
 const jwtAuth = require('../../JWT/jwtAuth');
 
 
@@ -74,10 +74,18 @@ router.post('/create-partners', jwtAuth.verifyToken, async (req, res) => {
                 name,
             });
         }
+        const getValidIds = (partners) => {
+            return partners
+                .map(partner => partner.supplier_id || partner.customer_id) // Get non-null supplier_id or customer_id
+                .filter(id => id !== null); // Filter out null values
+        };
+
+        const recordIds = getValidIds(results)
 
         logger.info('Business partners created successfully:', results);
         res.status(201).json({
             message: 'Business partners created successfully',
+            created_records: recordIds,
             partners: results,
         });
     } catch (error) {
@@ -235,7 +243,15 @@ router.put('/edit-partner', jwtAuth.verifyToken, async (req, res) => {
             return res.status(404).json({ message: 'No partner found with the given partner_id' });
         }
 
-        res.status(200).json({ message: 'Business partner updated successfully' });
+        const [updatedRecord] = await db.query(
+            `SELECT * FROM business_partners WHERE partner_id = ?`,
+            [partner_id]
+        );
+
+        res.status(200).json({
+            updated_record: updatedRecord[0]?.supplier_id !== null ? updatedRecord[0].supplier_id : updatedRecord[0].customer_id,
+            message: 'Business partner updated successfully',
+        });
     } catch (error) {
         logger.error('Error updating business partner:', error);
         res.status(500).json({ message: 'An error occurred while updating the business partner', error: error.message });
@@ -251,7 +267,8 @@ router.delete('/delete-partner', jwtAuth.verifyToken, async (req, res) => {
     if (!partner_id) {
         return res.status(400).json({ message: 'partner_id is required in query parameters' });
     }
-
+    const query = "SELECT * FROM business_partners where partner_id = ?";
+    const [getData] = await db.query(query, partner_id);
     try {
         const [result] = await db.query(
             `
@@ -261,11 +278,15 @@ router.delete('/delete-partner', jwtAuth.verifyToken, async (req, res) => {
             [partner_id]
         );
 
+
         if (result.affectedRows === 0) {
             return res.status(404).json({ message: 'No partner found with the given partner_id' });
         }
 
-        res.status(200).json({ message: 'Business partner deleted successfully' });
+        res.status(200).json({
+            message: 'Business partner deleted successfully',
+            deleted_record: getData[0].customer_id !== null ? getData[0].customer_id : getData[0].supplier_id
+        });
     } catch (error) {
         logger.error('Error deleting business partner:', error);
         res.status(500).json({ message: 'An error occurred while deleting the business partner', error: error.message });

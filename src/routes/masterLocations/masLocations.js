@@ -148,8 +148,15 @@ router.put('/edit-location', jwtAuth.verifyToken, async (req, res) => {
         if (updateResult.affectedRows === 0) {
             return res.status(404).json({ message: 'Location not found.' });
         }
+        const [updatedLocation] = await db.query(
+            `SELECT * FROM master_locations WHERE location_id = ?`,
+            [id]
+        );
 
-        res.status(200).json({ message: 'Location updated successfully.' });
+        res.status(200).json({
+            message: 'Location updated successfully.',
+            updated_record: updatedLocation[0]?.loc_ID
+        });
     } catch (error) {
         logger.error(error);
         res.status(500).json({ message: 'Server error.' });
@@ -161,6 +168,8 @@ router.put('/edit-location', jwtAuth.verifyToken, async (req, res) => {
 router.delete('/delete-location', jwtAuth.verifyToken, async (req, res) => {
     try {
         const { id } = req.query;
+        const query = "SELECT * FROM master_locations where location_id = ?";
+        const [locationData] = await db.query(query, id);
 
         const [deleteResult] = await db.query(
             "DELETE FROM master_locations WHERE location_id = ?",
@@ -171,7 +180,10 @@ router.delete('/delete-location', jwtAuth.verifyToken, async (req, res) => {
             return res.status(404).json({ message: 'Location not found.' });
         }
 
-        res.status(200).json({ message: 'Location deleted successfully.' });
+        res.status(200).json({
+            message: 'Location deleted successfully.',
+            deleted_record: locationData[0].loc_ID
+        });
     } catch (error) {
         logger.error(error);
         res.status(500).json({ message: 'Server error.' });

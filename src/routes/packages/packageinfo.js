@@ -59,6 +59,7 @@ router.post('/create-package', jwtAuth.verifyToken, async (req, res) => {
 
         res.status(201).json({
             message: 'Packages added successfully',
+            created_records: newPackages.map(record => record.pac_ID),
             packages: newPackages,
         });
     } catch (error) {
@@ -131,7 +132,15 @@ router.put('/edit-package', jwtAuth.verifyToken, async (req, res) => {
             return res.status(404).json({ message: 'Package not found or no changes made.' });
         }
 
-        res.status(200).json({ message: 'Package updated successfully' });
+        const [updatedRecord] = await db.query(
+            `SELECT * FROM master_package_info WHERE package_id  = ?`,
+            [package_id]
+        );
+
+        res.status(200).json({
+            message: 'Package updated successfully',
+            updated_record: updatedRecord[0]?.pac_ID
+        });
     } catch (error) {
         logger.error('Error updating package:', error);
         res.status(500).json({ message: 'An error occurred while updating the package.', error: error.message });
@@ -147,6 +156,10 @@ router.delete('/delete-package', jwtAuth.verifyToken, async (req, res) => {
     }
 
     try {
+
+        const query = "SELECT * FROM master_package_info where package_id = ?";
+        const [getData] = await db.query(query, package_id);
+
         const [result] = await db.query(
             `DELETE FROM master_package_info WHERE package_id = ?`,
             [package_id]
@@ -156,7 +169,10 @@ router.delete('/delete-package', jwtAuth.verifyToken, async (req, res) => {
             return res.status(404).json({ message: 'Package not found.' });
         }
 
-        res.status(200).json({ message: 'Package deleted successfully' });
+        res.status(200).json({
+            message: 'Package deleted successfully',
+            deleted_record: getData[0].pac_ID
+        });
     } catch (error) {
         logger.error('Error deleting package:', error);
         res.status(500).json({ message: 'An error occurred while deleting the package.', error: error.message });

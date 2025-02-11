@@ -1,8 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../../../dbConnection');
-const {logger} = require('../../logger/logger');
-const {applyPagination} = require('../../pagination/paginate');
+const { logger } = require('../../logger/logger');
+const { applyPagination } = require('../../pagination/paginate');
 const jwtAuth = require('../../JWT/jwtAuth');
 
 router.post('/add-vehicle', jwtAuth.verifyToken, async (req, res) => {
@@ -78,6 +78,7 @@ router.post('/add-vehicle', jwtAuth.verifyToken, async (req, res) => {
 
         res.status(201).json({
             message: 'Vehicles added successfully',
+            created_records: newVehicles.map(record => record.vehicle_ID),
             vehicles: newVehicles,
         });
     } catch (error) {
@@ -112,7 +113,7 @@ router.post('/add-vehicle', jwtAuth.verifyToken, async (req, res) => {
 
 router.get('/vehicles', jwtAuth.verifyToken, async (req, res) => {
     try {
-        const { page , limit  } = req.query;
+        const { page, limit } = req.query;
         const query = `
             SELECT 
                 v.*, 
@@ -220,7 +221,14 @@ router.put('/edit-vehicle', jwtAuth.verifyToken, async (req, res) => {
             return res.status(404).json({ message: 'Vehicle not found or no changes made.' });
         }
 
-        res.status(200).json({ message: 'Vehicle updated successfully' });
+        const [updatedRecord] = await db.query(
+            `SELECT * FROM master_vehicles WHERE veh_id  = ?`,
+            [veh_id]
+        );
+        res.status(200).json({
+            message: 'Vehicle updated successfully',
+            updated_record: updatedRecord[0]?.vehicle_ID
+        });
     } catch (error) {
         logger.error('Error updating vehicle:', error);
         res.status(500).json({ message: 'An error occurred while updating the vehicle.', error: error.message });
@@ -237,6 +245,9 @@ router.delete('/delete-vehicle', jwtAuth.verifyToken, async (req, res) => {
     }
 
     try {
+        const query = "SELECT * FROM master_vehicles where veh_id = ?";
+        const [getData] = await db.query(query, veh_id);
+
         const deleteResult = await db.query(`
             DELETE FROM master_vehicles WHERE veh_id = ?
         `, [veh_id]);
@@ -245,7 +256,10 @@ router.delete('/delete-vehicle', jwtAuth.verifyToken, async (req, res) => {
             return res.status(404).json({ message: 'Vehicle not found.' });
         }
 
-        res.status(200).json({ message: 'Vehicle deleted successfully' });
+        res.status(200).json({
+            message: 'Vehicle deleted successfully',
+            deleted_record: getData[0].vehicle_ID
+        });
     } catch (error) {
         logger.error('Error deleting vehicle:', error);
         res.status(500).json({ message: 'An error occurred while deleting the vehicle.', error: error.message });

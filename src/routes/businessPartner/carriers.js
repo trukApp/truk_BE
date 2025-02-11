@@ -1,8 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../../../dbConnection');
-const {logger} = require('../../logger/logger');
-const {applyPagination} = require('../../pagination/paginate');
+const { logger } = require('../../logger/logger');
+const { applyPagination } = require('../../pagination/paginate');
 const jwtAuth = require('../../JWT/jwtAuth');
 
 
@@ -76,6 +76,7 @@ router.post('/create-carriers', jwtAuth.verifyToken, async (req, res) => {
 
         res.status(201).json({
             message: 'Carriers added successfully',
+            created_records: newCarriers.map(record => record.carrier_ID),
             carriers: newCarriers,
         });
     } catch (error) {
@@ -106,7 +107,7 @@ router.post('/create-carriers', jwtAuth.verifyToken, async (req, res) => {
 
 router.get('/all-carriers', jwtAuth.verifyToken, async (req, res) => {
     try {
-        const { page , limit  } = req.query;
+        const { page, limit } = req.query;
         const query = `SELECT * FROM carriers`;
         const paginatedQuery = applyPagination(query, page, limit);
         const [carriers] = await db.query(paginatedQuery);
@@ -169,7 +170,7 @@ router.get('/carrier-by-id', jwtAuth.verifyToken, async (req, res) => {
         // Fetch lanes based on carrierLanes
         const [lanes] = carrierLanes.length
             ? await db.query(
-                  `
+                `
                   SELECT 
                       ml.ln_id, 
                       ml.lane_ID, 
@@ -193,9 +194,9 @@ router.get('/carrier-by-id', jwtAuth.verifyToken, async (req, res) => {
                   LEFT JOIN master_locations des ON ml.des_loc_id = des.location_id
                   WHERE ml.lane_ID IN (?)
                   `,
-                  [carrierLanes]
-              )
-            : [[], []]; 
+                [carrierLanes]
+            )
+            : [[], []];
 
         res.status(200).json({
             message: 'Carrier retrieved successfully',
@@ -249,7 +250,15 @@ router.put('/edit-carrier', jwtAuth.verifyToken, async (req, res) => {
             return res.status(404).json({ message: 'Carrier not found or no changes made.' });
         }
 
-        res.status(200).json({ message: 'Carrier updated successfully.' });
+        const [updatedRecord] = await db.query(
+            `SELECT * FROM carriers WHERE cr_id  = ?`,
+            [cr_id]
+        );
+
+        res.status(200).json({
+            message: 'Carrier updated successfully.',
+            updated_record: updatedRecord[0]?.carrier_ID
+        });
     } catch (error) {
         logger.error('Error updating carrier:', error);
         res.status(500).json({ message: 'An error occurred while updating the carrier.', error: error.message });
@@ -260,17 +269,18 @@ router.put('/edit-carrier', jwtAuth.verifyToken, async (req, res) => {
 router.delete('/delete-carrier', jwtAuth.verifyToken, async (req, res) => {
     const { cr_id } = req.query;
 
+
     if (!cr_id) {
         return res.status(400).json({ message: 'Please provide cr_id in query parameters.' });
     }
 
     try {
+
         const [existingCarrier] = await db.query(`SELECT * FROM carriers WHERE cr_id = ?`, [cr_id]);
 
         if (existingCarrier.length === 0) {
             return res.status(404).json({ message: 'Carrier not found.' });
         }
-
         const deleteQuery = `DELETE FROM carriers WHERE cr_id = ?`;
         const [result] = await db.query(deleteQuery, [cr_id]);
 
@@ -278,7 +288,10 @@ router.delete('/delete-carrier', jwtAuth.verifyToken, async (req, res) => {
             return res.status(404).json({ message: 'Failed to delete carrier, no changes made.' });
         }
 
-        res.status(200).json({ message: 'Carrier deleted successfully.' });
+        res.status(200).json({
+            message: 'Carrier deleted successfully.',
+            deleted_record: existingCarrier[0].carrier_ID
+        });
     } catch (error) {
         logger.error('Error deleting carrier:', error);
         res.status(500).json({ message: 'An error occurred while deleting the carrier.', error: error.message });

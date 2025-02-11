@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const db = require('../../../dbConnection');
 const { logger } = require('../../logger/logger');
-const {applyPagination} = require('../../pagination/paginate');
+const { applyPagination } = require('../../pagination/paginate');
 const jwtAuth = require('../../JWT/jwtAuth');
 
 
@@ -121,6 +121,7 @@ router.post('/add-products', jwtAuth.verifyToken, async (req, res) => {
 
         res.status(201).json({
             message: 'Products added successfully',
+            created_records: newProducts.map(record => record.product_ID),
             products: newProducts,
         });
     } catch (error) {
@@ -149,7 +150,7 @@ router.post('/add-products', jwtAuth.verifyToken, async (req, res) => {
 
 router.get('/all-products', jwtAuth.verifyToken, async (req, res) => {
     try {
-        const { page , limit  } = req.query;
+        const { page, limit } = req.query;
         const query = `SELECT * FROM master_products`;
         const paginatedQuery = applyPagination(query, page, limit);
         const [products] = await db.query(paginatedQuery);
@@ -299,8 +300,15 @@ router.put('/edit-product', jwtAuth.verifyToken, async (req, res) => {
         if (result.affectedRows === 0) {
             return res.status(404).json({ message: 'No product found with the given prod_id' });
         }
+        const [updatedRecord] = await db.query(
+            `SELECT * FROM master_products WHERE prod_id  = ?`,
+            [prod_id]
+        );
 
-        res.status(200).json({ message: 'Product updated successfully' });
+        res.status(200).json({
+            message: 'Product updated successfully',
+            updated_record: updatedRecord[0]?.product_ID
+        });
     } catch (error) {
         logger.error('Error updating product:', error);
         res.status(500).json({ message: 'An error occurred while updating the product', error: error.message });
@@ -316,6 +324,10 @@ router.delete('/delete-product', jwtAuth.verifyToken, async (req, res) => {
     }
 
     try {
+
+        const query = "SELECT * FROM master_products where prod_id = ?";
+        const [getData] = await db.query(query, prod_id);
+
         const [deleteResult] = await db.query(`
             DELETE FROM master_products WHERE prod_id = ?
         `, [prod_id]);
@@ -324,7 +336,10 @@ router.delete('/delete-product', jwtAuth.verifyToken, async (req, res) => {
             return res.status(404).json({ message: 'Product not found.' });
         }
 
-        res.status(200).json({ message: 'Product deleted successfully.' });
+        res.status(200).json({
+            message: 'Product deleted successfully.',
+            deleted_record: getData[0].product_ID
+        });
     } catch (error) {
         logger.error('Error deleting product:', error);
         res.status(500).json({ message: 'An error occurred while deleting the product.', error: error.message });

@@ -2,8 +2,57 @@ const express = require('express');
 const router = express.Router();
 const db = require('../../../dbConnection');
 const { logger } = require('../../logger/logger');
-const {applyPagination} = require('../../pagination/paginate');
+const { applyPagination } = require('../../pagination/paginate');
 const jwtAuth = require('../../JWT/jwtAuth');
+
+
+// router.post('/generate-package', jwtAuth.verifyToken, async (req, res) => {
+//     try {
+//         const packages = req.body.packages;
+//         if (!Array.isArray(packages) || packages.length === 0) {
+//             return res.status(400).json({ message: 'Invalid input. Provide at least one package.' });
+//         }
+
+//         const [result] = await db.query("SELECT pack_ID FROM packages ORDER BY pac_id DESC LIMIT 1 FOR UPDATE");
+//         let lastPackID = result[0]?.pack_ID || 'PACK000000';
+
+//         const insertValues = [];
+//         packages.forEach(pkg => {
+//             const {
+//                 ship_from, ship_to, product_ID, package_info, bill_to,
+//                 return_label, additional_info, pickup_date_time, dropoff_date_time, tax_info
+//             } = pkg;
+
+//             if (!ship_from || !ship_to || !package_info || !bill_to) {
+//                 throw new Error('Missing required fields in one of the packages.');
+//             }
+
+//             lastPackID = `PACK${String(parseInt(lastPackID.slice(4)) + 1).padStart(6, '0')}`;
+
+//             insertValues.push([
+//                 lastPackID, ship_from, ship_to, JSON.stringify(product_ID || []), package_info,
+//                 bill_to, return_label || 0, JSON.stringify(additional_info || {}),
+//                 pickup_date_time || null, dropoff_date_time || null, JSON.stringify(tax_info || {})
+//             ]);
+//         });
+
+//         const recordData = await db.query(
+//             `INSERT INTO packages 
+//             (pack_ID, ship_from, ship_to, product_ID, package_info, bill_to, return_label, additional_info, pickup_date_time, dropoff_date_time, tax_info)
+//             VALUES ?`,
+//             [insertValues]
+//         );
+
+//         res.status(201).json({
+//             message: 'Packages created successfully.',
+//             data: recordData,
+//             count: insertValues.length
+//         });
+//     } catch (error) {
+//         logger.error(error);
+//         res.status(500).json({ message: error.message || 'Server error.' });
+//     }
+// });
 
 
 router.post('/generate-package', jwtAuth.verifyToken, async (req, res) => {
@@ -17,6 +66,8 @@ router.post('/generate-package', jwtAuth.verifyToken, async (req, res) => {
         let lastPackID = result[0]?.pack_ID || 'PACK000000';
 
         const insertValues = [];
+        const insertedPackIDs = [];
+
         packages.forEach(pkg => {
             const {
                 ship_from, ship_to, product_ID, package_info, bill_to,
@@ -28,6 +79,7 @@ router.post('/generate-package', jwtAuth.verifyToken, async (req, res) => {
             }
 
             lastPackID = `PACK${String(parseInt(lastPackID.slice(4)) + 1).padStart(6, '0')}`;
+            insertedPackIDs.push(lastPackID);
 
             insertValues.push([
                 lastPackID, ship_from, ship_to, JSON.stringify(product_ID || []), package_info,
@@ -43,7 +95,16 @@ router.post('/generate-package', jwtAuth.verifyToken, async (req, res) => {
             [insertValues]
         );
 
-        res.status(201).json({ message: 'Packages created successfully.', count: insertValues.length });
+        const [createdRecords] = await db.query(
+            `SELECT * FROM packages WHERE pack_ID IN (?)`,
+            [insertedPackIDs]
+        );
+
+        res.status(201).json({
+            message: 'Packages created successfully.',
+            count: insertedPackIDs.length,
+            created_records: createdRecords.map(record => record.pack_ID)
+        });
     } catch (error) {
         logger.error(error);
         res.status(500).json({ message: error.message || 'Server error.' });
@@ -54,7 +115,7 @@ router.post('/generate-package', jwtAuth.verifyToken, async (req, res) => {
 
 router.get('/all-packages', jwtAuth.verifyToken, async (req, res) => {
     try {
-        const { page , limit } = req.query;
+        const { page, limit } = req.query;
         const query = `SELECT * FROM packages`;
         const paginatedQuery = applyPagination(query, page, limit);
         const [packages] = await db.query(paginatedQuery);
@@ -193,7 +254,15 @@ router.put('/edit-package', jwtAuth.verifyToken, async (req, res) => {
             return res.status(404).json({ message: 'Package not found or no changes made.' });
         }
 
-        res.status(200).json({ message: 'Package updated successfully.' });
+        const [updatedRecord] = await db.query(
+            `SELECT * FROM master_locations WHERE pac_id = ?`,
+            [pac_id]
+        );
+
+        res.status(200).json({
+            message: 'Package updated successfully.',
+            updated_record: updatedRecord[0].pack_ID
+        });
 
     } catch (error) {
         logger.error('Error updating package:', error);
@@ -205,6 +274,8 @@ router.put('/edit-package', jwtAuth.verifyToken, async (req, res) => {
 router.delete('/delete-package', jwtAuth.verifyToken, async (req, res) => {
     try {
         const { pac_id } = req.query;
+        const query = "SELECT * FROM packages where pac_id = ?";
+        const [recordData] = await db.query(query, pac_id);
 
         if (!pac_id) {
             return res.status(400).json({ message: 'pac_id is required in the query.' });
@@ -219,7 +290,10 @@ router.delete('/delete-package', jwtAuth.verifyToken, async (req, res) => {
             return res.status(404).json({ message: 'Package not found.' });
         }
 
-        res.status(200).json({ message: 'Package deleted successfully.' });
+        res.status(200).json({
+            message: 'Package deleted successfully.',
+            deleted_record: recordData[0].pack_ID
+        });
 
     } catch (error) {
         logger.error('Error deleting package:', error);
@@ -229,4 +303,4 @@ router.delete('/delete-package', jwtAuth.verifyToken, async (req, res) => {
 
 
 
-module.exports=router;
+module.exports = router;

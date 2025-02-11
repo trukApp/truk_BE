@@ -1,8 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../../../dbConnection');
-const {logger} = require('../../logger/logger');
-const {applyPagination} = require('../../pagination/paginate');
+const { logger } = require('../../logger/logger');
+const { applyPagination } = require('../../pagination/paginate');
 const jwtAuth = require('../../JWT/jwtAuth');
 
 
@@ -72,6 +72,7 @@ router.post('/add-devices', jwtAuth.verifyToken, async (req, res) => {
 
         res.status(201).json({
             message: 'Devices added successfully',
+            created_records: newDevices.map(record => record.dev_ID),
             devices: newDevices,
         });
     } catch (error) {
@@ -109,7 +110,7 @@ router.post('/add-devices', jwtAuth.verifyToken, async (req, res) => {
 
 router.get('/all-devices', jwtAuth.verifyToken, async (req, res) => {
     try {
-        const { page , limit  } = req.query;
+        const { page, limit } = req.query;
         const query = `
             SELECT 
                 d.device_id, d.dev_ID, d.device_type, d.device_UID, d.sim_imei_num, 
@@ -221,7 +222,16 @@ router.put('/edit-device', jwtAuth.verifyToken, async (req, res) => {
             return res.status(404).json({ message: 'Device not found or no changes made.' });
         }
 
-        res.status(200).json({ message: 'Device updated successfully.' });
+        const [updatedRecord] = await db.query(
+            `SELECT * FROM master_devices WHERE device_id  = ?`,
+            [device_id]
+        );
+
+
+        res.status(200).json({
+            message: 'Device updated successfully.',
+            updated_record: updatedRecord[0]?.dev_ID
+        });
     } catch (error) {
         logger.error('Error updating device:', error);
         res.status(500).json({ message: 'An error occurred while updating the device.', error: error.message });
@@ -238,6 +248,10 @@ router.delete('/delete-device', jwtAuth.verifyToken, async (req, res) => {
     }
 
     try {
+
+        const query = "SELECT * FROM master_devices where device_id = ?";
+        const [getData] = await db.query(query, device_id);
+
         const deleteQuery = `
             DELETE FROM master_devices WHERE device_id = ?
         `;
@@ -248,7 +262,10 @@ router.delete('/delete-device', jwtAuth.verifyToken, async (req, res) => {
             return res.status(404).json({ message: 'Device not found.' });
         }
 
-        res.status(200).json({ message: 'Device deleted successfully.' });
+        res.status(200).json({
+            message: 'Device deleted successfully.',
+            deleted_record: getData[0].dev_ID
+        });
     } catch (error) {
         logger.error('Error deleting device:', error);
         res.status(500).json({ message: 'An error occurred while deleting the device.', error: error.message });

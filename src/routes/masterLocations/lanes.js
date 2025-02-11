@@ -1,8 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../../../dbConnection');
-const {logger} = require('../../logger/logger');
-const {applyPagination} = require('../../pagination/paginate');
+const { logger } = require('../../logger/logger');
+const { applyPagination } = require('../../pagination/paginate');
 const jwtAuth = require('../../JWT/jwtAuth');
 
 
@@ -60,6 +60,7 @@ router.post('/create-lanes', jwtAuth.verifyToken, async (req, res) => {
 
         res.status(201).json({
             message: 'Lanes created successfully',
+            created_records: newLanes.map(record => record.lane_ID),
             lanes: newLanes,
         });
     } catch (error) {
@@ -110,7 +111,7 @@ router.post('/create-lanes', jwtAuth.verifyToken, async (req, res) => {
 
 router.get('/all-lanes', jwtAuth.verifyToken, async (req, res) => {
     try {
-        const { page , limit  } = req.query;
+        const { page, limit } = req.query;
         const query = `
             SELECT 
                 ml.ln_id, 
@@ -240,7 +241,15 @@ router.put('/edit-lane', jwtAuth.verifyToken, async (req, res) => {
             return res.status(404).json({ message: 'Lane not found or no changes made.' });
         }
 
-        res.status(200).json({ message: 'Lane updated successfully.' });
+        const [updatedRecord] = await db.query(
+            `SELECT * FROM master_lanes WHERE ln_id  = ?`,
+            [ln_id]
+        );
+
+        res.status(200).json({
+            message: 'Lane updated successfully.',
+            updated_record: updatedRecord[0]?.lane_ID
+        });
     } catch (error) {
         logger.error('Error updating lane:', error);
         res.status(500).json({ message: 'An error occurred while updating the lane.', error: error.message });
@@ -257,6 +266,10 @@ router.delete('/delete-lane', jwtAuth.verifyToken, async (req, res) => {
     }
 
     try {
+
+        const query = "SELECT * FROM master_lanes where ln_id = ?";
+        const [getData] = await db.query(query, ln_id);
+
         const deleteQuery = `
             DELETE FROM master_lanes WHERE ln_id = ?
         `;
@@ -267,7 +280,10 @@ router.delete('/delete-lane', jwtAuth.verifyToken, async (req, res) => {
             return res.status(404).json({ message: 'Lane not found or already deleted.' });
         }
 
-        res.status(200).json({ message: 'Lane deleted successfully.' });
+        res.status(200).json({
+            message: 'Lane deleted successfully.',
+            deleted_record: getData[0].lane_ID
+        });
     } catch (error) {
         logger.error('Error deleting lane:', error);
         res.status(500).json({ message: 'An error occurred while deleting the lane.', error: error.message });

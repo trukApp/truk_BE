@@ -436,9 +436,8 @@ const { parseWeightAndUOM, parseVolumeAndUOM } = require('./unitParser');
 
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 
-/* ---------------------------------------------------------------------------
-   1) Google Maps API (no optimize:true)
---------------------------------------------------------------------------- */
+
+
 async function getOptimizedRouteWithLoad(locations, shipmentLoads) {
   if (!Array.isArray(locations) || locations.some(loc => !loc.latitude || !loc.longitude)) {
     throw new Error("Invalid locations array. Ensure all locations have latitude and longitude.");
@@ -470,7 +469,6 @@ async function getOptimizedRouteWithLoad(locations, shipmentLoads) {
       const shipmentLoad = shipmentLoads[index] || 0;
       currentLoad += shipmentLoad;
 
-      // Prevent duplicate routes (Same Start & End)
       if (leg.start_address !== leg.end_address) {
         optimizedRoute.push({
           start: {
@@ -497,9 +495,8 @@ async function getOptimizedRouteWithLoad(locations, shipmentLoads) {
   }
 }
 
-/* ---------------------------------------------------------------------------
-   2) Utility Functions
---------------------------------------------------------------------------- */
+
+
 function isVehicleValid(vehicle) {
   if (!vehicle.transportation_details) return false;
   const today = new Date();
@@ -558,9 +555,8 @@ function safeJsonParse(value, defaultValue = []) {
   return value || defaultValue;
 }
 
-/* ---------------------------------------------------------------------------
-   3) Distance & direction logic
---------------------------------------------------------------------------- */
+
+
 function toRadians(deg) {
   return deg * Math.PI / 180;
 }
@@ -596,12 +592,10 @@ function getDirection8(bearingDeg) {
   if (bearingDeg >= 202.5 && bearingDeg < 247.5) return 'SW';
   if (bearingDeg >= 247.5 && bearingDeg < 292.5) return 'W';
   if (bearingDeg >= 292.5 && bearingDeg < 337.5) return 'NW';
-  return 'N'; // fallback
+  return 'N'; 
 }
 
-/* ---------------------------------------------------------------------------
-   4) Summation of a Package (No Splitting)
---------------------------------------------------------------------------- */
+
 function sumPackageWeightVolume(pkg, productMap) {
   let totalW = 0;
   let totalV = 0;
@@ -616,16 +610,13 @@ function sumPackageWeightVolume(pkg, productMap) {
   return { totalW, totalV };
 }
 
-/* ---------------------------------------------------------------------------
-   5) Single-Pass Allocation (No Splitting) + LIFO LoadArrangement
-   - Direction only locks after capacity OK
---------------------------------------------------------------------------- */
+
+
 async function allocatePackages(packagesData, vehicles, sourceLocation, productMap) {
   const unallocated = [];
   const allocations = [];
   let totalCost = 0;
 
-  // Precompute lat/lon, direction, distance
   const pkgInfos = [];
   for (const pkg of packagesData) {
     const { totalW, totalV } = sumPackageWeightVolume(pkg, productMap);
@@ -655,27 +646,23 @@ async function allocatePackages(packagesData, vehicles, sourceLocation, productM
     let usedWeight = 0;
     let usedVolume = 0;
     let chosenPackages = [];
-    let vehicleDirection = null; // lock only after capacity is OK
+    let vehicleDirection = null;
 
     for (const pkg of pkgInfos) {
       if (pkg.allocated) continue;
 
-      // 1) Check capacity FIRST
       if (vehicle.weightCapKg < pkg.totalWeight || vehicle.volumeCapM3 < pkg.totalVolume) {
-        continue; // skip => can't handle
+        continue;
       }
 
-      // 2) If direction not locked, lock it now
       if (!vehicleDirection) {
         vehicleDirection = pkg.direction8;
       } else {
-        // direction locked => must match
         if (pkg.direction8 !== vehicleDirection) {
           continue;
         }
       }
 
-      // 3) Now do the allocation
       vehicle.weightCapKg -= pkg.totalWeight;
       vehicle.volumeCapM3 -= pkg.totalVolume;
       usedWeight += pkg.totalWeight;
@@ -685,29 +672,23 @@ async function allocatePackages(packagesData, vehicles, sourceLocation, productM
     }
 
     if (chosenPackages.length > 0) {
-      // cost
       const usedTons = usedWeight / 1000;
       const cost = usedTons * vehicle.cost_per_ton;
       totalCost += cost;
 
-      // route order => ascending dist
       chosenPackages.sort((a, b) => a.distFromSource - b.distFromSource);
 
-      // build route
       const routeLocations = [ sourceLocation ];
       chosenPackages.forEach(p => routeLocations.push(p.destination));
       const shipments = new Array(chosenPackages.length).fill(1);
       const routeDetails = await getOptimizedRouteWithLoad(routeLocations, shipments);
 
-      // LIFO load arrangement => reversed route details
       const reversedRoute = [...routeDetails].reverse();
       let loadArrangementTemp = [];
       let remainingIDs = chosenPackages.map(x => x.pack_ID);
 
       reversedRoute.forEach((leg, i) => {
-        // e.g. last city => stop=1, second last => stop=2, etc.
         const stopNumber = i + 1;
-
         let legPackages = [];
         for (const pkID of remainingIDs) {
           const pObj = chosenPackages.find(x => x.pack_ID === pkID);
@@ -720,7 +701,6 @@ async function allocatePackages(packagesData, vehicles, sourceLocation, productM
           }
         }
         if (legPackages.length > 0) {
-          // remove them
           legPackages.forEach(lp => {
             const idx = remainingIDs.indexOf(lp);
             if (idx !== -1) remainingIDs.splice(idx, 1);
@@ -733,8 +713,6 @@ async function allocatePackages(packagesData, vehicles, sourceLocation, productM
         }
       });
 
-      // Now we sort descending by stop # => so "stop #2" appears first, "stop #1" second, etc.
-      loadArrangementTemp.sort((a, b) => b.stop - a.stop);
 
       let vehicleAlloc = {
         vehicle_ID: vehicle.vehicle_ID,
@@ -751,19 +729,16 @@ async function allocatePackages(packagesData, vehicles, sourceLocation, productM
     }
   }
 
-  // anything not allocated => unallocated
-  pkgInfos.forEach(pkg => {
+  for (const pkg of pkgInfos) {
     if (!pkg.allocated) {
       unallocated.push(pkg.pack_ID);
     }
-  });
+  }
 
   return { allocations, totalCost, unallocated };
 }
 
-/* ---------------------------------------------------------------------------
-   6) getPackagesByIds
---------------------------------------------------------------------------- */
+
 async function getPackagesByIds(packageIDs) {
   const placeholders = packageIDs.map(() => '?').join(',');
   const [rows] = await db.query(`
@@ -782,11 +757,8 @@ async function getPackagesByIds(packageIDs) {
   }));
 }
 
-/* ---------------------------------------------------------------------------
-   7) Build two scenarios in final response
-   - scenarioCost => sort by cost ascending
-   - scenarioEta  => sort by capacity descending
---------------------------------------------------------------------------- */
+
+
 router.post('/create-order', async (req, res) => {
   try {
     const { packages: packageIDs } = req.body;
@@ -794,13 +766,11 @@ router.post('/create-order', async (req, res) => {
       return res.status(400).json({ error: 'No valid package IDs provided.' });
     }
 
-    // 1) fetch packages
     const packagesData = await getPackagesByIds(packageIDs);
     if (packagesData.length === 0) {
       return res.status(400).json({ error: 'No valid packages found.' });
     }
 
-    // 2) build productMap
     const resolvedProducts = packagesData.flatMap(p => p.products);
     const productIDs = resolvedProducts.map(rp => rp.prod_ID);
     if (productIDs.length === 0) {
@@ -817,7 +787,6 @@ router.post('/create-order', async (req, res) => {
     const productMap = {};
     rows.forEach(r => { productMap[r.product_ID] = r; });
 
-    // 3) fetch vehicles
     const [dbVehicles] = await db.query(`SELECT * FROM master_vehicles`);
     let vehiclesBase = dbVehicles.map(v => {
       const trans = safeJsonParse(v.transportation_details);

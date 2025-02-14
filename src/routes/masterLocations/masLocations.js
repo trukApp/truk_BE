@@ -268,5 +268,46 @@ router.put('/update-location-flag', jwtAuth.verifyToken, async (req, res) => {
 });
 
 
+router.get('/fetch-location-by-flag', jwtAuth.verifyToken, async (req, res) => {
+    try {
+        const { def_ship_from, def_ship_to, def_bill_to } = req.query;
+
+        if (
+            [def_ship_from, def_ship_to, def_bill_to].filter(v => v !== undefined).length !== 1
+        ) {
+            return res.status(400).json({
+                message: 'Pass exactly one of def_ship_from, def_ship_to, or def_bill_to in the query.'
+            });
+        }
+
+        let fieldToQuery;
+        if (def_ship_from !== undefined) fieldToQuery = 'def_ship_from';
+        if (def_ship_to !== undefined) fieldToQuery = 'def_ship_to';
+        if (def_bill_to !== undefined) fieldToQuery = 'def_bill_to';
+
+        const query = `SELECT * FROM master_locations WHERE ${fieldToQuery} = 1`;
+        const [locations] = await db.query(query);
+
+        if (locations.length === 0) {
+            return res.status(404).json({
+                message: `No locations found where ${fieldToQuery} = 1.`
+            });
+        }
+
+        return res.status(200).json({
+            message: `Locations retrieved successfully for ${fieldToQuery} = 1`,
+            locations
+        });
+
+    } catch (error) {
+        logger.error(error);
+        return res.status(500).json({
+            message: 'Server error.',
+            error: error.message
+        });
+    }
+});
+
+
 
 module.exports = router;

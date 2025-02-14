@@ -433,6 +433,7 @@ const router = express.Router();
 const db = require('../../../dbConnection');
 const { logger } = require('../../logger/logger');
 const { parseWeightAndUOM, parseVolumeAndUOM } = require('./unitParser');
+const jwtAuth = require('../../JWT/jwtAuth');
 
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 
@@ -496,7 +497,6 @@ async function getOptimizedRouteWithLoad(locations, shipmentLoads) {
 }
 
 
-
 function isVehicleValid(vehicle) {
   if (!vehicle.transportation_details) return false;
   const today = new Date();
@@ -556,7 +556,6 @@ function safeJsonParse(value, defaultValue = []) {
 }
 
 
-
 function toRadians(deg) {
   return deg * Math.PI / 180;
 }
@@ -570,7 +569,6 @@ function haversineDistance(lat1, lon1, lat2, lon2) {
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
   return R * c;
 }
-
 function getBearing(lat1, lon1, lat2, lon2) {
   const dLon = toRadians(lon2 - lon1);
   const phi1 = toRadians(lat1);
@@ -582,7 +580,6 @@ function getBearing(lat1, lon1, lat2, lon2) {
   bearingDeg = (bearingDeg + 360) % 360;
   return bearingDeg;
 }
-
 function getDirection8(bearingDeg) {
   if (bearingDeg >= 337.5 || bearingDeg < 22.5) return 'N';
   if (bearingDeg >= 22.5 && bearingDeg < 67.5) return 'NE';
@@ -594,6 +591,7 @@ function getDirection8(bearingDeg) {
   if (bearingDeg >= 292.5 && bearingDeg < 337.5) return 'NW';
   return 'N'; 
 }
+
 
 
 function sumPackageWeightVolume(pkg, productMap) {
@@ -611,11 +609,11 @@ function sumPackageWeightVolume(pkg, productMap) {
 }
 
 
-
 async function allocatePackages(packagesData, vehicles, sourceLocation, productMap) {
   const unallocated = [];
   const allocations = [];
   let totalCost = 0;
+
 
   const pkgInfos = [];
   for (const pkg of packagesData) {
@@ -642,6 +640,7 @@ async function allocatePackages(packagesData, vehicles, sourceLocation, productM
     });
   }
 
+
   for (const vehicle of vehicles) {
     let usedWeight = 0;
     let usedVolume = 0;
@@ -650,11 +649,9 @@ async function allocatePackages(packagesData, vehicles, sourceLocation, productM
 
     for (const pkg of pkgInfos) {
       if (pkg.allocated) continue;
-
       if (vehicle.weightCapKg < pkg.totalWeight || vehicle.volumeCapM3 < pkg.totalVolume) {
         continue;
       }
-
       if (!vehicleDirection) {
         vehicleDirection = pkg.direction8;
       } else {
@@ -662,6 +659,7 @@ async function allocatePackages(packagesData, vehicles, sourceLocation, productM
           continue;
         }
       }
+
 
       vehicle.weightCapKg -= pkg.totalWeight;
       vehicle.volumeCapM3 -= pkg.totalVolume;
@@ -678,7 +676,7 @@ async function allocatePackages(packagesData, vehicles, sourceLocation, productM
 
       chosenPackages.sort((a, b) => a.distFromSource - b.distFromSource);
 
-      const routeLocations = [ sourceLocation ];
+      const routeLocations = [sourceLocation];
       chosenPackages.forEach(p => routeLocations.push(p.destination));
       const shipments = new Array(chosenPackages.length).fill(1);
       const routeDetails = await getOptimizedRouteWithLoad(routeLocations, shipments);
@@ -688,7 +686,7 @@ async function allocatePackages(packagesData, vehicles, sourceLocation, productM
       let remainingIDs = chosenPackages.map(x => x.pack_ID);
 
       reversedRoute.forEach((leg, i) => {
-        const stopNumber = i + 1;
+        const stopNumber = i + 1; 
         let legPackages = [];
         for (const pkID of remainingIDs) {
           const pObj = chosenPackages.find(x => x.pack_ID === pkID);
@@ -718,6 +716,8 @@ async function allocatePackages(packagesData, vehicles, sourceLocation, productM
         vehicle_ID: vehicle.vehicle_ID,
         totalWeightCapacity: vehicle.totalWeightCapacity,
         totalVolumeCapacity: vehicle.totalVolumeCapacity,
+        occupiedWeight: usedWeight,
+        occupiedVolume: usedVolume,
         leftoverWeight: vehicle.weightCapKg,
         leftoverVolume: vehicle.volumeCapM3,
         cost,
@@ -758,17 +758,26 @@ async function getPackagesByIds(packageIDs) {
 }
 
 
-
-router.post('/create-order', async (req, res) => {
+router.post('/create-order',jwtAuth.verifyToken, async (req, res) => {
   try {
     const { packages: packageIDs } = req.body;
     if (!Array.isArray(packageIDs) || packageIDs.length === 0) {
       return res.status(400).json({ error: 'No valid package IDs provided.' });
     }
 
+
     const packagesData = await getPackagesByIds(packageIDs);
     if (packagesData.length === 0) {
       return res.status(400).json({ error: 'No valid packages found.' });
+    }
+
+    const firstShipFrom = packagesData[0].ship_from;
+    for (const pkg of packagesData) {
+      if (pkg.ship_from !== firstShipFrom) {
+        return res.status(400).json({
+          error: 'All packages must have the same ship_from location.'
+        });
+      }
     }
 
     const resolvedProducts = packagesData.flatMap(p => p.products);
@@ -806,20 +815,17 @@ router.post('/create-order', async (req, res) => {
       };
     });
 
-    // filter invalid or down vehicles
+
     vehiclesBase = vehiclesBase
       .filter(isVehicleValid)
       .filter(v => !isVehicleDown(v));
 
-    // We'll pick the first package's ship_from as the "common source"
-    const sourceLoc = await getLocationById(packagesData[0].ship_from);
+    const sourceLoc = await getLocationById(firstShipFrom);
 
-    // scenario A => sort by cost ascending
     const vehiclesCost = [...vehiclesBase];
     vehiclesCost.sort((a, b) => a.cost_per_ton - b.cost_per_ton);
     const scenarioA = await allocatePackages(packagesData, vehiclesCost, sourceLoc, productMap);
 
-    // scenario B => big capacity first
     const vehiclesETA = [...vehiclesBase];
     vehiclesETA.sort((a, b) => b.totalWeightCapacity - a.totalWeightCapacity);
     const scenarioB = await allocatePackages(packagesData, vehiclesETA, sourceLoc, productMap);

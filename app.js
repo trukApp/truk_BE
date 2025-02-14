@@ -53,6 +53,7 @@ const devices = require('./src/routes/devices/masterDevices');
 const masterUom = require('./src/routes/masterUom/uom');
 const products = require('./src/routes/masterProducts/products');
 const order = require('./src/routes/order/order');
+const confirmOrder = require('./src/routes/order/confirmOrder');
 const data = require('./src/routes/data/dataCount');
 
 
@@ -70,6 +71,7 @@ app.use('/truk/device',devices);
 app.use('/truk/masterUom',masterUom);
 app.use('/truk/masterProducts',products);
 app.use('/truk/createOrder',order);
+app.use('/truk/order',confirmOrder);
 app.use('/truk/data',data);
 app.use('/truk/products/packages',packages);
 

@@ -191,5 +191,82 @@ router.delete('/delete-location', jwtAuth.verifyToken, async (req, res) => {
 });
 
 
+router.put('/update-location-flag', jwtAuth.verifyToken, async (req, res) => {
+    try {
+        const { loc_ID, def_ship_from, def_ship_to, def_bill_to } = req.query;
+
+        if (!loc_ID) {
+            return res.status(400).json({ message: 'loc_ID is required in the query.' });
+        }
+
+        const updateFields = {};
+        if (def_ship_from !== undefined) updateFields.def_ship_from = def_ship_from;
+        if (def_ship_to !== undefined) updateFields.def_ship_to = def_ship_to;
+        if (def_bill_to !== undefined) updateFields.def_bill_to = def_bill_to;
+
+        if (Object.keys(updateFields).length !== 1) {
+            return res.status(400).json({
+                message: 'Pass exactly one of def_ship_from, def_ship_to, or def_bill_to in the query.'
+            });
+        }
+
+        const fieldToUpdate = Object.keys(updateFields)[0];
+        const fieldValue = Object.values(updateFields)[0];
+
+        const [existingFlags] = await db.query(
+            `SELECT def_ship_from, def_ship_to, def_bill_to FROM master_locations WHERE loc_ID = ?`,
+            [loc_ID]
+        );
+
+        if (existingFlags.length === 0) {
+            return res.status(404).json({ message: 'Location not found.' });
+        }
+
+        const currentFlags = existingFlags[0];
+
+        if (fieldValue === '1' &&
+            (
+                (fieldToUpdate === 'def_ship_from' && currentFlags.def_ship_to === 1) ||
+                (fieldToUpdate === 'def_ship_to' && currentFlags.def_ship_from === 1)
+            )
+        ) {
+            return res.status(400).json({
+                message: `Cannot set ${fieldToUpdate} to 1. This loc_ID already has the other flag set to 1.`
+            });
+        }
+
+        if (fieldValue === '1') {
+            await db.query(
+                `UPDATE master_locations SET ${fieldToUpdate} = NULL WHERE ${fieldToUpdate} = 1 AND loc_ID <> ?`,
+                [loc_ID]
+            );
+        }
+
+        const [updateResult] = await db.query(
+            `UPDATE master_locations SET ${fieldToUpdate} = ? WHERE loc_ID = ?`,
+            [fieldValue, loc_ID]
+        );
+
+        if (updateResult.affectedRows === 0) {
+            return res.status(404).json({ message: 'Location not found or no changes made.' });
+        }
+
+        const [updatedLocation] = await db.query(
+            `SELECT loc_ID, loc_desc, def_ship_from, def_ship_to, def_bill_to FROM master_locations WHERE loc_ID = ?`,
+            [loc_ID]
+        );
+
+        return res.status(200).json({
+            message: `Successfully updated ${fieldToUpdate}.`,
+            updated_record: updatedLocation[0]
+        });
+
+    } catch (error) {
+        logger.error(error);
+        return res.status(500).json({ message: 'Server error.', error: error.message });
+    }
+});
+
+
 
 module.exports = router;

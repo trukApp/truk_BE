@@ -56,6 +56,7 @@ const order = require('./src/routes/order/order');
 const confirmOrder = require('./src/routes/order/confirmOrder');
 const data = require('./src/routes/data/dataCount');
 const images = require('./src/routes/images/image');
+const route = require('./src/routes/order/routeValidate');
 
 
 app.use('/truk/reg',signup);
@@ -76,5 +77,6 @@ app.use('/truk/order',confirmOrder);
 app.use('/truk/data',data);
 app.use('/truk/products/packages',packages);
 app.use('/truk/image',images);
+app.use('/truk/route',route);
 
 module.exports = app;

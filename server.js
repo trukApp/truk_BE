@@ -1,12 +1,41 @@
 
+// const http = require('http');
+// const app = require('./app'); 
+// const logger = require('./src/logger/logger');
+// const port = process.env.PORT || 8088;
+
+// const server = http.createServer(app); 
+
+// server.listen(port, () => {
+//     // console.log('Node server running on port ' + port);
+//     logger.info('Node server running on port ' + port)
+//   });
+
+
 const http = require('http');
-const app = require('./app'); 
+const express = require('express');
+const { ApolloServer } = require('apollo-server-express');
+const cors = require('cors');
 const logger = require('./src/logger/logger');
+const graphqlServer = require('./src/graphql');  // GraphQL setup
+
+const app = express();
 const port = process.env.PORT || 8088;
 
-const server = http.createServer(app); 
+// Middleware
+app.use(cors({ origin: '*' }));
+app.use(express.json());
 
-server.listen(port, () => {
-    // console.log('Node server running on port ' + port);
-    logger.info('Node server running on port ' + port)
+async function startServer() {
+  await graphqlServer.start();
+  graphqlServer.applyMiddleware({ app });
+
+  const server = http.createServer(app);
+  server.listen(port, () => {
+    logger.info(`🚀 Server running on port ${port}`);
+    logger.info(`📡 GraphQL available at http://localhost:${port}${graphqlServer.graphqlPath}`);
   });
+}
+
+startServer();
+

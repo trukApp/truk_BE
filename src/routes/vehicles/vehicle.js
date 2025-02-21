@@ -42,6 +42,10 @@ router.post('/add-vehicle', jwtAuth.verifyToken, async (req, res) => {
                 downtimes,
                 vehicle_group,
                 additional_details,
+                fragile_vehicle,
+                danger_proof,
+                hazardous_proof,
+                temp_controlled_vehicle
             } = vehicle;
 
             return db.query(
@@ -56,8 +60,12 @@ router.post('/add-vehicle', jwtAuth.verifyToken, async (req, res) => {
                     physical_properties, 
                     downtimes, 
                     vehicle_group,
-                    additional_details
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    additional_details,
+                    fragile_vehicle,
+                    danger_proof,
+                    hazardous_proof,
+                    temp_controlled_vehicle
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 `,
                 [
                     vehicle.vehicle_ID,
@@ -70,6 +78,10 @@ router.post('/add-vehicle', jwtAuth.verifyToken, async (req, res) => {
                     JSON.stringify(downtimes || {}),
                     JSON.stringify(vehicle_group || {}),
                     JSON.stringify(additional_details || {}),
+                    fragile_vehicle,
+                    danger_proof,
+                    hazardous_proof,
+                    temp_controlled_vehicle
                 ]
             );
         });
@@ -184,6 +196,10 @@ router.put('/edit-vehicle', jwtAuth.verifyToken, async (req, res) => {
         downtimes,
         vehicle_group,
         additional_details,
+        fragile_vehicle,
+        danger_proof,
+        hazardous_proof,
+        temp_controlled_vehicle
     } = req.body;
 
     if (!veh_id) {
@@ -202,7 +218,11 @@ router.put('/edit-vehicle', jwtAuth.verifyToken, async (req, res) => {
                 physical_properties = COALESCE(?, physical_properties), 
                 downtimes = COALESCE(?, downtimes), 
                 vehicle_group = COALESCE(?, vehicle_group),
-                additional_details = COALESCE(?, additional_details)
+                additional_details = COALESCE(?, additional_details),
+                fragile_vehicle = COALESCE(?, fragile_vehicle),
+                danger_proof = COALESCE(?, danger_proof),
+                hazardous_proof = COALESCE(?, hazardous_proof),
+                temp_controlled_vehicle = COALESCE(?, temp_controlled_vehicle)
             WHERE veh_id = ?
         `, [
             loc_ID || null,
@@ -214,6 +234,10 @@ router.put('/edit-vehicle', jwtAuth.verifyToken, async (req, res) => {
             JSON.stringify(downtimes || {}),
             JSON.stringify(vehicle_group || {}),
             JSON.stringify(additional_details || {}),
+            fragile_vehicle,
+            danger_proof,
+            hazardous_proof,
+            temp_controlled_vehicle,
             veh_id,
         ]);
 

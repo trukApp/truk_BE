@@ -91,6 +91,46 @@ router.get('/all-locations', jwtAuth.verifyToken, async (req, res) => {
 });
 
 
+router.get('/search-locations', jwtAuth.verifyToken, async (req, res) => {
+    try {
+        const { searchKey, page, limit } = req.query;
+
+        if (!searchKey || searchKey.trim().length < 1) {
+            return res.status(400).json({ message: 'Search key is required in the query.' });
+        }
+
+        const query = `
+            SELECT * FROM master_locations 
+            WHERE 
+                loc_ID LIKE ? 
+                OR city LIKE ? 
+                OR state LIKE ? 
+                OR pincode LIKE ? 
+                OR loc_type LIKE ?
+        `;
+
+        const searchPattern = `%${searchKey}%`;
+
+        const paginatedQuery = applyPagination(query, page, limit);
+        const [locations] = await db.query(paginatedQuery, [searchPattern, searchPattern, searchPattern, searchPattern, searchPattern]);
+
+        if (locations.length === 0) {
+            return res.status(404).json({ message: 'No locations found matching the search criteria.' });
+        }
+
+        return res.status(200).json({
+            message: 'Locations retrieved successfully.',
+            searchKey,
+            results: locations
+        });
+
+    } catch (error) {
+        logger.error('Error searching locations:', error);
+        return res.status(500).json({ message: 'An error occurred while searching locations.', error: error.message });
+    }
+});
+
+
 
 router.get('/location-ID', jwtAuth.verifyToken, async (req, res) => {
     const { loc_ID } = req.query;

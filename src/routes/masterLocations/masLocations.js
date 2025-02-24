@@ -57,7 +57,7 @@ router.post('/create-location', jwtAuth.verifyToken, async (req, res) => {
         });
     } catch (error) {
         logger.error(error);
-        res.status(500).json({ message: error.message || 'Server error.' });
+        res.status(500).json({ message: error || 'Server error.' });
     }
 });
 

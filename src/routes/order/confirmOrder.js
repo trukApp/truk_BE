@@ -12,7 +12,9 @@ router.post('/confirm-order', jwtAuth.verifyToken, async (req, res) => {
             scenario_label,
             total_cost,
             allocations,
-            unallocated_packages
+            unallocated_packages,
+            created_at,
+            updated_at
         } = req.body;
 
         if (!scenario_label || total_cost == null) {
@@ -61,20 +63,21 @@ router.post('/confirm-order', jwtAuth.verifyToken, async (req, res) => {
         const padded = String(newNumeric).padStart(6, '0');
         const newOrderID = 'ORD' + padded;
 
-        const now = new Date().toISOString();
+        // const now = new Date().toISOString();
 
         await db.query(`
             INSERT INTO orders
-            (order_ID, scenario_label, total_cost, allocations, unallocated_packages, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            (order_ID, scenario_label, total_cost, allocations, unallocated_packages, created_at, updated_at, order_status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         `, [
             newOrderID,
             scenario_label,
             total_cost,
             JSON.stringify(allocations || []),
             JSON.stringify(unallocated_packages || []),
-            now,
-            now
+            created_at,
+            updated_at,
+            "order placed"
         ]);
 
         await db.query(`
@@ -145,7 +148,7 @@ router.get('/order-by-id', jwtAuth.verifyToken, async (req, res) => {
 router.put('/edit-order', jwtAuth.verifyToken, async (req, res) => {
     try {
         const { order_ID } = req.query;
-        const { scenario_label, total_cost, allocations, unallocated_packages } = req.body;
+        const { order_status } = req.body;
 
         if (!order_ID) {
             return res.status(400).json({ message: 'Missing required query parameter: order_ID' });
@@ -160,13 +163,10 @@ router.put('/edit-order', jwtAuth.verifyToken, async (req, res) => {
 
         await db.query(`
             UPDATE orders
-            SET scenario_label = ?, total_cost = ?, allocations = ?, unallocated_packages = ?, updated_at = ?
+            SET order_status = ?, updated_at = ?
             WHERE order_ID = ?
         `, [
-            scenario_label || orderExists[0].scenario_label,
-            total_cost !== undefined ? total_cost : orderExists[0].total_cost,
-            JSON.stringify(allocations || orderExists[0].allocations),
-            JSON.stringify(unallocated_packages || orderExists[0].unallocated_packages),
+            order_status,
             now,
             order_ID
         ]);

@@ -1,25 +1,41 @@
 {
-  "name": "mbt_be",
+  "name": "truk_be",
   "version": "1.0.0",
-  "description": "",
   "main": "server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
     "apollo-server": "^3.13.0",
+    "aws-sdk": "^2.1692.0",
+    "axios": "^1.7.9",
     "body-parser": "^1.20.2",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.18.2",
     "graphql": "^16.10.0",
+    "express-fileupload": "^1.5.1",
+    "express-winston": "^4.2.0",
     "jsonwebtoken": "^9.0.2",
+    "mime-types": "^2.1.35",
     "mongoose": "^8.1.1",
     "mysql2": "^3.12.0",
     "sequelize": "^6.37.5",
+    "nodemailer": "^6.9.16",
     "winston": "^3.14.2"
-  }
+  },
+  "devDependencies": {},
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/trukApp/truk_BE.git"
+  },
+  "bugs": {
+    "url": "https://github.com/trukApp/truk_BE/issues"
+  },
+  "homepage": "https://github.com/trukApp/truk_BE#readme",
+  "description": ""
 }

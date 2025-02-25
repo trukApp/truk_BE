@@ -1,71 +1,103 @@
 const { gql } = require('apollo-server-express');
 
 const typeDefs = gql`
-#   type User {
-#     login_id: ID!
-#     mobile: String!
-#     user_type: String!
-#     profile: Profile
-#     accessToken: String
-#     refreshToken: String
-#   }
-  type User {
-    login_id: ID!
-    profile_id: ID!
-    name: String
-    surname: String
-    mobile: String
-    email: String
-    user_type: String
-    profile_image: String
-    place_of_birth: String
-    current_address: String
-    residence_type: String
-    father_name: String
-    mother_name: String
-    siblings_name: [String]
-    spouse: String
-    children: [String]
-    occupation: String
 
-    refreshToken: String
-    accessToken: String
-    profile: Profile
-  }
 
-  type Profile {
-    login_id: ID!
-    name: String
-    email: String
-  }
+  type Location {
+  loc_ID: ID
+  loc_desc: String
+  longitude: Float
+  latitude: Float
+  time_zone: String
+  city: String
+  state: String
+  country: String
+  pincode: String
+  loc_type: String
+  gln_code: String
+  iata_code: String
+}
+type Vehicle {
+  vehicle_ID: ID!
+  loc_ID: ID
+  loc_desc: String
+  longitude: Float
+  latitude: Float
+  time_zone: String
+  city: String
+  state: String
+  country: String
+  pincode: String
+  loc_type: String
+  gln_code: String
+  iata_code: String
+}
+type VehicleResponse {
+  message: String!
+  vehicle: Vehicle
+}
+input SignupInput {
+  first_name: String!
+  last_name: String!
+  gender: String
+  mobile: String!
+  email: String!
+  password: String!
+  user_type: String!
+}
+
+
+type Package {
+  package_id: ID!
+  pac_ID: ID!
+  package_name: String
+  package_description: String
+  price: Float
+  created_at: String
+  updated_at: String
+}
+type Product {
+  product_id: ID!
+  product_name: String
+  product_description: String
+  price: Float
+  stock: Int
+  created_at: String
+  updated_at: String
+}
+
+type ProductResponse {
+  message: String!
+  products: [Product]
+}
+
+type PackageResponse {
+  message: String!
+  packages: [Package]!
+  package: Package
+}
+type SignupResponse {
+  message: String!
+}
 
   type Query {
-    userCheck(mobile: String!): User
-    getUser(profile_id: ID!): User
+    getVehicle(vehicle_ID: ID!): VehicleResponse
+    getAllPackages: PackageResponse!
+    getPackage(pac_ID: ID!): PackageResponse!
+    getAllProducts(page: Int, limit: Int): ProductResponse!
   }
 
   type Mutation {
-    logout: String,
-    signup(name: String!, surname: String!, mobile: String!, email: String, user_type: String!): String,
-    editUser(
-      profile_id: ID!
-      name: String
-      surname: String
-      email: String
-      profile_image: String
-      place_of_birth: String
-      current_address: String
-      residence_type: String
-      father_name: String
-      mother_name: String
-      siblings_name: [String]
-      spouse: String
-      children: [String]
-      occupation: String
-    ): User
-  }
-
-
+  signup(input: SignupInput!): SignupResponse!
+}
 `;
+
+
+
+
+
+
+
+
 
 module.exports = typeDefs;

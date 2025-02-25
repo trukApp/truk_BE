@@ -1,38 +1,39 @@
-# name: Deploy Backend Service
-
-# on:
-#   push:
-#     branches:
-#       - dev_branch
-#   workflow_dispatch:
-
-# jobs:
-#   deploy:
-#     runs-on: ubuntu-latest
-#     steps:
-#     - name: Create SSH key files
-#       run: |
-#         echo "${{ secrets.EC2_SSH_KEY }}" > key.pem
-#         chmod 600 key.pem
-#         echo "${{ secrets.DEVOPS_SSH_KEY }}" > devops_key
-#         chmod 600 devops_key
-
-#     - name: Deploy the backend service
-#       run: |
-#         ssh -i key.pem -o StrictHostKeyChecking=no ubuntu@${{ secrets.EC2_HOST }} "
-#         ssh -i devops_key -o StrictHostKeyChecking=no devops@localhost << EOF
-#         set -e
-#         cd /home/devops/jaiMP_BE
-#         echo 'Current branch:'
-#         git branch --show-current
-#         echo 'Pulling latest changes...'
-#         git pull origin dev_branch
-#         echo 'Installing dependencies...'
-#         npm install
-#         echo 'Restarting PM2 processes...'
-#         pm2 restart all
-#         echo 'PM2 status:'
-#         pm2 status
-#         EOF
-#         "
-#       shell: bash
+name: Deploy Backend Service
+on:
+  push:
+    branches:
+      - dev_branch
+  workflow_dispatch:
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy the backend service
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          EC2_PASSWORD: ${{ secrets.EC2_PASSWORD }}
+          GIT_TOKEN: ${{ secrets.GIT_TOKEN }}
+          PROJECT_PATH: ${{ secrets.PROJECT_PATH }}
+        run: |
+          sshpass -p "$EC2_PASSWORD" ssh -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST << EOF
+          set -x  # Enable command echoing
+          
+          git config --global user.name "trukApp"
+          git config --global user.email "info@trukapp.com"
+          git config --global credential.helper store
+          git config --global credential.helper 'cache --timeout=3600'
+          
+          cd $PROJECT_PATH
+          pwd
+          git branch --show-current
+          CURRENT_BRANCH=\$(git branch --show-current)
+          if [ "\$CURRENT_BRANCH" = "dev_branch" ]; then
+            git pull https://${GIT_TOKEN}@github.com/trukApp/truk_BE.git dev_branch
+          fi
+          npm install --no-interaction
+          pm2 restart all 
+          pm2 status
+          
+          set +x  # Disable command echoing
+          EOF

@@ -32,10 +32,9 @@ async function startServer() {
 
   const server = http.createServer(app);
   server.listen(port, () => {
-    logger.info(`🚀 Server running on port ${port}`);
-    logger.info(`📡 GraphQL available at http://localhost:${port}${graphqlServer.graphqlPath}`);
+    console.log(`🚀 Server running on port ${port}`);
+    console.log(`📡 GraphQL available at http://localhost:${port}${graphqlServer.graphqlPath}`);
   });
 }
 
 startServer();
-

@@ -6,149 +6,147 @@ const messages = require('../responses/res_messages');
 
 const resolvers = {
   Query: {
-    async userCheck(_, { mobile }) {
-      console.log(mobile)
-      if (!mobile) throw new Error('Mobile number is required');
-      try {
-        const [userRows] = await db.query('SELECT * FROM login_data WHERE mobile = ?', [mobile]);
-
-        if (userRows.length === 0) throw new Error('User not found');
-
-        const user = userRows[0];
-        const [profileRows] = await db.query('SELECT * FROM profile_data WHERE login_id = ?', [user.login_id]);
-
-        return {
-          ...user,
-          profile: profileRows[0] || {},
-          accessToken: jwtAuth.generateToken(user.login_id, user.user_type),
-          refreshToken: jwtAuth.generateRefreshToken(user.login_id, user.user_type),
-        };
-      } catch (error) {
-        throw new Error(error.message);
-      }
-    },
-
-    async getUser(_, { profile_id }, context) {
-      const rows = await db.select().from('profile_data');
-      console.log(rows);
+    
+      async getVehicle(_, { vehicle_ID }, context) {
+        // Verify token (authentication middleware)
+        // if (!context.user) throw new Error("Unauthorized access");
+  
+        if (!vehicle_ID) {
+          throw new Error("vehicle_ID is required.");
+        }
+  
+        try {
+          const [vehicle] = await db.query(`
+              SELECT 
+                  v.*, 
+                  l.loc_ID, l.loc_desc, l.longitude, l.latitude, l.time_zone, 
+                  l.city, l.state, l.country, l.pincode, l.loc_type, 
+                  l.gln_code, l.iata_code
+              FROM master_vehicles v
+              LEFT JOIN master_locations l ON v.loc_ID = l.loc_ID
+              WHERE v.vehicle_ID = ?
+          `, [vehicle_ID]);
+  
+          if (vehicle.length === 0) {
+            throw new Error("Vehicle not found.");
+          }
+  
+          return {
+            message: "Vehicle fetched successfully",
+            vehicle: vehicle[0],
+          };
+        } catch (error) {
+          console.error("Error fetching vehicle:", error);
+          throw new Error("An error occurred while fetching the vehicle.");
+        }},
       
-    //   if (!context.user) throw new Error("Unauthorized access");
-      if (!profile_id) throw new Error("Profile ID is required.");
+        async getAllPackages(_, __, context) {
+          // Verify authentication
+          // if (!context.user) {
+          //   throw new Error("Unauthorized access");
+          // }
+    
+          try {
+            const [packages] = await db.query(`
+              SELECT * FROM master_package_info ORDER BY package_id DESC
+            `);
+    
+            return {
+              message: "Packages retrieved successfully",
+              packages,
+            };
+          } catch (error) {
+            logger.error("Error fetching packages:", error);
+            throw new Error("An error occurred while fetching packages.");
+          }
+        },
+        async getPackage(_, { pac_ID }, context) {
+          // Verify authentication
+          // if (!context.user) {
+          //   throw new Error("Unauthorized access");
+          // }
+    
+          if (!pac_ID) {
+            throw new Error("Please provide a valid pac_ID.");
+          }
+    
+          try {
+            const [packageData] = await db.query(
+              `SELECT * FROM master_package_info WHERE pac_ID = ?`,
+              [pac_ID]
+            );
+    
+            if (!packageData.length) {
+              throw new Error("Package not found.");
+            }
+    
+            return {
+              message: "Package retrieved successfully",
+              package: packageData[0],
+            };
+          } catch (error) {
+            logger.error("Error fetching package:", error);
+            throw new Error("An error occurred while fetching the package.");
+          }
+        },
 
-      try {
-        const [profileData] = await db.query('SELECT * FROM profile_data WHERE profile_id = ?', [profile_id]);
-
-        if (profileData.length === 0) throw new Error("User not found.");
-
-        const loginId = profileData[0].login_id;
-        const [loginData] = await db.query('SELECT * FROM login_data WHERE login_id = ?', [loginId]);
-
-        if (loginData.length === 0) throw new Error("Login data not found for this user.");
-
-        return { ...loginData[0], ...profileData[0] };
-      } catch (error) {
-        throw new Error("Error fetching user data: " + error.message);
-      }
-    }
+        async getAllProducts(_, { page = 1, limit = 10 }, context) {
+          // Verify authentication
+          // if (!context.user) {
+          //   throw new Error("Unauthorized access");
+          // }
+    
+          try {
+            const offset = (page - 1) * limit;
+            const query = `SELECT * FROM master_products LIMIT ? OFFSET ?`;
+            const [products] = await db.query(query, [parseInt(limit), parseInt(offset)]);
+    
+            return {
+              message: "Products retrieved successfully",
+              products,
+            };
+          } catch (error) {
+            logger.error("Error fetching products:", error);
+            throw new Error("An error occurred while fetching products.");
+          }
+        },
+   
   },
 
   Mutation: {
-    async logout(_, __, { req }) {
-      try {
-        const tokenHeader = req.headers.authorization;
-        if (tokenHeader) {
-          const token = tokenHeader.split(' ')[1];
-          jwtAuth.addToBlacklist(token);
-        }
-        return messages.LOGOUT;
-      } catch (error) {
-        throw new Error(messages.LOGOUT_FAILED);
-      }
-    },
+    async signup(_, { input }) {
+      const { first_name, last_name, gender, mobile, email, password, user_type } = input;
 
-    async signup(_, { name, surname, mobile, email, user_type }) {
-      if (!name || !surname || !mobile || !user_type) {
-        throw new Error('Name, surname, mobile, and user_type are required.');
+      if (!first_name || !last_name || !mobile || !email || !user_type) {
+        throw new Error("Name, surname, mobile, email, and user_type are required.");
       }
 
       try {
-        const [existingUser] = await db.query('SELECT * FROM login_data WHERE mobile = ?', [mobile]);
+        const [existingUser] = await db.query('SELECT * FROM signup WHERE mobile = ?', [mobile]);
         if (existingUser.length > 0) {
-          throw new Error('Mobile number already registered.');
+          throw new Error("Mobile number already registered.");
         }
 
-        const result = await db.query(
-          'INSERT INTO login_data (name, surname, mobile, email, user_type) VALUES (?, ?, ?, ?, ?)',
-          [name, surname, mobile, email, user_type]
+        const [existingMail] = await db.query('SELECT * FROM signup WHERE email = ?', [email]);
+        if (existingMail.length > 0) {
+          throw new Error("Email already registered.");
+        }
+
+        const [result] = await db.query(
+          'INSERT INTO signup (first_name, last_name, gender, mobile, email, password, user_type) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          [first_name, last_name, gender, mobile, email, password, user_type]
         );
 
-        if (result[0].affectedRows > 0) {
-          const loginId = result[0].insertId;
-          await db.query('INSERT INTO profile_data (login_id) VALUES (?)', [loginId]);
-
-          return messages.POST_SUCCESS;
+        if (result.affectedRows > 0) {
+          return { message: "User signed up successfully" };
         } else {
-          throw new Error(messages.POST_FAILED);
+          throw new Error("Failed to insert new user.");
         }
       } catch (error) {
-        throw new Error("Error during signup process: " + error.message);
+        console.error("Error during signup process:", error.message);
+        throw new Error("An error occurred during signup.");
       }
     },
-
-    async editUser(_, args, context) {
-    //   if (!context.user) throw new Error("Unauthorized access");
-      const { profile_id, ...updateFields } = args;
-
-      if (!profile_id) throw new Error("Profile ID is required.");
-
-      try {
-        const [profileData] = await db.query('SELECT * FROM profile_data WHERE profile_id = ?', [profile_id]);
-
-        if (profileData.length === 0) throw new Error("User not found.");
-
-        const loginId = profileData[0].login_id;
-
-        // Update login_data table
-        const updateLoginQuery = `
-          UPDATE login_data 
-          SET name = COALESCE(?, name), 
-              surname = COALESCE(?, surname), 
-              email = COALESCE(?, email)
-          WHERE login_id = ?
-        `;
-        await db.query(updateLoginQuery, [updateFields.name, updateFields.surname, updateFields.email, loginId]);
-
-        // Update profile_data table
-        const updateProfileQuery = `
-          UPDATE profile_data 
-          SET profile_image = COALESCE(?, profile_image),
-              place_of_birth = COALESCE(?, place_of_birth),
-              current_address = COALESCE(?, current_address),
-              residence_type = COALESCE(?, residence_type),
-              father_name = COALESCE(?, father_name),
-              mother_name = COALESCE(?, mother_name),
-              siblings_name = COALESCE(?, siblings_name),
-              spouse = COALESCE(?, spouse),
-              children = COALESCE(?, children),
-              occupation = COALESCE(?, occupation)
-          WHERE profile_id = ?
-        `;
-        await db.query(updateProfileQuery, [
-          updateFields.profile_image, updateFields.place_of_birth, updateFields.current_address,
-          updateFields.residence_type, updateFields.father_name, updateFields.mother_name,
-          JSON.stringify(updateFields.siblings_name), updateFields.spouse, JSON.stringify(updateFields.children), 
-          updateFields.occupation, profile_id
-        ]);
-
-        // Get updated user data
-        const [updatedProfileData] = await db.query('SELECT * FROM profile_data WHERE profile_id = ?', [profile_id]);
-        const [updatedLoginData] = await db.query('SELECT * FROM login_data WHERE login_id = ?', [loginId]);
-
-        return { ...updatedLoginData[0], ...updatedProfileData[0] };
-      } catch (error) {
-        throw new Error("Error updating user data: " + error.message);
-      }
-    }
   }
 };
 

@@ -1,4 +1,5 @@
 const winston = require('winston');
+const expressWinston = require('express-winston');
 
 
 const logLevels = {
@@ -47,5 +48,40 @@ logger.stream = {
   },
 };
 
-module.exports = logger;
+const sanitizeRequestData = (req) => {
+  if (req.headers.authorization) {
+    req.headers.authorization = '[REDACTED]'; // Remove authorization token
+  }
+  if (req.headers['postman-token']) {
+    req.headers['postman-token'] = '[REDACTED]'; // Remove Postman token
+  }
+  return req;
+};
 
+// Middleware for logging HTTP requests
+const requestLogger = expressWinston.logger({
+  transports: [
+    new winston.transports.Console(),
+  ],
+  format: winston.format.combine(
+    winston.format.json(),
+    winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' })
+  ),
+  meta: true,
+  dynamicMeta: (req, res) => {
+    req = sanitizeRequestData(req); // Sanitize sensitive data
+    return {
+      method: req.method,
+      url: req.originalUrl,
+      statusCode: res.statusCode,
+      responseTime: res.responseTime,
+    };
+  },
+  expressFormat: true,
+  colorize: false,
+  ignoreRoute: function (req, res) { return false; },
+});
+
+
+
+module.exports = { logger, requestLogger };

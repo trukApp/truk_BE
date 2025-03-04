@@ -608,7 +608,7 @@ function isDirectionCompatible(dirA, dirB) {
 
 
 
-function sampleRoutePoints(coords, intervalKm = 15) {
+function sampleRoutePoints(coords, intervalKm = 20) {
   if (!coords.length) return [];
   const sampled = [coords[0]];
   let lastPoint = coords[0];
@@ -672,7 +672,7 @@ async function getOptimizedRouteWithLoad(locations, shipmentLoads) {
     });
     const overview = resp.data.routes[0].overview_polyline.points;
     const decoded = polyline.decode(overview).map(([lat,lng])=>({lat,lng}));
-    const sampled = sampleRoutePoints(decoded, 15);
+    const sampled = sampleRoutePoints(decoded, 20);
 
     return { optimizedRoute, sampledCoords: sampled };
   } catch (err) {

@@ -59,6 +59,7 @@ router.post('/add-products', jwtAuth.verifyToken, async (req, res) => {
                 dangerous_goods,
                 hazardous,
                 temp_controlled,
+                can_combine
             } = product;
 
             return db.query(
@@ -86,8 +87,9 @@ router.post('/add-products', jwtAuth.verifyToken, async (req, res) => {
                     fragile_goods, 
                     dangerous_goods, 
                     hazardous, 
-                    temp_controlled
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    temp_controlled,
+                    can_combine
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 `,
                 [
                     product_ID,
@@ -113,6 +115,7 @@ router.post('/add-products', jwtAuth.verifyToken, async (req, res) => {
                     dangerous_goods || 0,
                     hazardous || 0,
                     temp_controlled || 0,
+                    can_combine || 0
                 ]
             );
         });
@@ -235,6 +238,7 @@ router.put('/edit-product', jwtAuth.verifyToken, async (req, res) => {
         dangerous_goods,
         hazardous,
         temp_controlled,
+        can_combine
     } = req.body;
 
     if (!prod_id) {
@@ -267,7 +271,8 @@ router.put('/edit-product', jwtAuth.verifyToken, async (req, res) => {
                 fragile_goods = ?,
                 dangerous_goods = ?,
                 hazardous = ?,
-                temp_controlled = ?
+                temp_controlled = ?,
+                can_combine = ?
             WHERE prod_id = ?
             `,
             [
@@ -293,6 +298,7 @@ router.put('/edit-product', jwtAuth.verifyToken, async (req, res) => {
                 dangerous_goods || 0,
                 hazardous || 0,
                 temp_controlled || 0,
+                can_combine || 0,
                 prod_id,
             ]
         );

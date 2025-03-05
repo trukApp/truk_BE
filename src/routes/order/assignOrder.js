@@ -29,7 +29,8 @@ const generateAssignID = async () => {
 
 router.post('/assign-order', jwtAuth.verifyToken, async (req, res) => {
     try {
-        const { order_ID, assigned_vehicle_data, vehicle_docs, self_transport, dri_ID } = req.body;
+        const { order_ID, assigned_vehicle_data, vehicle_docs, self_transport, dri_ID, pod, pod_doc } = req.body;
+
         if (!order_ID || !dri_ID) {
             return res.status(400).json({ message: "order_ID and dri_ID are required." });
         }
@@ -37,9 +38,9 @@ router.post('/assign-order', jwtAuth.verifyToken, async (req, res) => {
         const assign_ID = await generateAssignID();
 
         await db.query(
-            `INSERT INTO assigning_orders (assign_ID, order_ID, assigned_vehicle_data, vehicle_docs, self_transport, dri_ID)
-            VALUES (?, ?, ?, ?, ?, ?)`,
-            [assign_ID, order_ID, JSON.stringify(assigned_vehicle_data), JSON.stringify(vehicle_docs), self_transport, dri_ID]
+            `INSERT INTO assigning_orders (assign_ID, order_ID, assigned_vehicle_data, vehicle_docs, self_transport, dri_ID, pod, pod_doc)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            [assign_ID, order_ID, JSON.stringify(assigned_vehicle_data), JSON.stringify(vehicle_docs), self_transport, dri_ID, JSON.stringify(pod), pod_doc]
         );
 
         res.status(201).json({ message: "Assigned order created successfully", assign_ID });
@@ -111,7 +112,7 @@ router.get('/assigned-order', jwtAuth.verifyToken, async (req, res) => {
 router.put('/update-assigned-order', jwtAuth.verifyToken, async (req, res) => {
     try {
         const { assigning_id } = req.query;
-        const { order_ID, assigned_vehicle_data, vehicle_docs, self_transport, dri_ID } = req.body;
+        const { order_ID, assigned_vehicle_data, vehicle_docs, self_transport, dri_ID, pod, pod_doc } = req.body;
 
         if (!assigning_id) {
             return res.status(400).json({ message: "assigning_id is required in query." });
@@ -139,6 +140,14 @@ router.put('/update-assigned-order', jwtAuth.verifyToken, async (req, res) => {
         if (dri_ID) {
             updateFields.push("dri_ID = ?");
             values.push(dri_ID);
+        }
+        if (pod) {
+            updateFields.push("pod = ?");
+            values.push(JSON.stringify(pod));
+        }
+        if (pod_doc) {
+            updateFields.push("pod_doc = ?");
+            values.push(pod_doc);
         }
 
         if (updateFields.length === 0) {

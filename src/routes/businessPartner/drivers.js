@@ -152,6 +152,53 @@ router.post('/add-drivers', jwtAuth.verifyToken, async (req, res) => {
     }
 });
 
+router.post('/driver-authenticate', async (req, res) => {
+    try {
+        const { dri_ID, phone } = req.body;
+
+        if (!dri_ID || !phone) {
+            return res.status(400).json({ message: "dri_ID and phone are required." });
+        }
+
+        const query = `SELECT dri_ID, driver_correspondence FROM master_drivers WHERE dri_ID = ?`;
+        const [drivers] = await db.query(query, [dri_ID]);
+
+        if (drivers.length === 0) {
+            return res.status(404).json({ message: "Driver not found." });
+        }
+
+        const driver = drivers[0];
+        let driverCorrespondence = driver.driver_correspondence;
+
+        if (typeof driverCorrespondence === "string") {
+            try {
+                driverCorrespondence = JSON.parse(driverCorrespondence);
+            } catch (error) {
+                logger.error("Error parsing driver_correspondence:", error);
+                return res.status(500).json({ message: "Invalid driver_correspondence format in database." });
+            }
+        }
+
+        if (!driverCorrespondence || !driverCorrespondence.phone || driverCorrespondence.phone !== phone) {
+            return res.status(401).json({ message: "Invalid phone number." });
+        }
+
+        const accessToken = jwtAuth.generateToken(dri_ID, "driver");
+        const refreshToken = jwtAuth.generateRefreshToken(dri_ID, "driver");
+
+        res.status(200).json({
+            message: "Authentication successful.",
+            dri_ID,
+            accessToken,
+            refreshToken
+        });
+    } catch (error) {
+        logger.error("Error in driver authentication:", error);
+        res.status(500).json({ message: "Internal Server Error", error: error.message });
+    }
+});
+
+
 router.get('/get-drivers', jwtAuth.verifyToken, async (req, res) => {
     try {
         const { page, limit } = req.query;

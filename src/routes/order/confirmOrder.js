@@ -183,7 +183,7 @@ router.get('/order-by-id', jwtAuth.verifyToken, async (req, res) => {
         return res.status(200).json({
             message: 'Order retrieved successfully.',
             order,
-            allocated_packages: packageDetails,
+            allocated_packages_details: packageDetails,
             allocated_vehicles: vehicleDetails
         });
 

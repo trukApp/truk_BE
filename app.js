@@ -58,6 +58,7 @@ const data = require('./src/routes/data/dataCount');
 const images = require('./src/routes/images/image');
 const route = require('./src/routes/order/routeValidate');
 const assign = require('./src/routes/order/assignOrder');
+const actVehicles = require('./src/routes/vehicles/actVehicles');
 
 
 app.use('/truk/reg',signup);
@@ -80,5 +81,6 @@ app.use('/truk/products/packages',packages);
 app.use('/truk/image',images);
 app.use('/truk/route',route);
 app.use('/truk/ao',assign);
+app.use('/truk/veh',actVehicles);
 
 module.exports = app;

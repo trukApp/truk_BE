@@ -551,9 +551,15 @@ const { parseWeightAndUOM, parseVolumeAndUOM } = require('./unitParser');
 const jwtAuth = require('../../JWT/jwtAuth');
 const polyline = require('@mapbox/polyline');
 
-
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 
+const routeCache = new Map();
+
+function buildRouteKey(locations) {
+  return locations
+    .map(loc => `${loc.latitude},${loc.longitude}`)
+    .join('|');
+}
 
 function toRadians(deg) {
   return deg * Math.PI / 180;
@@ -562,59 +568,24 @@ function distanceBetweenCoords(lat1, lon1, lat2, lon2) {
   const R = 6371;
   const dLat = toRadians(lat2 - lat1);
   const dLon = toRadians(lon2 - lon1);
-  const a = 
+  const a =
     Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRadians(lat1)) * Math.cos(toRadians(lat2)) *
+    Math.cos(toRadians(lat1)) *
+    Math.cos(toRadians(lat2)) *
     Math.sin(dLon / 2) ** 2;
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   return R * c;
 }
-
-
-
-function getBearing(lat1, lon1, lat2, lon2) {
-  const dLon = toRadians(lon2 - lon1);
-  const phi1 = toRadians(lat1);
-  const phi2 = toRadians(lat2);
-  const y = Math.sin(dLon) * Math.cos(phi2);
-  const x = Math.cos(phi1)*Math.sin(phi2) - Math.sin(phi1)*Math.cos(phi2)*Math.cos(dLon);
-  let bearingDeg = (Math.atan2(y, x) * 180 / Math.PI);
-  bearingDeg = (bearingDeg + 360) % 360;
-  return bearingDeg;
-}
-function getDirection8(bearingDeg) {
-  if (bearingDeg >= 337.5 || bearingDeg < 22.5) return 'N';
-  if (bearingDeg >= 22.5 && bearingDeg < 67.5) return 'NE';
-  if (bearingDeg >= 67.5 && bearingDeg < 112.5) return 'E';
-  if (bearingDeg >= 112.5 && bearingDeg < 157.5) return 'SE';
-  if (bearingDeg >= 157.5 && bearingDeg < 202.5) return 'S';
-  if (bearingDeg >= 202.5 && bearingDeg < 247.5) return 'SW';
-  if (bearingDeg >= 247.5 && bearingDeg < 292.5) return 'W';
-  if (bearingDeg >= 292.5 && bearingDeg < 337.5) return 'NW';
-  return 'N'; 
-}
-
-
-function isDirectionCompatible(dirA, dirB) {
-  if (dirA === dirB) return true;
-  const dirs = ["N","NE","E","SE","S","SW","W","NW"];
-  const iA = dirs.indexOf(dirA);
-  const iB = dirs.indexOf(dirB);
-  if (iA < 0 || iB < 0) return false;
-  let diff = Math.abs(iA - iB);
-  if (diff > 4) diff = 8 - diff;
-  return diff <= 2;
-}
-
-
-
 function sampleRoutePoints(coords, intervalKm = 20) {
   if (!coords.length) return [];
   const sampled = [coords[0]];
   let lastPoint = coords[0];
   let distAcc = 0;
-  for (let i=1; i<coords.length; i++) {
-    const d = distanceBetweenCoords(lastPoint.lat, lastPoint.lng, coords[i].lat, coords[i].lng);
+  for (let i = 1; i < coords.length; i++) {
+    const d = distanceBetweenCoords(
+      lastPoint.lat, lastPoint.lng,
+      coords[i].lat, coords[i].lng
+    );
     distAcc += d;
     if (distAcc >= intervalKm) {
       sampled.push(coords[i]);
@@ -622,36 +593,65 @@ function sampleRoutePoints(coords, intervalKm = 20) {
       distAcc = 0;
     }
   }
-  if (sampled[sampled.length-1] !== coords[coords.length-1]) {
-    sampled.push(coords[coords.length-1]);
+
+  if (sampled[sampled.length - 1] !== coords[coords.length - 1]) {
+    sampled.push(coords[coords.length - 1]);
   }
   return sampled;
 }
 
+
 async function getOptimizedRouteWithLoad(locations, shipmentLoads) {
+  if (!Array.isArray(locations) || locations.length < 2) {
+    throw new Error("Locations array must have at least two points (origin/dest).");
+  }
+
+  const routeKey = buildRouteKey(locations);
+
+
+  if (routeCache.has(routeKey)) {
+    const cached = routeCache.get(routeKey);
+
+    const freshOptimizedRoute = [];
+    for (let i = 0; i < cached.optimizedRoute.length; i++) {
+      const leg = { ...cached.optimizedRoute[i] }; 
+      if (i < shipmentLoads.length) {
+        leg.loadAfterStop = (i === 0 ? shipmentLoads[i] : leg.loadAfterStop); 
+      }
+      freshOptimizedRoute.push(leg);
+    }
+
+    return {
+      optimizedRoute: freshOptimizedRoute,
+      sampledCoords: cached.sampledCoords
+    };
+  }
+
+
   const origin = locations[0];
-  const destination = locations[locations.length -1];
+  const destination = locations[locations.length - 1];
   const waypoints = (locations.length > 2)
     ? locations.slice(1, -1).map(loc => `${loc.latitude},${loc.longitude}`).join('|')
     : '';
 
-  const url = `https://maps.googleapis.com/maps/api/directions/json?origin=${origin.latitude},${origin.longitude}`+
-    `&destination=${destination.latitude},${destination.longitude}`+
-    (waypoints ? `&waypoints=${waypoints}` : '')+
+  const url = `https://maps.googleapis.com/maps/api/directions/json?origin=${origin.latitude},${origin.longitude}` +
+    `&destination=${destination.latitude},${destination.longitude}` +
+    (waypoints ? `&waypoints=${waypoints}` : '') +
     `&key=${GOOGLE_API_KEY}`;
 
   try {
     const resp = await axios.get(url);
     if (resp.data.status !== 'OK') {
-      console.error("Google API Error:", resp.data);
+      console.error("Google API Error Response:", resp.data);
       throw new Error(`Google Maps API Error: ${resp.data.status}`);
     }
+
     const routeLegs = resp.data.routes[0].legs;
     const optimizedRoute = [];
     let currentLoad = 0;
     routeLegs.forEach((leg, index) => {
-      const shipmentLoad = shipmentLoads[index] || 0;
-      currentLoad += shipmentLoad;
+      const load = shipmentLoads[index] || 0;
+      currentLoad += load;
       if (leg.start_address !== leg.end_address) {
         optimizedRoute.push({
           start: {
@@ -661,8 +661,8 @@ async function getOptimizedRouteWithLoad(locations, shipmentLoads) {
           },
           end: {
             address: leg.end_address,
-            latitude: locations[index+1].latitude,
-            longitude: locations[index+1].longitude
+            latitude: locations[index + 1].latitude,
+            longitude: locations[index + 1].longitude
           },
           distance: leg.distance.text,
           duration: leg.duration.text,
@@ -670,16 +670,100 @@ async function getOptimizedRouteWithLoad(locations, shipmentLoads) {
         });
       }
     });
-    const overview = resp.data.routes[0].overview_polyline.points;
-    const decoded = polyline.decode(overview).map(([lat,lng])=>({lat,lng}));
-    const sampled = sampleRoutePoints(decoded, 20);
 
-    return { optimizedRoute, sampledCoords: sampled };
+    const overviewPolyline = resp.data.routes[0].overview_polyline.points;
+    const decodedCoords = polyline.decode(overviewPolyline).map(([lat, lng]) => ({ lat, lng }));
+    const sampledCoords = sampleRoutePoints(decodedCoords, 20);
+
+    const toCache = {
+      optimizedRoute,
+      sampledCoords
+    };
+    routeCache.set(routeKey, toCache);
+
+    return {
+      optimizedRoute,
+      sampledCoords
+    };
   } catch (err) {
     console.error("Error in getOptimizedRouteWithLoad:", err.message);
     throw err;
   }
 }
+
+function getBearing(lat1, lon1, lat2, lon2) {
+  // Convert degrees to radians
+  function toRadians(deg) {
+    return deg * Math.PI / 180;
+  }
+
+  const dLon = toRadians(lon2 - lon1);
+  const phi1 = toRadians(lat1);
+  const phi2 = toRadians(lat2);
+
+  const y = Math.sin(dLon) * Math.cos(phi2);
+  const x = Math.cos(phi1) * Math.sin(phi2)
+    - Math.sin(phi1) * Math.cos(phi2) * Math.cos(dLon);
+
+  let bearingDeg = (Math.atan2(y, x) * 180) / Math.PI;
+  bearingDeg = (bearingDeg + 360) % 360;
+  return bearingDeg;
+}
+
+
+function getDirection8(bearingDeg) {
+  if (bearingDeg >= 337.5 || bearingDeg < 22.5)  return 'N';
+  if (bearingDeg >= 22.5  && bearingDeg < 67.5)  return 'NE';
+  if (bearingDeg >= 67.5  && bearingDeg < 112.5) return 'E';
+  if (bearingDeg >= 112.5 && bearingDeg < 157.5) return 'SE';
+  if (bearingDeg >= 157.5 && bearingDeg < 202.5) return 'S';
+  if (bearingDeg >= 202.5 && bearingDeg < 247.5) return 'SW';
+  if (bearingDeg >= 247.5 && bearingDeg < 292.5) return 'W';
+  if (bearingDeg >= 292.5 && bearingDeg < 337.5) return 'NW';
+  return 'N';
+}
+
+
+function isDirectionCompatible(dirA, dirB) {
+  if (dirA === dirB) return true;
+
+  const dirs = ["N","NE","E","SE","S","SW","W","NW"];
+
+  const iA = dirs.indexOf(dirA);
+  const iB = dirs.indexOf(dirB);
+
+  if (iA < 0 || iB < 0) return false;
+  let diff = Math.abs(iA - iB);
+  if (diff > 4) diff = 8 - diff;
+  return diff <= 2;
+}
+
+
+function groupPackagesByDirection(pkgInfos) {
+  const visited = new Set();
+  const groups = [];
+  for (let i = 0; i < pkgInfos.length; i++) {
+    if (visited.has(i)) continue;
+    const queue = [i];
+    visited.add(i);
+    const cluster = [pkgInfos[i]];
+
+    while (queue.length > 0) {
+      const idx = queue.shift();
+      for (let j = 0; j < pkgInfos.length; j++) {
+        if (visited.has(j)) continue;
+        if (isDirectionCompatible(pkgInfos[idx].direction8, pkgInfos[j].direction8)) {
+          visited.add(j);
+          queue.push(j);
+          cluster.push(pkgInfos[j]);
+        }
+      }
+    }
+    groups.push(cluster);
+  }
+  return groups;
+}
+
 
 
 

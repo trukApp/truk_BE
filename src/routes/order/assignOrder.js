@@ -29,18 +29,18 @@ const generateAssignID = async () => {
 
 router.post('/assign-order', jwtAuth.verifyToken, async (req, res) => {
     try {
-        const { order_ID, assigned_vehicle_data, vehicle_docs, self_transport, dri_ID, pod, pod_doc } = req.body;
+        const { order_ID, assigned_vehicle_data, self_transport, pod, pod_doc } = req.body;
 
-        if (!order_ID || !dri_ID) {
-            return res.status(400).json({ message: "order_ID and dri_ID are required." });
+        if (!order_ID) {
+            return res.status(400).json({ message: "order_ID is required." });
         }
 
         const assign_ID = await generateAssignID();
 
         await db.query(
-            `INSERT INTO assigning_orders (assign_ID, order_ID, assigned_vehicle_data, vehicle_docs, self_transport, dri_ID, pod, pod_doc)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-            [assign_ID, order_ID, JSON.stringify(assigned_vehicle_data), JSON.stringify(vehicle_docs), self_transport, dri_ID, JSON.stringify(pod), pod_doc]
+            `INSERT INTO assigning_orders (assign_ID, order_ID, assigned_vehicle_data, self_transport, pod, pod_doc)
+            VALUES (?, ?, ?, ?, ?, ?)`,
+            [assign_ID, order_ID, JSON.stringify(assigned_vehicle_data), self_transport, JSON.stringify(pod), pod_doc]
         );
 
         res.status(201).json({ message: "Assigned order created successfully", assign_ID });
@@ -67,17 +67,92 @@ router.get('/assigned-orders', jwtAuth.verifyToken, async (req, res) => {
     }
 });
 
+// router.get('/assigned-order', jwtAuth.verifyToken, async (req, res) => {
+//     try {
+//         const { assign_ID, order_ID, dri_ID } = req.query;
+
+//         if (!assign_ID && !order_ID && !dri_ID) {
+//             return res.status(400).json({ message: "Provide assign_ID, order_ID, or dri_ID in query." });
+//         }
+
+//         let condition = '';
+//         let value = '';
+
+//         if (assign_ID) {
+//             condition = "ao.assign_ID = ?";
+//             value = assign_ID;
+//         } else if (order_ID) {
+//             condition = "ao.order_ID = ?";
+//             value = order_ID;
+//         } else if (dri_ID) {
+//             condition = "JSON_CONTAINS(ao.assigned_vehicle_data, JSON_QUOTE(?), '$')";
+//             value = dri_ID;
+//         }
+
+//         const query = `
+//             SELECT 
+//                 ANY_VALUE(ao.assign_ID) AS assign_ID,
+//                 ANY_VALUE(ao.order_ID) AS order_ID,
+//                 ANY_VALUE(ao.self_transport) AS self_transport,
+//                 ANY_VALUE(ao.pod) AS pod,
+//                 ANY_VALUE(ao.pod_doc) AS pod_doc,
+//                 ANY_VALUE(o.scenario_label) AS scenario_label,
+//                 ANY_VALUE(o.total_cost) AS total_cost,
+//                 ANY_VALUE(o.allocations) AS allocations,
+//                 ANY_VALUE(o.allocated_packages) AS allocated_packages,
+//                 ANY_VALUE(o.unallocated_packages) AS unallocated_packages,
+//                 ANY_VALUE(o.allocated_vehicles) AS allocated_vehicles,
+//                 ANY_VALUE(o.created_at) AS created_at,
+//                 ANY_VALUE(o.updated_at) AS updated_at,
+//                 ANY_VALUE(o.order_status) AS order_status,
+//                 JSON_ARRAYAGG(
+//                     JSON_OBJECT(
+//                         'act_truk_ID', av.act_truk_ID,
+//                         'act_vehicle_num', av.act_vehicle_num,
+//                         'costing', av.costing,
+//                         'driver_details', JSON_OBJECT(
+//                             'dri_ID', md.dri_ID,
+//                             'driver_name', md.driver_name,
+//                             'address', md.address,
+//                             'logged_in', md.logged_in
+//                         ),
+//                         'device_details', JSON_OBJECT(
+//                             'dev_ID', mdv.dev_ID,
+//                             'device_type', mdv.device_type,
+//                             'device_UID', mdv.device_UID
+//                         )
+//                     )
+//                 ) AS vehicle_details
+//             FROM assigning_orders ao
+//             LEFT JOIN orders o ON ao.order_ID = o.order_ID
+//             LEFT JOIN act_vehicles av ON JSON_CONTAINS(ao.assigned_vehicle_data, JSON_QUOTE(av.act_truk_ID), '$')
+//             LEFT JOIN master_drivers md ON JSON_CONTAINS(ao.assigned_vehicle_data, JSON_QUOTE(md.dri_ID), '$')
+//             LEFT JOIN master_devices mdv ON JSON_CONTAINS(ao.assigned_vehicle_data, JSON_QUOTE(mdv.dev_ID), '$')
+//             WHERE ${condition}
+//             GROUP BY ao.assigning_id
+//         `;
+
+//         const [result] = await db.query(query, [value]);
+
+//         res.status(200).json({ data: result });
+//     } catch (error) {
+//         logger.error("Error fetching assigned order:", error);
+//         res.status(500).json({ message: "Internal Server Error", error: error.message });
+//     }
+// });
+
+
 router.get('/assigned-order', jwtAuth.verifyToken, async (req, res) => {
     try {
         const { assign_ID, order_ID, dri_ID } = req.query;
 
-        const filters = [assign_ID, order_ID, dri_ID].filter(param => param !== undefined);
-        if (filters.length !== 1) {
-            return res.status(400).json({ message: "Please provide only one of assign_ID, order_ID, or dri_ID." });
+        if (!assign_ID && !order_ID && !dri_ID) {
+            return res.status(400).json({ message: "Please provide assign_ID, order_ID, or dri_ID in query." });
         }
 
-        let condition = "";
-        let value = "";
+        let condition = '';
+        let value = '';
+
 
         if (assign_ID) {
             condition = "ao.assign_ID = ?";
@@ -86,19 +161,19 @@ router.get('/assigned-order', jwtAuth.verifyToken, async (req, res) => {
             condition = "ao.order_ID = ?";
             value = order_ID;
         } else if (dri_ID) {
-            condition = "ao.dri_ID = ?";
+            condition = "JSON_CONTAINS(ao.assigned_vehicle_data, JSON_OBJECT('dri_ID', ?), '$')";
             value = dri_ID;
         }
 
         const query = `
             SELECT 
-                ao.*, 
-                o.scenario_label, o.total_cost, o.allocations, o.unallocated_packages, o.created_at, o.updated_at, o.order_status,
-                md.driver_name, md.address, md.locations, md.driver_correspondence, md.vehicle_types, md.logged_in
+                ao.assign_ID, ao.order_ID, ao.assigned_vehicle_data, ao.self_transport, ao.pod, ao.pod_doc,
+                o.scenario_label, o.total_cost, o.allocations, o.allocated_packages,
+                o.unallocated_packages, o.allocated_vehicles, o.created_at, o.updated_at, o.order_status
             FROM assigning_orders ao
             LEFT JOIN orders o ON ao.order_ID = o.order_ID
-            LEFT JOIN master_drivers md ON ao.dri_ID = md.dri_ID
-            WHERE ${condition}`;
+            WHERE ${condition}
+        `;
 
         const [result] = await db.query(query, [value]);
 
@@ -109,10 +184,12 @@ router.get('/assigned-order', jwtAuth.verifyToken, async (req, res) => {
     }
 });
 
+
+
 router.put('/update-assigned-order', jwtAuth.verifyToken, async (req, res) => {
     try {
         const { assigning_id } = req.query;
-        const { order_ID, assigned_vehicle_data, vehicle_docs, self_transport, dri_ID, pod, pod_doc } = req.body;
+        const { order_ID, assigned_vehicle_data, self_transport, pod, pod_doc } = req.body;
 
         if (!assigning_id) {
             return res.status(400).json({ message: "assigning_id is required in query." });
@@ -129,17 +206,9 @@ router.put('/update-assigned-order', jwtAuth.verifyToken, async (req, res) => {
             updateFields.push("assigned_vehicle_data = ?");
             values.push(JSON.stringify(assigned_vehicle_data));
         }
-        if (vehicle_docs) {
-            updateFields.push("vehicle_docs = ?");
-            values.push(JSON.stringify(vehicle_docs));
-        }
         if (self_transport !== undefined) {
             updateFields.push("self_transport = ?");
             values.push(self_transport);
-        }
-        if (dri_ID) {
-            updateFields.push("dri_ID = ?");
-            values.push(dri_ID);
         }
         if (pod) {
             updateFields.push("pod = ?");

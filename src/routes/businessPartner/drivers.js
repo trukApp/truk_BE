@@ -125,7 +125,8 @@ router.post('/add-drivers', jwtAuth.verifyToken, async (req, res) => {
                 driver.address,
                 JSON.stringify(driver.driver_correspondence),
                 JSON.stringify(driver.vehicle_types),
-                driver.logged_in || 0
+                driver.logged_in || 0,
+                driver_availability ||0
             ];
         });
 
@@ -137,7 +138,8 @@ router.post('/add-drivers', jwtAuth.verifyToken, async (req, res) => {
                 address,
                 driver_correspondence,
                 vehicle_types,
-                logged_in
+                logged_in,
+                driver_availability
             ) VALUES ?
         `, [values]);
 
@@ -235,7 +237,8 @@ router.get('/get-driver', jwtAuth.verifyToken, async (req, res) => {
                 address,
                 driver_correspondence,
                 vehicle_types,
-                logged_in
+                logged_in,
+                driver_availability
             FROM 
                 master_drivers
             WHERE 
@@ -285,7 +288,7 @@ router.get('/get-driver', jwtAuth.verifyToken, async (req, res) => {
 
 router.put('/edit-driver', jwtAuth.verifyToken, async (req, res) => {
     const { driver_id } = req.query;
-    const { locations, driver_name, address, driver_correspondence, vehicle_types, logged_in } = req.body;
+    const { locations, driver_name, address, driver_correspondence, vehicle_types, driver_availability, logged_in } = req.body;
 
     if (!driver_id) {
         return res.status(400).json({ message: 'driver_id is required in query parameters' });
@@ -301,7 +304,8 @@ router.put('/edit-driver', jwtAuth.verifyToken, async (req, res) => {
                 address = ?, 
                 driver_correspondence = ?, 
                 vehicle_types = ?, 
-                logged_in = ? 
+                logged_in = ? ,
+                driver_availability =?
             WHERE 
                 driver_id = ?
         `, [
@@ -311,6 +315,7 @@ router.put('/edit-driver', jwtAuth.verifyToken, async (req, res) => {
             JSON.stringify(driver_correspondence),
             JSON.stringify(vehicle_types),
             logged_in,
+            driver_availability,
             driver_id,
         ]);
 

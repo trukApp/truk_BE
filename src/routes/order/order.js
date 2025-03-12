@@ -1236,33 +1236,35 @@ async function getPackagesByIds(packageIDs) {
 }
 
 
-router.post('/create-order', jwtAuth.verifyToken, async (req, res)=>{
+router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
   try {
-    const { packages: packageIDs, filters }= req.body;
-    if (!Array.isArray(packageIDs) || packageIDs.length===0) {
-      return res.status(400).json({error:'No valid package IDs provided'});
+    const { packages: packageIDs, filters } = req.body;
+    if (!Array.isArray(packageIDs) || packageIDs.length === 0) {
+      return res.status(400).json({ error: 'No valid package IDs provided.' });
     }
 
-    const packagesData= await getPackagesByIds(packageIDs);
+    const packagesData = await getPackagesByIds(packageIDs);
     if (!packagesData.length) {
-      return res.status(400).json({error:'No valid packages found'});
+      return res.status(400).json({ error: 'No valid packages found.' });
     }
 
-    const firstShipFrom= packagesData[0].ship_from;
+    const firstShipFrom = packagesData[0].ship_from;
     for (const pkg of packagesData) {
-      if (pkg.ship_from!== firstShipFrom) {
-        return res.status(400).json({error:'All packages must have same ship_from'});
+      if (pkg.ship_from !== firstShipFrom) {
+        return res.status(400).json({
+          error: 'All packages must have the same ship_from location.'
+        });
       }
     }
 
-    const resolvedProducts= packagesData.flatMap(p=> p.products);
-    const productIDs= resolvedProducts.map(rp=> rp.prod_ID);
+    const resolvedProducts = packagesData.flatMap(p => p.products);
+    const productIDs = resolvedProducts.map(rp => rp.prod_ID);
     if (!productIDs.length) {
-      return res.status(400).json({error:'No product lines found'});
+      return res.status(400).json({ error: 'No product lines found in given packages.' });
     }
 
-    const placeholders= productIDs.map(()=>'?').join(',');
-    const [rows]= await db.query(`
+    const placeholders = productIDs.map(() => '?').join(',');
+    const [rows] = await db.query(`
       SELECT product_ID, weight, weight_uom, volume, volume_uom,
              fragile_goods, dangerous_goods, hazardous, temp_controlled,
              packaging_type
@@ -1270,9 +1272,9 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res)=>{
       WHERE product_ID IN (${placeholders})
     `, productIDs);
 
-    const productMap={};
-    rows.forEach(r=>{
-      productMap[r.product_ID]= {
+    const productMap = {};
+    rows.forEach(r => {
+      productMap[r.product_ID] = {
         weight: r.weight,
         weight_uom: r.weight_uom,
         volume: r.volume,
@@ -1285,12 +1287,12 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res)=>{
       };
     });
 
-    let [dbVehicles]= await db.query(`SELECT * FROM master_vehicles`);
-    dbVehicles= dbVehicles.map(v=>{
-      const trans= safeJsonParse(v.transportation_details);
-      const downs= safeJsonParse(v.downtimes);
-      const caps= safeJsonParse(v.capacity);
-      const addl= safeJsonParse(v.additional_details);
+    let [dbVehicles] = await db.query(`SELECT * FROM master_vehicles`);
+    dbVehicles = dbVehicles.map(v => {
+      const trans = safeJsonParse(v.transportation_details);
+      const downs = safeJsonParse(v.downtimes);
+      const caps = safeJsonParse(v.capacity);
+      const addl = safeJsonParse(v.additional_details);
       return {
         ...v,
         transportation_details: trans,
@@ -1300,43 +1302,58 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res)=>{
         totalVolumeCapacity: convertVehicleVolume(caps?.cubic_capacity, caps?.cubic_capacity_unit),
         weightCapKg: convertVehicleWeight(caps?.payload_weight, caps?.payload_weight_unit),
         volumeCapM3: convertVehicleVolume(caps?.cubic_capacity, caps?.cubic_capacity_unit),
-        cost_per_ton: addl?.cost_per_ton? parseFloat(addl.cost_per_ton):0
+        cost_per_ton: addl?.cost_per_ton ? parseFloat(addl.cost_per_ton) : 0
       };
     });
 
     if (filters?.checkValidity) {
-      dbVehicles= dbVehicles.filter(isVehicleValid);
+      dbVehicles = dbVehicles.filter(isVehicleValid);
     }
     if (filters?.checkDowntime) {
-      dbVehicles= dbVehicles.filter(v=> !isVehicleDown(v));
+      dbVehicles = dbVehicles.filter(v => !isVehicleDown(v));
     }
     if (filters?.sortUnlimitedUsage) {
-      dbVehicles.sort((a,b)=>(a.unlimited_usage||0)-(b.unlimited_usage||0));
+      dbVehicles.sort((a, b) => (a.unlimited_usage || 0) - (b.unlimited_usage || 0));
     }
     if (filters?.sortOwnership) {
-      dbVehicles.sort((a,b)=> (a.individual_resource||"").localeCompare(b.individual_resource||""));
+      dbVehicles.sort((a, b) => (a.individual_resource || '')
+        .localeCompare(b.individual_resource || ''));
     }
 
-    dbVehicles.sort((a,b)=> a.cost_per_ton - b.cost_per_ton);
+    dbVehicles.sort((a, b) => a.cost_per_ton - b.cost_per_ton);
 
-    const sourceLoc= await getLocationById(firstShipFrom);
+    const sourceLoc = await getLocationById(firstShipFrom);
 
-    const allPacIDs= collectAllPacIDs(packagesData, productMap);
-    const packagingInfoMap= await loadAllPackageInfo(allPacIDs);
+    const allPacIDs = collectAllPacIDs(packagesData, productMap);
+    const packagingInfoMap = await loadAllPackageInfo(allPacIDs);
 
-    const result= await allocatePackages(packagesData, dbVehicles, sourceLoc, productMap, packagingInfoMap);
+    const { allocations, totalCost, unallocated } = await allocatePackages(
+      packagesData, dbVehicles, sourceLoc, productMap, packagingInfoMap
+    );
+
+    const allNull = allocations.length > 0 && allocations.every(a => a.vehicle_ID === null);
+    if (allNull) {
+      return res.status(200).json({
+        message: "No suitable vehicles found for these package(s). " +
+                 "Possibly special conditions or capacity mismatch.",
+        totalCost: null,
+        allocations,
+        unallocatedPackages: unallocated
+      });
+    }
 
     return res.status(200).json({
-      message:"Best Combinational Scenario",
-      totalCost: result.totalCost,
-      allocations: result.allocations,
-      unallocatedPackages: result.unallocated
+      message: "Best Combinational Scenario",
+      totalCost: totalCost || 0, 
+      allocations,
+      unallocatedPackages: unallocated
     });
 
   } catch (error) {
     logger.error('Error creating order:', error);
-    return res.status(500).json({error: error.message});
+    return res.status(500).json({ error: error.message });
   }
 });
+
 
 module.exports= router;

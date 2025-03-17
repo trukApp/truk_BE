@@ -72,6 +72,43 @@ router.get('/all-vehicles', jwtAuth.verifyToken, async (req, res) => {
 });
 
 
+
+router.get('/search-trucks', jwtAuth.verifyToken, async (req, res) => {
+    try {
+        const { searchKey, page, limit } = req.query;
+
+        if (!searchKey || searchKey.trim().length < 1) {
+            return res.status(400).json({ message: 'Search key is required in the query.' });
+        }
+
+        const query = `
+            SELECT * FROM act_vehicles 
+            WHERE 
+                act_truk_ID LIKE ? 
+                OR act_vehicle_num LIKE ?
+        `;
+
+        const searchPattern = `%${searchKey}%`;
+
+        const paginatedQuery = applyPagination(query, page, limit);
+        const [trucks] = await db.query(paginatedQuery, [searchPattern, searchPattern]);
+
+        if (trucks.length === 0) {
+            return res.status(404).json({ message: 'No trucks found matching the search criteria.' });
+        }
+
+        return res.status(200).json({
+            message: 'Trucks retrieved successfully.',
+            searchKey,
+            results: trucks
+        });
+    } catch (error) {
+        logger.error('Error searching trucks:', error);
+        return res.status(500).json({ message: 'An error occurred while searching trucks.', error: error.message });
+    }
+});
+
+
 router.get('/vehicle', jwtAuth.verifyToken, async (req, res) => {
     try {
         const { act_truk_ID, vehicle_ID, available } = req.query;

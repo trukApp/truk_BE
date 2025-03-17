@@ -219,6 +219,43 @@ router.get('/get-drivers', jwtAuth.verifyToken, async (req, res) => {
 });
 
 
+router.get('/search-drivers', jwtAuth.verifyToken, async (req, res) => {
+    try {
+        const { searchKey, page, limit } = req.query;
+
+        if (!searchKey || searchKey.trim().length < 1) {
+            return res.status(400).json({ message: 'Search key is required in the query.' });
+        }
+
+        const query = `
+            SELECT * FROM master_drivers 
+            WHERE 
+                dri_ID LIKE ? 
+                OR driver_name LIKE ? 
+                OR JSON_EXTRACT(driver_correspondence, '$.phone') LIKE ?
+        `;
+
+        const searchPattern = `%${searchKey}%`;
+
+        const paginatedQuery = applyPagination(query, page, limit);
+        const [drivers] = await db.query(paginatedQuery, [searchPattern, searchPattern, searchPattern]);
+
+        if (drivers.length === 0) {
+            return res.status(404).json({ message: 'No drivers found matching the search criteria.' });
+        }
+
+        return res.status(200).json({
+            message: 'Drivers retrieved successfully.',
+            searchKey,
+            results: drivers
+        });
+    } catch (error) {
+        logger.error('Error searching drivers:', error);
+        return res.status(500).json({ message: 'An error occurred while searching drivers.', error: error.message });
+    }
+});
+
+
 
 router.get('/get-driver', jwtAuth.verifyToken, async (req, res) => {
     const { dri_ID } = req.query;

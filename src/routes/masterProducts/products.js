@@ -169,6 +169,44 @@ router.get('/all-products', jwtAuth.verifyToken, async (req, res) => {
 });
 
 
+router.get('/search-products', jwtAuth.verifyToken, async (req, res) => {
+    try {
+        const { searchKey, page, limit } = req.query;
+
+        if (!searchKey || searchKey.trim().length < 1) {
+            return res.status(400).json({ message: 'Search key is required in the query.' });
+        }
+
+        const query = `
+            SELECT * FROM master_products 
+            WHERE 
+                product_ID LIKE ? 
+                OR product_name LIKE ? 
+                OR sku_num LIKE ? 
+                OR hsn_code LIKE ?
+        `;
+
+        const searchPattern = `%${searchKey}%`;
+
+        const paginatedQuery = applyPagination(query, page, limit);
+        const [products] = await db.query(paginatedQuery, [searchPattern, searchPattern, searchPattern, searchPattern]);
+
+        if (products.length === 0) {
+            return res.status(404).json({ message: 'No products found matching the search criteria.' });
+        }
+
+        return res.status(200).json({
+            message: 'Products retrieved successfully.',
+            searchKey,
+            results: products
+        });
+    } catch (error) {
+        logger.error('Error searching products:', error);
+        return res.status(500).json({ message: 'An error occurred while searching products.', error: error.message });
+    }
+});
+
+
 router.get('/product', jwtAuth.verifyToken, async (req, res) => {
     const { product_ID } = req.query;
 

@@ -5,7 +5,6 @@ const { logger } = require('../../logger/logger');
 const { applyPagination } = require('../../pagination/paginate');
 const jwtAuth = require('../../JWT/jwtAuth');
 
-
 router.post('/confirm-order', jwtAuth.verifyToken, async (req, res) => {
     try {
         const {
@@ -23,28 +22,36 @@ router.post('/confirm-order', jwtAuth.verifyToken, async (req, res) => {
             });
         }
 
-        const packagesToConfirm = new Set();
+        const allocatedPackagesSet = new Set();
+        const allocatedVehiclesSet = new Set();
+
         if (Array.isArray(allocations)) {
             allocations.forEach(alloc => {
+                if (alloc.vehicle_ID) {
+                    allocatedVehiclesSet.add(alloc.vehicle_ID);
+                }
+
                 if (Array.isArray(alloc.packages)) {
                     alloc.packages.forEach(packID => {
-                        packagesToConfirm.add(packID);
+                        allocatedPackagesSet.add(packID);
                     });
                 }
             });
         }
-        
-        const packageList = Array.from(packagesToConfirm);
-        if (packageList.length === 0) {
+
+        const allocatedPackages = Array.from(allocatedPackagesSet);
+        const allocatedVehicles = Array.from(allocatedVehiclesSet);
+
+        if (allocatedPackages.length === 0) {
             return res.status(400).json({
                 message: 'No valid packages found for confirmation.'
             });
         }
 
-        const placeholders = packageList.map(() => '?').join(',');
+        const placeholders = allocatedPackages.map(() => '?').join(',');
         const [existingPackages] = await db.query(`
             SELECT pack_ID FROM packages WHERE pack_ID IN (${placeholders}) AND package_status = 'ordered'
-        `, packageList);
+        `, allocatedPackages);
 
         if (existingPackages.length > 0) {
             const alreadyConfirmedPackages = existingPackages.map(row => row.pack_ID);
@@ -63,18 +70,18 @@ router.post('/confirm-order', jwtAuth.verifyToken, async (req, res) => {
         const padded = String(newNumeric).padStart(6, '0');
         const newOrderID = 'ORD' + padded;
 
-        // const now = new Date().toISOString();
-
         await db.query(`
-            INSERT INTO orders
-            (order_ID, scenario_label, total_cost, allocations, unallocated_packages, created_at, updated_at, order_status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO orders 
+            (order_ID, scenario_label, total_cost, allocations, unallocated_packages, allocated_packages, allocated_vehicles, created_at, updated_at, order_status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `, [
             newOrderID,
             scenario_label,
             total_cost,
             JSON.stringify(allocations || []),
             JSON.stringify(unallocated_packages || []),
+            JSON.stringify(allocatedPackages),
+            JSON.stringify(allocatedVehicles),
             created_at,
             updated_at,
             "order placed"
@@ -84,14 +91,15 @@ router.post('/confirm-order', jwtAuth.verifyToken, async (req, res) => {
             UPDATE packages
             SET package_status = 'ordered'
             WHERE pack_ID IN (${placeholders})
-        `, packageList);
+        `, allocatedPackages);
 
         return res.status(201).json({
             message: 'Order confirmed successfully.',
             order_ID: newOrderID,
             scenario_label,
             total_cost,
-            allocated_packages: packageList,
+            allocated_packages: allocatedPackages,
+            allocated_vehicles: allocatedVehicles,
             unallocated_packages: unallocated_packages || []
         });
 
@@ -103,8 +111,7 @@ router.post('/confirm-order', jwtAuth.verifyToken, async (req, res) => {
     }
 });
 
-
-  router.get('/all-orders', jwtAuth.verifyToken, async (req, res) => {
+router.get('/all-orders', jwtAuth.verifyToken, async (req, res) => {
     try {
         const { page, limit } = req.query;
         let query = `SELECT * FROM orders ORDER BY created_at DESC`;
@@ -122,8 +129,6 @@ router.post('/confirm-order', jwtAuth.verifyToken, async (req, res) => {
     }
 });
 
-
-
 router.get('/order-by-id', jwtAuth.verifyToken, async (req, res) => {
     try {
         const { order_ID } = req.query;
@@ -131,12 +136,57 @@ router.get('/order-by-id', jwtAuth.verifyToken, async (req, res) => {
             return res.status(400).json({ message: 'Missing required query parameter: order_ID' });
         }
 
-        const [order] = await db.query(`SELECT * FROM orders WHERE order_ID = ?`, [order_ID]);
-        if (!order.length) {
+        const [orderResult] = await db.query(`SELECT * FROM orders WHERE order_ID = ?`, [order_ID]);
+        if (!orderResult.length) {
             return res.status(404).json({ message: 'Order not found.' });
         }
 
-        return res.status(200).json({ message: 'Order retrieved successfully.', order: order[0] });
+        const order = orderResult[0];
+        let allocatedPackages = [];
+        let allocatedVehicles = [];
+
+        // Safe JSON parsing function
+        const safeParse = (data) => {
+            if (!data) return [];
+            if (Array.isArray(data)) return data;
+            if (typeof data === 'string') {
+                try {
+                    return JSON.parse(data);
+                } catch {
+                    return data.split(',').map(item => item.trim());
+                }
+            }
+            return [];
+        };
+
+        allocatedPackages = safeParse(order.allocated_packages);
+        allocatedVehicles = safeParse(order.allocated_vehicles);
+
+        let packageDetails = [];
+        if (allocatedPackages.length > 0) {
+            const packagePlaceholders = allocatedPackages.map(() => '?').join(',');
+            const [packages] = await db.query(`
+                SELECT * FROM packages WHERE pack_ID IN (${packagePlaceholders})
+            `, allocatedPackages);
+            packageDetails = packages;
+        }
+
+        let vehicleDetails = [];
+        if (allocatedVehicles.length > 0) {
+            const vehiclePlaceholders = allocatedVehicles.map(() => '?').join(',');
+            const [vehicles] = await db.query(`
+                SELECT * FROM master_vehicles WHERE vehicle_ID IN (${vehiclePlaceholders})
+            `, allocatedVehicles);
+            vehicleDetails = vehicles;
+        }
+
+        return res.status(200).json({
+            message: 'Order retrieved successfully.',
+            order,
+            allocated_packages_details: packageDetails,
+            allocated_vehicles: vehicleDetails
+        });
+
     } catch (error) {
         logger.error('Error fetching order by ID:', error);
         return res.status(500).json({ message: 'Server error.', error: error.message });
@@ -148,7 +198,7 @@ router.get('/order-by-id', jwtAuth.verifyToken, async (req, res) => {
 router.put('/edit-order', jwtAuth.verifyToken, async (req, res) => {
     try {
         const { order_ID } = req.query;
-        const { order_status } = req.body;
+        const { order_status, allocated_packages, allocated_vehicles } = req.body;
 
         if (!order_ID) {
             return res.status(400).json({ message: 'Missing required query parameter: order_ID' });
@@ -163,10 +213,12 @@ router.put('/edit-order', jwtAuth.verifyToken, async (req, res) => {
 
         await db.query(`
             UPDATE orders
-            SET order_status = ?, updated_at = ?
+            SET order_status = ?, allocated_packages = ?, allocated_vehicles = ?, updated_at = ?
             WHERE order_ID = ?
         `, [
             order_status,
+            JSON.stringify(allocated_packages || []),
+            JSON.stringify(allocated_vehicles || []),
             now,
             order_ID
         ]);
@@ -177,8 +229,6 @@ router.put('/edit-order', jwtAuth.verifyToken, async (req, res) => {
         return res.status(500).json({ message: 'Server error.', error: error.message });
     }
 });
-
-
 
 router.delete('/delete-order', jwtAuth.verifyToken, async (req, res) => {
     try {

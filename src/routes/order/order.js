@@ -551,9 +551,15 @@ const { parseWeightAndUOM, parseVolumeAndUOM } = require('./unitParser');
 const jwtAuth = require('../../JWT/jwtAuth');
 const polyline = require('@mapbox/polyline');
 
-
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 
+const routeCache = new Map();
+
+function buildRouteKey(locations) {
+  return locations
+    .map(loc => `${loc.latitude},${loc.longitude}`)
+    .join('|');
+}
 
 function toRadians(deg) {
   return deg * Math.PI / 180;
@@ -562,59 +568,24 @@ function distanceBetweenCoords(lat1, lon1, lat2, lon2) {
   const R = 6371;
   const dLat = toRadians(lat2 - lat1);
   const dLon = toRadians(lon2 - lon1);
-  const a = 
+  const a =
     Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRadians(lat1)) * Math.cos(toRadians(lat2)) *
+    Math.cos(toRadians(lat1)) *
+    Math.cos(toRadians(lat2)) *
     Math.sin(dLon / 2) ** 2;
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   return R * c;
 }
-
-
-
-function getBearing(lat1, lon1, lat2, lon2) {
-  const dLon = toRadians(lon2 - lon1);
-  const phi1 = toRadians(lat1);
-  const phi2 = toRadians(lat2);
-  const y = Math.sin(dLon) * Math.cos(phi2);
-  const x = Math.cos(phi1)*Math.sin(phi2) - Math.sin(phi1)*Math.cos(phi2)*Math.cos(dLon);
-  let bearingDeg = (Math.atan2(y, x) * 180 / Math.PI);
-  bearingDeg = (bearingDeg + 360) % 360;
-  return bearingDeg;
-}
-function getDirection8(bearingDeg) {
-  if (bearingDeg >= 337.5 || bearingDeg < 22.5) return 'N';
-  if (bearingDeg >= 22.5 && bearingDeg < 67.5) return 'NE';
-  if (bearingDeg >= 67.5 && bearingDeg < 112.5) return 'E';
-  if (bearingDeg >= 112.5 && bearingDeg < 157.5) return 'SE';
-  if (bearingDeg >= 157.5 && bearingDeg < 202.5) return 'S';
-  if (bearingDeg >= 202.5 && bearingDeg < 247.5) return 'SW';
-  if (bearingDeg >= 247.5 && bearingDeg < 292.5) return 'W';
-  if (bearingDeg >= 292.5 && bearingDeg < 337.5) return 'NW';
-  return 'N'; 
-}
-
-
-function isDirectionCompatible(dirA, dirB) {
-  if (dirA === dirB) return true;
-  const dirs = ["N","NE","E","SE","S","SW","W","NW"];
-  const iA = dirs.indexOf(dirA);
-  const iB = dirs.indexOf(dirB);
-  if (iA < 0 || iB < 0) return false;
-  let diff = Math.abs(iA - iB);
-  if (diff > 4) diff = 8 - diff;
-  return diff <= 2;
-}
-
-
-
 function sampleRoutePoints(coords, intervalKm = 20) {
   if (!coords.length) return [];
   const sampled = [coords[0]];
   let lastPoint = coords[0];
   let distAcc = 0;
-  for (let i=1; i<coords.length; i++) {
-    const d = distanceBetweenCoords(lastPoint.lat, lastPoint.lng, coords[i].lat, coords[i].lng);
+  for (let i = 1; i < coords.length; i++) {
+    const d = distanceBetweenCoords(
+      lastPoint.lat, lastPoint.lng,
+      coords[i].lat, coords[i].lng
+    );
     distAcc += d;
     if (distAcc >= intervalKm) {
       sampled.push(coords[i]);
@@ -622,36 +593,65 @@ function sampleRoutePoints(coords, intervalKm = 20) {
       distAcc = 0;
     }
   }
-  if (sampled[sampled.length-1] !== coords[coords.length-1]) {
-    sampled.push(coords[coords.length-1]);
+
+  if (sampled[sampled.length - 1] !== coords[coords.length - 1]) {
+    sampled.push(coords[coords.length - 1]);
   }
   return sampled;
 }
 
+
 async function getOptimizedRouteWithLoad(locations, shipmentLoads) {
+  if (!Array.isArray(locations) || locations.length < 2) {
+    throw new Error("Locations array must have at least two points (origin/dest).");
+  }
+
+  const routeKey = buildRouteKey(locations);
+
+
+  if (routeCache.has(routeKey)) {
+    const cached = routeCache.get(routeKey);
+
+    const freshOptimizedRoute = [];
+    for (let i = 0; i < cached.optimizedRoute.length; i++) {
+      const leg = { ...cached.optimizedRoute[i] }; 
+      if (i < shipmentLoads.length) {
+        leg.loadAfterStop = (i === 0 ? shipmentLoads[i] : leg.loadAfterStop); 
+      }
+      freshOptimizedRoute.push(leg);
+    }
+
+    return {
+      optimizedRoute: freshOptimizedRoute,
+      sampledCoords: cached.sampledCoords
+    };
+  }
+
+
   const origin = locations[0];
-  const destination = locations[locations.length -1];
+  const destination = locations[locations.length - 1];
   const waypoints = (locations.length > 2)
     ? locations.slice(1, -1).map(loc => `${loc.latitude},${loc.longitude}`).join('|')
     : '';
 
-  const url = `https://maps.googleapis.com/maps/api/directions/json?origin=${origin.latitude},${origin.longitude}`+
-    `&destination=${destination.latitude},${destination.longitude}`+
-    (waypoints ? `&waypoints=${waypoints}` : '')+
+  const url = `https://maps.googleapis.com/maps/api/directions/json?origin=${origin.latitude},${origin.longitude}` +
+    `&destination=${destination.latitude},${destination.longitude}` +
+    (waypoints ? `&waypoints=${waypoints}` : '') +
     `&key=${GOOGLE_API_KEY}`;
 
   try {
     const resp = await axios.get(url);
     if (resp.data.status !== 'OK') {
-      console.error("Google API Error:", resp.data);
+      console.error("Google API Error Response:", resp.data);
       throw new Error(`Google Maps API Error: ${resp.data.status}`);
     }
+
     const routeLegs = resp.data.routes[0].legs;
     const optimizedRoute = [];
     let currentLoad = 0;
     routeLegs.forEach((leg, index) => {
-      const shipmentLoad = shipmentLoads[index] || 0;
-      currentLoad += shipmentLoad;
+      const load = shipmentLoads[index] || 0;
+      currentLoad += load;
       if (leg.start_address !== leg.end_address) {
         optimizedRoute.push({
           start: {
@@ -661,8 +661,8 @@ async function getOptimizedRouteWithLoad(locations, shipmentLoads) {
           },
           end: {
             address: leg.end_address,
-            latitude: locations[index+1].latitude,
-            longitude: locations[index+1].longitude
+            latitude: locations[index + 1].latitude,
+            longitude: locations[index + 1].longitude
           },
           distance: leg.distance.text,
           duration: leg.duration.text,
@@ -670,16 +670,100 @@ async function getOptimizedRouteWithLoad(locations, shipmentLoads) {
         });
       }
     });
-    const overview = resp.data.routes[0].overview_polyline.points;
-    const decoded = polyline.decode(overview).map(([lat,lng])=>({lat,lng}));
-    const sampled = sampleRoutePoints(decoded, 20);
 
-    return { optimizedRoute, sampledCoords: sampled };
+    const overviewPolyline = resp.data.routes[0].overview_polyline.points;
+    const decodedCoords = polyline.decode(overviewPolyline).map(([lat, lng]) => ({ lat, lng }));
+    const sampledCoords = sampleRoutePoints(decodedCoords, 20);
+
+    const toCache = {
+      optimizedRoute,
+      sampledCoords
+    };
+    routeCache.set(routeKey, toCache);
+
+    return {
+      optimizedRoute,
+      sampledCoords
+    };
   } catch (err) {
     console.error("Error in getOptimizedRouteWithLoad:", err.message);
     throw err;
   }
 }
+
+function getBearing(lat1, lon1, lat2, lon2) {
+  // Convert degrees to radians
+  function toRadians(deg) {
+    return deg * Math.PI / 180;
+  }
+
+  const dLon = toRadians(lon2 - lon1);
+  const phi1 = toRadians(lat1);
+  const phi2 = toRadians(lat2);
+
+  const y = Math.sin(dLon) * Math.cos(phi2);
+  const x = Math.cos(phi1) * Math.sin(phi2)
+    - Math.sin(phi1) * Math.cos(phi2) * Math.cos(dLon);
+
+  let bearingDeg = (Math.atan2(y, x) * 180) / Math.PI;
+  bearingDeg = (bearingDeg + 360) % 360;
+  return bearingDeg;
+}
+
+
+function getDirection8(bearingDeg) {
+  if (bearingDeg >= 337.5 || bearingDeg < 22.5)  return 'N';
+  if (bearingDeg >= 22.5  && bearingDeg < 67.5)  return 'NE';
+  if (bearingDeg >= 67.5  && bearingDeg < 112.5) return 'E';
+  if (bearingDeg >= 112.5 && bearingDeg < 157.5) return 'SE';
+  if (bearingDeg >= 157.5 && bearingDeg < 202.5) return 'S';
+  if (bearingDeg >= 202.5 && bearingDeg < 247.5) return 'SW';
+  if (bearingDeg >= 247.5 && bearingDeg < 292.5) return 'W';
+  if (bearingDeg >= 292.5 && bearingDeg < 337.5) return 'NW';
+  return 'N';
+}
+
+
+function isDirectionCompatible(dirA, dirB) {
+  if (dirA === dirB) return true;
+
+  const dirs = ["N","NE","E","SE","S","SW","W","NW"];
+
+  const iA = dirs.indexOf(dirA);
+  const iB = dirs.indexOf(dirB);
+
+  if (iA < 0 || iB < 0) return false;
+  let diff = Math.abs(iA - iB);
+  if (diff > 4) diff = 8 - diff;
+  return diff <= 2;
+}
+
+
+function groupPackagesByDirection(pkgInfos) {
+  const visited = new Set();
+  const groups = [];
+  for (let i = 0; i < pkgInfos.length; i++) {
+    if (visited.has(i)) continue;
+    const queue = [i];
+    visited.add(i);
+    const cluster = [pkgInfos[i]];
+
+    while (queue.length > 0) {
+      const idx = queue.shift();
+      for (let j = 0; j < pkgInfos.length; j++) {
+        if (visited.has(j)) continue;
+        if (isDirectionCompatible(pkgInfos[idx].direction8, pkgInfos[j].direction8)) {
+          visited.add(j);
+          queue.push(j);
+          cluster.push(pkgInfos[j]);
+        }
+      }
+    }
+    groups.push(cluster);
+  }
+  return groups;
+}
+
 
 
 
@@ -1152,33 +1236,35 @@ async function getPackagesByIds(packageIDs) {
 }
 
 
-router.post('/create-order', jwtAuth.verifyToken, async (req, res)=>{
+router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
   try {
-    const { packages: packageIDs, filters }= req.body;
-    if (!Array.isArray(packageIDs) || packageIDs.length===0) {
-      return res.status(400).json({error:'No valid package IDs provided'});
+    const { packages: packageIDs, filters } = req.body;
+    if (!Array.isArray(packageIDs) || packageIDs.length === 0) {
+      return res.status(400).json({ error: 'No valid package IDs provided.' });
     }
 
-    const packagesData= await getPackagesByIds(packageIDs);
+    const packagesData = await getPackagesByIds(packageIDs);
     if (!packagesData.length) {
-      return res.status(400).json({error:'No valid packages found'});
+      return res.status(400).json({ error: 'No valid packages found.' });
     }
 
-    const firstShipFrom= packagesData[0].ship_from;
+    const firstShipFrom = packagesData[0].ship_from;
     for (const pkg of packagesData) {
-      if (pkg.ship_from!== firstShipFrom) {
-        return res.status(400).json({error:'All packages must have same ship_from'});
+      if (pkg.ship_from !== firstShipFrom) {
+        return res.status(400).json({
+          error: 'All packages must have the same ship_from location.'
+        });
       }
     }
 
-    const resolvedProducts= packagesData.flatMap(p=> p.products);
-    const productIDs= resolvedProducts.map(rp=> rp.prod_ID);
+    const resolvedProducts = packagesData.flatMap(p => p.products);
+    const productIDs = resolvedProducts.map(rp => rp.prod_ID);
     if (!productIDs.length) {
-      return res.status(400).json({error:'No product lines found'});
+      return res.status(400).json({ error: 'No product lines found in given packages.' });
     }
 
-    const placeholders= productIDs.map(()=>'?').join(',');
-    const [rows]= await db.query(`
+    const placeholders = productIDs.map(() => '?').join(',');
+    const [rows] = await db.query(`
       SELECT product_ID, weight, weight_uom, volume, volume_uom,
              fragile_goods, dangerous_goods, hazardous, temp_controlled,
              packaging_type
@@ -1186,9 +1272,9 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res)=>{
       WHERE product_ID IN (${placeholders})
     `, productIDs);
 
-    const productMap={};
-    rows.forEach(r=>{
-      productMap[r.product_ID]= {
+    const productMap = {};
+    rows.forEach(r => {
+      productMap[r.product_ID] = {
         weight: r.weight,
         weight_uom: r.weight_uom,
         volume: r.volume,
@@ -1201,12 +1287,12 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res)=>{
       };
     });
 
-    let [dbVehicles]= await db.query(`SELECT * FROM master_vehicles`);
-    dbVehicles= dbVehicles.map(v=>{
-      const trans= safeJsonParse(v.transportation_details);
-      const downs= safeJsonParse(v.downtimes);
-      const caps= safeJsonParse(v.capacity);
-      const addl= safeJsonParse(v.additional_details);
+    let [dbVehicles] = await db.query(`SELECT * FROM master_vehicles`);
+    dbVehicles = dbVehicles.map(v => {
+      const trans = safeJsonParse(v.transportation_details);
+      const downs = safeJsonParse(v.downtimes);
+      const caps = safeJsonParse(v.capacity);
+      const addl = safeJsonParse(v.additional_details);
       return {
         ...v,
         transportation_details: trans,
@@ -1216,43 +1302,58 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res)=>{
         totalVolumeCapacity: convertVehicleVolume(caps?.cubic_capacity, caps?.cubic_capacity_unit),
         weightCapKg: convertVehicleWeight(caps?.payload_weight, caps?.payload_weight_unit),
         volumeCapM3: convertVehicleVolume(caps?.cubic_capacity, caps?.cubic_capacity_unit),
-        cost_per_ton: addl?.cost_per_ton? parseFloat(addl.cost_per_ton):0
+        cost_per_ton: addl?.cost_per_ton ? parseFloat(addl.cost_per_ton) : 0
       };
     });
 
     if (filters?.checkValidity) {
-      dbVehicles= dbVehicles.filter(isVehicleValid);
+      dbVehicles = dbVehicles.filter(isVehicleValid);
     }
     if (filters?.checkDowntime) {
-      dbVehicles= dbVehicles.filter(v=> !isVehicleDown(v));
+      dbVehicles = dbVehicles.filter(v => !isVehicleDown(v));
     }
     if (filters?.sortUnlimitedUsage) {
-      dbVehicles.sort((a,b)=>(a.unlimited_usage||0)-(b.unlimited_usage||0));
+      dbVehicles.sort((a, b) => (a.unlimited_usage || 0) - (b.unlimited_usage || 0));
     }
     if (filters?.sortOwnership) {
-      dbVehicles.sort((a,b)=> (a.individual_resource||"").localeCompare(b.individual_resource||""));
+      dbVehicles.sort((a, b) => (a.individual_resource || '')
+        .localeCompare(b.individual_resource || ''));
     }
 
-    dbVehicles.sort((a,b)=> a.cost_per_ton - b.cost_per_ton);
+    dbVehicles.sort((a, b) => a.cost_per_ton - b.cost_per_ton);
 
-    const sourceLoc= await getLocationById(firstShipFrom);
+    const sourceLoc = await getLocationById(firstShipFrom);
 
-    const allPacIDs= collectAllPacIDs(packagesData, productMap);
-    const packagingInfoMap= await loadAllPackageInfo(allPacIDs);
+    const allPacIDs = collectAllPacIDs(packagesData, productMap);
+    const packagingInfoMap = await loadAllPackageInfo(allPacIDs);
 
-    const result= await allocatePackages(packagesData, dbVehicles, sourceLoc, productMap, packagingInfoMap);
+    const { allocations, totalCost, unallocated } = await allocatePackages(
+      packagesData, dbVehicles, sourceLoc, productMap, packagingInfoMap
+    );
+
+    const allNull = allocations.length > 0 && allocations.every(a => a.vehicle_ID === null);
+    if (allNull) {
+      return res.status(200).json({
+        message: "No suitable vehicles found for these package(s). " +
+                 "Possibly special conditions or capacity mismatch.",
+        totalCost: null,
+        allocations,
+        unallocatedPackages: unallocated
+      });
+    }
 
     return res.status(200).json({
-      message:"Best Combinational Scenario",
-      totalCost: result.totalCost,
-      allocations: result.allocations,
-      unallocatedPackages: result.unallocated
+      message: "Best Combinational Scenario",
+      totalCost: totalCost || 0, 
+      allocations,
+      unallocatedPackages: unallocated
     });
 
   } catch (error) {
     logger.error('Error creating order:', error);
-    return res.status(500).json({error: error.message});
+    return res.status(500).json({ error: error.message });
   }
 });
+
 
 module.exports= router;

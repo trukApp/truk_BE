@@ -125,7 +125,8 @@ router.post('/add-drivers', jwtAuth.verifyToken, async (req, res) => {
                 driver.address,
                 JSON.stringify(driver.driver_correspondence),
                 JSON.stringify(driver.vehicle_types),
-                driver.logged_in || 0
+                driver.logged_in || 0,
+                driver_availability ||0
             ];
         });
 
@@ -137,7 +138,8 @@ router.post('/add-drivers', jwtAuth.verifyToken, async (req, res) => {
                 address,
                 driver_correspondence,
                 vehicle_types,
-                logged_in
+                logged_in,
+                driver_availability
             ) VALUES ?
         `, [values]);
 
@@ -151,6 +153,53 @@ router.post('/add-drivers', jwtAuth.verifyToken, async (req, res) => {
         res.status(500).json({ message: 'An error occurred while adding drivers', error: error.message });
     }
 });
+
+router.post('/driver-authenticate', async (req, res) => {
+    try {
+        const { dri_ID, phone } = req.body;
+
+        if (!dri_ID || !phone) {
+            return res.status(400).json({ message: "dri_ID and phone are required." });
+        }
+
+        const query = `SELECT dri_ID, driver_correspondence FROM master_drivers WHERE dri_ID = ?`;
+        const [drivers] = await db.query(query, [dri_ID]);
+
+        if (drivers.length === 0) {
+            return res.status(404).json({ message: "Driver not found." });
+        }
+
+        const driver = drivers[0];
+        let driverCorrespondence = driver.driver_correspondence;
+
+        if (typeof driverCorrespondence === "string") {
+            try {
+                driverCorrespondence = JSON.parse(driverCorrespondence);
+            } catch (error) {
+                logger.error("Error parsing driver_correspondence:", error);
+                return res.status(500).json({ message: "Invalid driver_correspondence format in database." });
+            }
+        }
+
+        if (!driverCorrespondence || !driverCorrespondence.phone || driverCorrespondence.phone !== phone) {
+            return res.status(401).json({ message: "Invalid phone number." });
+        }
+
+        const accessToken = jwtAuth.generateToken(dri_ID, "driver");
+        const refreshToken = jwtAuth.generateRefreshToken(dri_ID, "driver");
+
+        res.status(200).json({
+            message: "Authentication successful.",
+            dri_ID,
+            accessToken,
+            refreshToken
+        });
+    } catch (error) {
+        logger.error("Error in driver authentication:", error);
+        res.status(500).json({ message: "Internal Server Error", error: error.message });
+    }
+});
+
 
 router.get('/get-drivers', jwtAuth.verifyToken, async (req, res) => {
     try {
@@ -166,6 +215,43 @@ router.get('/get-drivers', jwtAuth.verifyToken, async (req, res) => {
     } catch (error) {
         logger.error('Error retrieving drivers:', error);
         res.status(500).json({ message: 'An error occurred while retrieving drivers', error: error.message });
+    }
+});
+
+
+router.get('/search-drivers', jwtAuth.verifyToken, async (req, res) => {
+    try {
+        const { searchKey, page, limit } = req.query;
+
+        if (!searchKey || searchKey.trim().length < 1) {
+            return res.status(400).json({ message: 'Search key is required in the query.' });
+        }
+
+        const query = `
+            SELECT * FROM master_drivers 
+            WHERE 
+                dri_ID LIKE ? 
+                OR driver_name LIKE ? 
+                OR JSON_EXTRACT(driver_correspondence, '$.phone') LIKE ?
+        `;
+
+        const searchPattern = `%${searchKey}%`;
+
+        const paginatedQuery = applyPagination(query, page, limit);
+        const [drivers] = await db.query(paginatedQuery, [searchPattern, searchPattern, searchPattern]);
+
+        if (drivers.length === 0) {
+            return res.status(404).json({ message: 'No drivers found matching the search criteria.' });
+        }
+
+        return res.status(200).json({
+            message: 'Drivers retrieved successfully.',
+            searchKey,
+            results: drivers
+        });
+    } catch (error) {
+        logger.error('Error searching drivers:', error);
+        return res.status(500).json({ message: 'An error occurred while searching drivers.', error: error.message });
     }
 });
 
@@ -188,7 +274,8 @@ router.get('/get-driver', jwtAuth.verifyToken, async (req, res) => {
                 address,
                 driver_correspondence,
                 vehicle_types,
-                logged_in
+                logged_in,
+                driver_availability
             FROM 
                 master_drivers
             WHERE 
@@ -238,7 +325,7 @@ router.get('/get-driver', jwtAuth.verifyToken, async (req, res) => {
 
 router.put('/edit-driver', jwtAuth.verifyToken, async (req, res) => {
     const { driver_id } = req.query;
-    const { locations, driver_name, address, driver_correspondence, vehicle_types, logged_in } = req.body;
+    const { locations, driver_name, address, driver_correspondence, vehicle_types, driver_availability, logged_in } = req.body;
 
     if (!driver_id) {
         return res.status(400).json({ message: 'driver_id is required in query parameters' });
@@ -254,7 +341,8 @@ router.put('/edit-driver', jwtAuth.verifyToken, async (req, res) => {
                 address = ?, 
                 driver_correspondence = ?, 
                 vehicle_types = ?, 
-                logged_in = ? 
+                logged_in = ? ,
+                driver_availability =?
             WHERE 
                 driver_id = ?
         `, [
@@ -264,6 +352,7 @@ router.put('/edit-driver', jwtAuth.verifyToken, async (req, res) => {
             JSON.stringify(driver_correspondence),
             JSON.stringify(vehicle_types),
             logged_in,
+            driver_availability,
             driver_id,
         ]);
 

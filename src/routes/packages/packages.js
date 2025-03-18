@@ -145,7 +145,7 @@ router.get('/get-package', jwtAuth.verifyToken, async (req, res) => {
                 sf.loc_desc AS ship_from_desc, sf.longitude AS ship_from_long, sf.latitude AS ship_from_lat,
                 st.loc_desc AS ship_to_desc, st.longitude AS ship_to_long, st.latitude AS ship_to_lat,
                 b.loc_desc AS bill_to_desc, b.longitude AS bill_to_long, b.latitude AS bill_to_lat,
-                mpi.packaging_type_name, mpi.dimensions_uom, mpi.dimensions, mpi.handling_unit_type
+                mpi.packaging_type_name, mpi.dimensions_uom, mpi.pack_length, mpi.pack_width, mpi.pack_height, mpi.pack_volume, mpi.pack_volume_uom, mpi.handling_unit_type
             FROM packages p
             LEFT JOIN master_locations sf ON p.ship_from = sf.loc_ID
             LEFT JOIN master_locations st ON p.ship_to = st.loc_ID

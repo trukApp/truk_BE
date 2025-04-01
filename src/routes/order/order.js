@@ -728,6 +728,7 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
         });
       }
     }
+    
 
     const resolvedProducts = packagesData.flatMap(p => p.products);
     const productIDs = resolvedProducts.map(rp => rp.prod_ID);

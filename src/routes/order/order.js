@@ -600,7 +600,8 @@ async function getPackagesByIds(packageIDs) {
     pack_ID: pkg.pack_ID,
     ship_from: pkg.ship_from,
     ship_to: pkg.ship_to,
-    products: safeJsonParse(pkg.product_ID)
+    products: safeJsonParse(pkg.product_ID),
+    pickup_date_time:pkg.pickup_date_time
   }));
 }
 
@@ -615,13 +616,30 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
       return res.status(400).json({ error: 'No valid packages found.' });
     }
     const firstShipFrom = packagesData[0].ship_from;
+
+    function getDatePart(dateTimeStr) {
+      if (!dateTimeStr) return '';
+      const splitArr = dateTimeStr.split('T');
+      return splitArr[0];
+    }
+
+    const firstPickupDate = getDatePart(packagesData[0].pickup_date_time);
+
     for (const pkg of packagesData) {
       if (pkg.ship_from !== firstShipFrom) {
         return res.status(400).json({
           error: 'All packages must have the same ship_from location.'
         });
       }
+
+      const pkgDate = getDatePart(pkg.pickup_date_time);
+      if (pkgDate !== firstPickupDate) {
+        return res.status(400).json({
+          error: 'All packages must have the same pickup_date (ignoring time).'
+        });
+      }
     }
+
     const resolvedProducts = packagesData.flatMap(p => p.products);
     const productIDs = resolvedProducts.map(rp => rp.prod_ID);
     if (!productIDs.length) {

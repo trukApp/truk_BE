@@ -427,7 +427,7 @@ const resolvers = {
           }
         },
 
-        async allLocations(_, { page, limit }, context) {
+        async getAllLocations(_, { page, limit }, context) {
           // if (!context.user) {
           //   throw new Error("Unauthorized access");
           // }
@@ -946,6 +946,133 @@ const resolvers = {
             throw new Error("An error occurred while retrieving the driver.");
           }
         },
+        async getAssignedOrder(_, { assign_ID, order_ID, dri_ID }, context) {
+          // Verify authentication
+          if (!context.user) {
+            throw new Error("Unauthorized access");
+          }
+    
+          if (!assign_ID && !order_ID && !dri_ID) {
+            throw new Error("Please provide assign_ID, order_ID, or dri_ID in query.");
+          }
+    
+          let condition = "";
+          let value = "";
+    
+          if (assign_ID) {
+            condition = "ao.assign_ID = ?";
+            value = assign_ID;
+          } else if (order_ID) {
+            condition = "ao.order_ID = ?";
+            value = order_ID;
+          } else if (dri_ID) {
+            condition = "JSON_CONTAINS(ao.assigned_vehicle_data, JSON_OBJECT('dri_ID', ?), '$')";
+            value = dri_ID;
+          }
+    
+          const query = `
+            SELECT 
+              ao.assign_ID, ao.order_ID, ao.assigned_vehicle_data, ao.self_transport, ao.pod, ao.pod_doc,
+              o.scenario_label, o.total_cost, o.allocations, o.allocated_packages,
+              o.unallocated_packages, o.allocated_vehicles, o.created_at, o.updated_at, o.order_status
+            FROM assigning_orders ao
+            LEFT JOIN orders o ON ao.order_ID = o.order_ID
+            WHERE ${condition}
+          `;
+    
+          try {
+            const [result] = await db.query(query, [value]);
+    
+            return {
+              message: "Assigned order retrieved successfully",
+              data: result,
+            };
+          } catch (error) {
+            logger.error("Error fetching assigned order:", error);
+            throw new Error("Internal Server Error");
+          }
+        },
+        async getAllVehicles(_, __, context) {
+          if (!context.user) throw new Error("Unauthorized access");
+    
+          try {
+            const [vehicles] = await db.query(`
+              SELECT * FROM act_vehicles ORDER BY truk_id DESC
+            `);
+            return vehicles;
+          } catch (error) {
+            console.error('Error fetching vehicles:', error);
+            throw new Error('Internal Server Error');
+          }
+        },
+        async searchProducts(_, { searchKey, page = 1, limit = 10 }) {
+          if (!searchKey || searchKey.trim().length < 1) {
+            throw new Error('Search key is required.');
+          }
+    
+          try {
+            const query = `
+              SELECT * FROM master_products 
+              WHERE 
+                product_ID LIKE ? 
+                OR product_name LIKE ? 
+                OR sku_num LIKE ? 
+                OR hsn_code LIKE ?
+              LIMIT ?, ?
+            `;
+    
+            const searchPattern = `%${searchKey}%`;
+            const offset = (page - 1) * limit;
+    
+            const [products] = await db.query(query, [
+              searchPattern,
+              searchPattern,
+              searchPattern,
+              searchPattern,
+              offset,
+              limit,
+            ]);
+    
+            if (products.length === 0) {
+              return [];
+            }
+    
+            return products;
+          } catch (error) {
+            throw new Error('An error occurred while searching for products: ' + error.message);
+          }
+        },
+
+        // async searchTrucks(_, { searchKey, page, limit }, context) {
+        //   if (!context.user) throw new Error("Unauthorized access");
+    
+        //   if (!searchKey || searchKey.trim().length < 1) {
+        //     throw new Error("Search key is required.");
+        //   }
+    
+        //   try {
+        //     const query = `
+        //       SELECT * FROM act_vehicles 
+        //       WHERE 
+        //           act_truk_ID LIKE ? 
+        //           OR act_vehicle_num LIKE ?
+        //       LIMIT ? OFFSET ?
+        //     `;
+    
+        //     const searchPattern = `%${searchKey}%`;
+        //     const offset = (page - 1) * limit;
+    
+        //     const [trucks] = await db.query(query, [searchPattern, searchPattern, limit, offset]);
+    
+        //     if (trucks.length === 0) {
+        //       throw new Error("No trucks found matching the search criteria.");
+        //     }
+    
+        //     return trucks;
+        //   } catch (error) {
+        //     throw new Error("An error occurred while searching trucks: " + error.message);
+        //   }
+        // }
   },
 
   Mutation: {

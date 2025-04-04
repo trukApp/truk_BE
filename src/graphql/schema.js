@@ -37,7 +37,14 @@ type Vehicle {
   loc_type: String
   gln_code: String
   iata_code: String
+
+  truk_id: ID
+    vehicle_name: String
+    vehicle_type: String
+    registration_number: String
+    capacity: String
 }
+
 type Vehicles {
     vehicle_id: ID
     vehicle_name: String
@@ -82,6 +89,7 @@ type Products {
   created_at: String
   updated_at: String
 }
+
 type Product {
   product_ID: ID
   product_name: String
@@ -101,6 +109,9 @@ type Product {
   iata_code: String
   address_1: String
   address_2: String
+
+  sku_num: String
+  hsn_code: String
 }
 type User {
   profile_id: ID
@@ -132,14 +143,14 @@ type UOM {
   updated_at: String
 }
 type Carrier {
-  carrier_ID: ID!
+  carrier_ID: ID
   carrier_name: String
   carrier_loc_of_operation: [Location]
   carrier_lanes: [Lane]
 }
 type Lane {
   ln_id: ID
-  lane_ID: String!
+  lane_ID: String
   lane_transport_data: String
   src_loc_ID: ID
   src: Location
@@ -152,8 +163,8 @@ type Lane {
 }
 
 type Device {
-  device_id: ID!
-  dev_ID: String!
+  device_id: ID
+  dev_ID: String
   device_type: String
   device_UID: String
   sim_imei_num: String
@@ -169,8 +180,8 @@ type Device {
 }
 
 type DetailedDevice {
-  device_id: ID!
-  dev_ID: String!
+  device_id: ID
+  dev_ID: String
   device_type: String
   device_UID: String
   sim_imei_num: String
@@ -197,17 +208,17 @@ type DetailedDevice {
   iata_code: String
 }
 type Counts {
-  vehicles: Int!
-  products: Int!
-  locations: Int!
-  lanes: Int!
-  devices: Int!
-  drivers: Int!
-  carriers: Int!
-  customers: Int!
-  vendors: Int!
-  packages: Int!
-  uoms: Int!
+  vehicles: Int
+  products: Int
+  locations: Int
+  lanes: Int
+  devices: Int
+  drivers: Int
+  carriers: Int
+  customers: Int
+  vendors: Int
+  packages: Int
+  uoms: Int
 }
 type BusinessPartner {
   partner_id: ID
@@ -224,8 +235,8 @@ type BusinessPartner {
   loc_of_source_data: Location
 }
 type Driver {
-  driver_id: ID!
-  dri_ID: String!
+  driver_id: ID
+  dri_ID: String
   driver_name: String
   address: String
   driver_correspondence: String
@@ -233,17 +244,41 @@ type Driver {
   logged_in: Boolean
   locations: [Location]
 }
+type AssignedOrder {
+  assign_ID: ID
+  order_ID: ID
+  assigned_vehicle_data: String
+  self_transport: Boolean
+  pod: String
+  pod_doc: String
+  scenario_label: String
+  total_cost: Float
+  allocations: String
+  allocated_packages: String
+  unallocated_packages: String
+  allocated_vehicles: String
+  created_at: String
+  updated_at: String
+  order_status: String
+}
+
+type AssignedOrderResponse {
+  message: String
+  data: [AssignedOrder]
+}
+
+
 type BusinessPartnerResponse {
-  message: String!
+  message: String
   partners: [BusinessPartner]
 }
 type CountResponse {
   message: String!
-  counts: Counts!
+  counts: Counts
 }
 
 type DeviceResponse {
-  message: String!
+  message: String
   device: DetailedDevice
 }
 
@@ -252,7 +287,7 @@ type DevicesResponse {
   devices: [Device]
 }
 type CarrierResponse {
-  message: String!
+  message: String
   carrier: Carrier
 }
 
@@ -337,7 +372,7 @@ type SingleDriverResponse {
     getUOM(unit_id: ID!): UOMResponse!
     allLanes(page: Int, limit: Int): LanesResponse!
     laneById(lane_ID: ID!): LaneResponse!
-    allLocations(page: Int, limit: Int): LocationResponse!
+    getAllLocations(page: Int, limit: Int): LocationResponse!
     searchLocations(searchKey: String!, page: Int, limit: Int): SearchLocationResponse!
     locationByID(loc_ID: ID!): LocationResponse!
     fetchLocationByFlag(def_ship_from: Boolean, def_ship_to: Boolean, def_bill_to: Boolean): LocationResponse!
@@ -349,6 +384,9 @@ type SingleDriverResponse {
     carrierById(carrier_ID: ID!): CarrierResponse!
     getDrivers(page: Int, limit: Int): DriverResponse!
     getDriver(dri_ID: ID!): SingleDriverResponse!
+    getAssignedOrder(assign_ID: ID, order_ID: ID, dri_ID: ID): AssignedOrderResponse!
+    getAllVehicles: [Vehicle]
+    searchProducts(searchKey: String!, page: Int, limit: Int): [Product]
   }
 
   type Mutation {

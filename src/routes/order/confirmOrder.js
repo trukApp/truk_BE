@@ -119,7 +119,8 @@ router.post('/confirm-order', jwtAuth.verifyToken, async (req, res) => {
         allocations,
         unallocated_packages,
         created_at,
-        updated_at
+        updated_at,
+        order_docs
       } = req.body;
   
       if (!scenario_label || total_cost == null) {
@@ -193,8 +194,8 @@ router.post('/confirm-order', jwtAuth.verifyToken, async (req, res) => {
         await db.query(`
           INSERT INTO orders
             (order_ID, scenario_label, total_cost, allocations, unallocated_packages,
-             allocated_packages, allocated_vehicles, created_at, updated_at, order_status)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             allocated_packages, allocated_vehicles, created_at, updated_at, order_docs, order_status)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `, [
           newOrderID,
           scenario_label,
@@ -205,6 +206,7 @@ router.post('/confirm-order', jwtAuth.verifyToken, async (req, res) => {
           allocatedVehiclesJson,
           created_at || new Date().toISOString(),
           updated_at || new Date().toISOString(),
+          JSON.stringify(order_docs || []),
           "order placed"
         ]);
       
@@ -325,11 +327,15 @@ router.get('/order-by-id', jwtAuth.verifyToken, async (req, res) => {
 });
 
 
-
 router.put('/edit-order', jwtAuth.verifyToken, async (req, res) => {
     try {
         const { order_ID } = req.query;
-        const { order_status, allocated_packages, allocated_vehicles } = req.body;
+        const {
+            order_status,
+            allocated_packages,
+            allocated_vehicles,
+            order_docs
+        } = req.body;
 
         if (!order_ID) {
             return res.status(400).json({ message: 'Missing required query parameter: order_ID' });
@@ -340,19 +346,42 @@ router.put('/edit-order', jwtAuth.verifyToken, async (req, res) => {
             return res.status(404).json({ message: 'Order not found.' });
         }
 
-        const now = new Date().toISOString();
+        let updateFields = [];
+        let values = [];
 
-        await db.query(`
-            UPDATE orders
-            SET order_status = ?, allocated_packages = ?, allocated_vehicles = ?, updated_at = ?
-            WHERE order_ID = ?
-        `, [
-            order_status,
-            JSON.stringify(allocated_packages || []),
-            JSON.stringify(allocated_vehicles || []),
-            now,
-            order_ID
-        ]);
+        if (order_status) {
+            updateFields.push('order_status = ?');
+            values.push(order_status);
+        }
+
+        if (allocated_packages) {
+            updateFields.push('allocated_packages = ?');
+            values.push(JSON.stringify(allocated_packages));
+        }
+
+        if (allocated_vehicles) {
+            updateFields.push('allocated_vehicles = ?');
+            values.push(JSON.stringify(allocated_vehicles));
+        }
+
+        if (order_docs) {
+            updateFields.push('order_docs = ?');
+            values.push(JSON.stringify(order_docs));
+        }
+
+        // Always update the timestamp
+        const now = new Date().toISOString();
+        updateFields.push('updated_at = ?');
+        values.push(now);
+
+        if (updateFields.length === 0) {
+            return res.status(400).json({ message: 'No fields provided for update.' });
+        }
+
+        values.push(order_ID);
+        const query = `UPDATE orders SET ${updateFields.join(', ')} WHERE order_ID = ?`;
+
+        await db.query(query, values);
 
         return res.status(200).json({ message: 'Order updated successfully.', order_ID });
     } catch (error) {
@@ -360,6 +389,7 @@ router.put('/edit-order', jwtAuth.verifyToken, async (req, res) => {
         return res.status(500).json({ message: 'Server error.', error: error.message });
     }
 });
+
 
 router.delete('/delete-order', jwtAuth.verifyToken, async (req, res) => {
     try {

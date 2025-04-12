@@ -46,6 +46,7 @@ router.post('/create-carriers', jwtAuth.verifyToken, async (req, res) => {
                 carrier_lanes,
                 contract,
                 contract_valid_upto,
+                pricing,
             } = carrier;
 
             return db.query(
@@ -60,8 +61,9 @@ router.post('/create-carriers', jwtAuth.verifyToken, async (req, res) => {
                     carrier_loc_of_operation,
                     carrier_lanes,
                     contract,
-                    contract_valid_upto
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    contract_valid_upto,
+                    pricing
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 `,
                 [
                     carrier_ID,
@@ -74,6 +76,7 @@ router.post('/create-carriers', jwtAuth.verifyToken, async (req, res) => {
                     JSON.stringify(carrier_lanes || {}),
                     contract,
                     contract_valid_upto,
+                    JSON.stringify(pricing|| {}),
                 ]
             );
         });
@@ -221,7 +224,7 @@ router.get('/carrier-by-id', jwtAuth.verifyToken, async (req, res) => {
 
 router.put('/edit-carrier', jwtAuth.verifyToken, async (req, res) => {
     const { cr_id } = req.query;
-    const { carrier_name, carrier_address, carrier_correspondence, carrier_network_portal, vehicle_types_handling, carrier_loc_of_operation, carrier_lanes, contract, contract_valid_upto } = req.body;
+    const { carrier_name, carrier_address, carrier_correspondence, carrier_network_portal, vehicle_types_handling, carrier_loc_of_operation, carrier_lanes, contract, contract_valid_upto, pricing } = req.body;
 
     if (!cr_id) {
         return res.status(400).json({ message: 'Please provide cr_id in query parameters.' });
@@ -239,7 +242,8 @@ router.put('/edit-carrier', jwtAuth.verifyToken, async (req, res) => {
                 carrier_loc_of_operation = ?, 
                 carrier_lanes = ?,
                 contract = ?,
-                contract_valid_upto = ?
+                contract_valid_upto = ?,
+                pricing = ?
             WHERE cr_id = ?
         `;
 
@@ -253,6 +257,7 @@ router.put('/edit-carrier', jwtAuth.verifyToken, async (req, res) => {
             carrier_lanes ? JSON.stringify(carrier_lanes) : '[]',
             contract || null,
             contract_valid_upto || null,
+            pricing ? JSON.stringify(pricing) : '[]',
             cr_id,
         ]);
 

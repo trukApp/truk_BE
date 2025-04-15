@@ -43,6 +43,11 @@ router.post('/assign-order', jwtAuth.verifyToken, async (req, res) => {
             [assign_ID, order_ID, JSON.stringify(assigned_vehicle_data), self_transport, JSON.stringify(pod), pod_doc]
         );
 
+        await db.query(
+            `UPDATE orders SET order_status = ? WHERE order_ID = ?`,
+            ['self assigned', order_ID]
+        );
+
         res.status(201).json({ message: "Assigned order created successfully", assign_ID });
     } catch (error) {
         logger.error("Error assigning order:", error);

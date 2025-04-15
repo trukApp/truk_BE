@@ -1,4 +1,4 @@
-function applyPagination(query, page = 1, limit = 10) {
+function applyPagination(query, page, limit) {
     const offset = (page - 1) * limit;
     return `${query} LIMIT ${limit} OFFSET ${offset}`;
 }

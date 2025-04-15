@@ -41,6 +41,7 @@ const resolvers = {
         }},
         getVehicles: async (_, { page, limit }) => {
           try {
+            const offset = (page - 1) * limit;
             const query = `
               SELECT 
                   v.*, 
@@ -49,38 +50,50 @@ const resolvers = {
                   l.gln_code, l.iata_code
               FROM master_vehicles v
               LEFT JOIN master_locations l ON v.loc_ID = l.loc_ID
+              LIMIT ? OFFSET ?
             `;
-    
-            const paginatedQuery = applyPagination(query, page, limit);
-            const [vehicles] = await db.query(paginatedQuery);
-    
+        
+            const [vehicles] = await db.query(query, [parseInt(limit), parseInt(offset)]);
+        
+            // Optionally parse nested JSON fields like `physical_properties`, etc.
+            vehicles.forEach(vehicle => {
+              try {
+                vehicle.physical_properties = JSON.parse(vehicle.physical_properties || '{}');
+                vehicle.capacity = JSON.parse(vehicle.capacity || '{}');
+                vehicle.transportation_details = JSON.parse(vehicle.transportation_details || '{}');
+                vehicle.vehicle_group = JSON.parse(vehicle.vehicle_group || '{}');
+                vehicle.downtimes = JSON.parse(vehicle.downtimes || '{}');
+                vehicle.additional_details = JSON.parse(vehicle.additional_details || '{}');
+              } catch (e) {
+                // Fallback or log parsing error
+              }
+            });
+        
             return {
-              message: 'Vehicles fetched successfully',
+              message: "Vehicles fetched successfully",
               vehicles,
             };
           } catch (error) {
-            console.error('Error fetching vehicles:', error);
-            throw new Error('An error occurred while fetching vehicles.');
+            console.error("Error fetching vehicles:", error);
+            throw new Error("An error occurred while fetching vehicles.");
           }
         },
       
-        async getAllPackages(_, __, context) {
-          // Verify authentication
-          // if (!context.user) {
-          //   throw new Error("Unauthorized access");
-          // }
-    
+        async getAllPackages(_, { page, limit}, context) {
           try {
-            const [packages] = await db.query(`
-              SELECT * FROM master_package_info ORDER BY package_id DESC
-            `);
+            const query = `SELECT * FROM packages`;
+            let paginatedQuery = query
+            if (limit && page) {
+              paginatedQuery = applyPagination(query, page, limit);
+            }
+            const [packages] = await db.query(paginatedQuery);
     
             return {
               message: "Packages retrieved successfully",
               packages,
             };
           } catch (error) {
-            logger.error("Error fetching packages:", error);
+            console.error("Error fetching packages:", error);
             throw new Error("An error occurred while fetching packages.");
           }
         },
@@ -109,31 +122,33 @@ const resolvers = {
               package: packageData[0],
             };
           } catch (error) {
-            logger.error("Error fetching package:", error);
+     
             throw new Error("An error occurred while fetching the package.");
           }
         },
-
-        async getAllProducts(_, { page = 1, limit = 10 }, context) {
-          // Verify authentication
-          // if (!context.user) {
-          //   throw new Error("Unauthorized access");
-          // }
-    
-          try {
+       //finished
+       async getAllProducts(_, { page, limit }, context) {
+        try {
+          let query = `SELECT * FROM master_products`;
+          let queryParams = [];
+      
+          if (page && limit) {
             const offset = (page - 1) * limit;
-            const query = `SELECT * FROM master_products LIMIT ? OFFSET ?`;
-            const [products] = await db.query(query, [parseInt(limit), parseInt(offset)]);
-    
-            return {
-              message: "Products retrieved successfully",
-              products,
-            };
-          } catch (error) {
-            logger.error("Error fetching products:", error);
-            throw new Error("An error occurred while fetching products.");
+            query += ` LIMIT ? OFFSET ?`;
+            queryParams.push(parseInt(limit), parseInt(offset));
           }
-        },
+      
+          const [products] = await db.query(query, queryParams);
+      
+          return {
+            message: "Products retrieved successfully",
+            products,
+          };
+        } catch (error) {
+          throw new Error("An error occurred while fetching products.");
+        }
+      },
+      
         async getProduct(_, { product_ID }, context) {
           // Verify authentication
           // if (!context.user) {
@@ -178,7 +193,7 @@ const resolvers = {
               product: productData[0],
             };
           } catch (error) {
-            logger.error("Error fetching product:", error);
+         
             throw new Error("An error occurred while fetching the product.");
           }
         },
@@ -207,22 +222,21 @@ const resolvers = {
               profile: profileData[0],
             };
           } catch (error) {
-            logger.error("Error fetching user data: " + error.message);
+           
             throw new Error("An error occurred while fetching user data.");
           }
         },
-        async allOrders(_, { page, limit }, context) {
-          // Verify authentication
-          // if (!context.user) {
-          //   throw new Error("Unauthorized access");
-          // }
-    
+      
+
+        getAllOrders: async (_, { page, limit }, context) => {
           try {
             let query = `SELECT * FROM orders ORDER BY created_at DESC`;
-            query = applyPagination(query, page, limit); // Ensure this function handles pagination correctly
+        
+            query = applyPagination(query, page, limit);
+           
     
             const [orders] = await db.query(query);
-    
+            console.log(orders)
             if (!orders.length) {
               throw new Error("No orders found.");
             }
@@ -232,37 +246,99 @@ const resolvers = {
               orders,
             };
           } catch (error) {
-            logger.error("Error fetching all orders:", error);
-            throw new Error("Server error.");
+            console.log(error)
+            throw new Error("Server error: " + error.message);
           }
         },
-        async getOrderById(_, { order_ID }, context) {
-          // Verify authentication
-          // if (!context.user) {
-          //   throw new Error("Unauthorized access");
-          // }
+        // async getOrderById(_, { order_ID }, context) {
+        //   // Verify authentication
+        //   // if (!context.user) {
+        //   //   throw new Error("Unauthorized access");
+        //   // }
     
+        //   if (!order_ID) {
+        //     throw new Error("Missing required parameter: order_ID");
+        //   }
+    
+        //   try {
+        //     const [orderData] = await db.query(
+        //       `SELECT * FROM orders WHERE order_ID = ?`,
+        //       [order_ID]
+        //     );
+    
+        //     if (!orderData.length) {
+        //       throw new Error("Order not found.");
+        //     }
+    
+        //     return {
+        //       message: "Order retrieved successfully.",
+        //       order: orderData[0],
+        //     };
+        //   } catch (error) {
+          
+        //     throw new Error("Server error.");
+        //   }
+        // },
+
+        getOrderById: async (_, { order_ID }) => {
           if (!order_ID) {
-            throw new Error("Missing required parameter: order_ID");
+            throw new Error('Missing required parameter: order_ID');
           }
     
           try {
-            const [orderData] = await db.query(
-              `SELECT * FROM orders WHERE order_ID = ?`,
-              [order_ID]
-            );
+            const [orderResult] = await db.query(`SELECT * FROM orders WHERE order_ID = ?`, [order_ID]);
+            if (!orderResult.length) {
+              throw new Error('Order not found.');
+            }
     
-            if (!orderData.length) {
-              throw new Error("Order not found.");
+            const order = orderResult[0];
+    
+            const safeParse = (data) => {
+              if (!data) return [];
+              if (Array.isArray(data)) return data;
+              if (typeof data === 'string') {
+                try {
+                  return JSON.parse(data);
+                } catch {
+                  return data.split(',').map(item => item.trim());
+                }
+              }
+              return [];
+            };
+    
+            const allocatedPackages = safeParse(order.allocated_packages);
+            const allocatedVehicles = safeParse(order.allocated_vehicles);
+    
+            let packageDetails = [];
+            if (allocatedPackages.length > 0) {
+              const placeholders = allocatedPackages.map(() => '?').join(',');
+              const [packages] = await db.query(
+                `SELECT * FROM packages WHERE pack_ID IN (${placeholders})`,
+                allocatedPackages
+              );
+              packageDetails = packages;
+            }
+    
+            let vehicleDetails = [];
+            if (allocatedVehicles.length > 0) {
+              const placeholders = allocatedVehicles.map(() => '?').join(',');
+              const [vehicles] = await db.query(
+                `SELECT * FROM master_vehicles WHERE vehicle_ID IN (${placeholders})`,
+                allocatedVehicles
+              );
+              vehicleDetails = vehicles;
             }
     
             return {
-              message: "Order retrieved successfully.",
-              order: orderData[0],
+              message: 'Order retrieved successfully.',
+              order,
+              allocated_packages_details: packageDetails,
+              allocated_vehicles: vehicleDetails
             };
+    
           } catch (error) {
-            logger.error("Error fetching order by ID:", error);
-            throw new Error("Server error.");
+            console.error('Error fetching order by ID:', error);
+            throw new Error('Server error.');
           }
         },
         async allUOM(_, __, context) {
@@ -274,7 +350,7 @@ const resolvers = {
             const [uomList] = await db.query(`SELECT * FROM master_uom`);
             return uomList;
           } catch (error) {
-            logger.error("Error fetching units of measurement:", error);
+            console.log(error)
             throw new Error("An error occurred while fetching units of measurement.");
           }
         },
@@ -288,7 +364,7 @@ const resolvers = {
             const [uomNames] = await db.query(`SELECT unit_name FROM master_uom`);
             return uomNames.map((uom) => uom.unit_name);
           } catch (error) {
-            logger.error("Error fetching unit names:", error);
+          
             throw new Error("An error occurred while fetching unit names.");
           }
         },
@@ -314,55 +390,56 @@ const resolvers = {
               uom: uom[0],
             };
           } catch (error) {
-            logger.error("Error fetching unit of measurement:", error);
             throw new Error("An error occurred while fetching the unit of measurement.");
           }
         },
 
         async allLanes(_, { page, limit }, context) {
-          // Verify authentication
-          // if (!context.user) {
-          //   throw new Error("Unauthorized access");
-          // }
-    
           try {
             const query = `
               SELECT 
-                  ml.ln_id, 
-                  ml.lane_ID, 
-                  ml.lane_transport_data,
-                  ml.src_loc_ID, 
-                  src.loc_ID AS src_loc_ID, 
-                  src.loc_desc AS src_loc_desc, 
-                  src.longitude AS src_longitude, 
-                  src.latitude AS src_latitude, 
-                  src.city AS src_city, 
-                  src.state AS src_state,
-                  ml.des_loc_ID, 
-                  des.loc_ID AS des_loc_ID, 
-                  des.loc_desc AS des_loc_desc, 
-                  des.longitude AS des_longitude, 
-                  des.latitude AS des_latitude, 
-                  des.city AS des_city, 
-                  des.state AS des_state
+                ml.ln_id, 
+                ml.lane_ID, 
+                ml.lane_transport_data,
+                ml.src_loc_ID, 
+                src.loc_ID AS src_loc_ID, 
+                src.loc_desc AS src_loc_desc, 
+                src.longitude AS src_longitude, 
+                src.latitude AS src_latitude, 
+                src.city AS src_city, 
+                src.state AS src_state,
+                ml.des_loc_ID, 
+                des.loc_ID AS des_loc_ID, 
+                des.loc_desc AS des_loc_desc, 
+                des.longitude AS des_longitude, 
+                des.latitude AS des_latitude, 
+                des.city AS des_city, 
+                des.state AS des_state
               FROM master_lanes ml
               LEFT JOIN master_locations src ON ml.src_loc_ID = src.loc_ID
               LEFT JOIN master_locations des ON ml.des_loc_ID = des.loc_ID
             `;
-    
+        
+            console.log("Executing Query:", query); // Log SQL Query
+        
             const paginatedQuery = applyPagination(query, page, limit);
+            console.log("Paginated Query:", paginatedQuery); // Log Paginated Query
+        
             const [lanes] = await db.query(paginatedQuery);
-    
+            
+           
+        
             return {
               message: "Lanes retrieved successfully",
               lanes,
             };
           } catch (error) {
-            logger.error("Error retrieving lanes:", error);
-            throw new Error("An error occurred while retrieving lanes.");
+            console.error("DB Query Error:", error); // Log Actual Error
+            throw new Error(error.message || "An error occurred while retrieving lanes.");
           }
         },
-    
+        
+        
         async laneById(_, { lane_ID }, context) {
           // Verify authentication
           // if (!context.user) {
@@ -422,11 +499,11 @@ const resolvers = {
               lane: lane[0],
             };
           } catch (error) {
-            logger.error("Error retrieving lane:", error);
+         
             throw new Error("An error occurred while retrieving the lane.");
           }
         },
-
+       //finished
         async getAllLocations(_, { page, limit }, context) {
           // if (!context.user) {
           //   throw new Error("Unauthorized access");
@@ -434,40 +511,36 @@ const resolvers = {
     
           try {
             const query = `SELECT * FROM master_locations`;
-            const paginatedQuery = applyPagination(query, page, limit);
-            const [locations] = await db.query(paginatedQuery);
+            // const paginatedQuery = applyPagination(query, page, limit);
+            const [locations] = await db.query(query);
     
             return {
               message: "Locations retrieved successfully",
               locations,
             };
           } catch (error) {
-            logger.error("Error fetching locations:", error);
             throw new Error("An error occurred while fetching locations.");
           }
         },
-    
-        async searchLocations(_, { searchKey, page, limit }, context) {
-          // if (!context.user) {
-          //   throw new Error("Unauthorized access");
-          // }
-    
-          if (!searchKey || searchKey.trim().length < 1) {
-            throw new Error("Search key is required in the query.");
-          }
-    
+         //finished
+        async searchLocations(_, { searchKey, page, limit }) {
+     
           try {
+            if (!searchKey || searchKey.trim().length < 1) {
+              throw new Error("Search key is required in the query.");
+            }
+    
             const query = `
               SELECT * FROM master_locations 
               WHERE 
-                  loc_ID LIKE ? 
-                  OR city LIKE ? 
-                  OR state LIKE ? 
-                  OR pincode LIKE ? 
-                  OR loc_type LIKE ?
+                loc_ID LIKE ? 
+                OR city LIKE ? 
+                OR state LIKE ? 
+                OR pincode LIKE ? 
+                OR loc_type LIKE ?
             `;
-            const searchPattern = `%${searchKey}%`;
     
+            const searchPattern = `%${searchKey}%`;
             const paginatedQuery = applyPagination(query, page, limit);
             const [locations] = await db.query(paginatedQuery, [
               searchPattern,
@@ -478,7 +551,11 @@ const resolvers = {
             ]);
     
             if (locations.length === 0) {
-              throw new Error("No locations found matching the search criteria.");
+              return {
+                message: "No locations found matching the search criteria.",
+                searchKey,
+                results: [],
+              };
             }
     
             return {
@@ -487,7 +564,6 @@ const resolvers = {
               results: locations,
             };
           } catch (error) {
-            logger.error("Error searching locations:", error);
             throw new Error("An error occurred while searching locations.");
           }
         },
@@ -505,7 +581,7 @@ const resolvers = {
               locations,
             };
           } catch (error) {
-            logger.error(error);
+           
             throw new Error("Server error.");
           }
         },
@@ -539,39 +615,34 @@ const resolvers = {
               locations,
             };
           } catch (error) {
-            logger.error(error);
+            
             throw new Error("Server error.");
           }
         },
 
-        async allDevices(_, { page, limit }, context) {
-          // Verify authentication
-          // if (!context.user) {
-          //   throw new Error("Unauthorized access");
-          // }
-    
+        async getAllDevices(_, { page, limit }, context) {
           try {
-            const query = `
+            const baseQuery = `
               SELECT 
-                d.device_id, d.dev_ID, d.device_type, d.device_UID, d.sim_imei_num, 
-                d.vehicle_number, d.carrier_ID, d.loc_ID,
-                c.carrier_name, c.carrier_address,
-                l.loc_desc AS location_desc, l.city, l.state, l.country
+                  d.device_id, d.dev_ID, d.device_type, d.device_UID, d.sim_imei_num, 
+                  d.vehicle_number, d.carrier_ID, d.loc_ID,
+                  c.carrier_name, c.carrier_address,
+                  l.loc_desc AS location_desc, l.city, l.state, l.country
               FROM master_devices d
               LEFT JOIN carriers c ON d.carrier_ID = c.carrier_ID
               LEFT JOIN master_locations l ON d.loc_ID = l.loc_ID
             `;
     
-            const paginatedQuery = applyPagination(query, page, limit);
+            const paginatedQuery = applyPagination(baseQuery, page, limit);
             const [devices] = await db.query(paginatedQuery);
     
             return {
-              message: "Devices retrieved successfully",
+              message: 'Devices retrieved successfully',
               devices,
             };
           } catch (error) {
-            logger.error("Error fetching devices:", error);
-            throw new Error("An error occurred while fetching devices.");
+       
+            throw new Error('An error occurred while fetching devices.');
           }
         },
     
@@ -613,7 +684,7 @@ const resolvers = {
               device: device[0],
             };
           } catch (error) {
-            logger.error("Error fetching device:", error);
+          
             throw new Error("An error occurred while fetching the device.");
           }
         },
@@ -660,23 +731,15 @@ const resolvers = {
             };
     
           } catch (error) {
-            logger.error("Error retrieving counts:", error);
+      
             throw new Error("An error occurred while retrieving counts.");
           }
         },
         async getBusinessPartners(_, { partner_type, supplier_id, customer_id }, context) {
-          // Verify authentication
-          // if (!context.user) {
-          //   throw new Error("Unauthorized access");
-          // }
-    
           if (!partner_type && !supplier_id && !customer_id) {
-            throw new Error(
-              "At least one of partner_type, supplier_id, or customer_id is required."
-            );
+            throw new Error("At least one of partner_type, supplier_id, or customer_id is required.");
           }
     
-          // Build dynamic query conditions
           const conditions = [];
           const queryParams = [];
     
@@ -695,92 +758,80 @@ const resolvers = {
             queryParams.push(customer_id);
           }
     
-          const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+          const whereClause = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+    
+          const query = `
+            SELECT 
+              bp.partner_id, bp.supplier_id, bp.customer_id, bp.name, bp.partner_type,
+              bp.loc_ID, bp.loc_of_source, bp.pod_relevant, bp.partner_functions,
+              bp.correspondence,
+              loc1.loc_ID AS location_loc_ID, loc1.city AS location_city, 
+              loc1.state AS location_state, loc1.country AS location_country,
+              loc1.pincode AS location_pincode,
+              loc2.loc_ID AS loc_of_source_loc_ID, loc2.city AS loc_of_source_city,
+              loc2.state AS loc_of_source_state, loc2.country AS loc_of_source_country,
+              loc2.pincode AS loc_of_source_pincode
+            FROM business_partners bp
+            LEFT JOIN master_locations loc1 ON bp.loc_ID = loc1.loc_ID
+            LEFT JOIN master_locations loc2 ON bp.loc_of_source = loc2.loc_ID
+            ${whereClause}
+            ORDER BY bp.partner_id DESC
+          `;
     
           try {
-            const query = `
-              SELECT 
-                  bp.partner_id,
-                  bp.supplier_id,
-                  bp.customer_id,
-                  bp.name,
-                  bp.partner_type,
-                  bp.loc_ID,
-                  bp.correspondence,
-                  bp.loc_of_source,
-                  bp.pod_relevant,
-                  bp.partner_functions,
-                  loc1.loc_ID AS location_loc_ID,
-                  loc1.loc_desc AS location_loc_desc,
-                  loc1.longitude AS location_longitude,
-                  loc1.latitude AS location_latitude,
-                  loc1.time_zone AS location_time_zone,
-                  loc1.city AS location_city,
-                  loc1.state AS location_state,
-                  loc1.country AS location_country,
-                  loc1.pincode AS location_pincode,
-                  loc1.loc_type AS location_loc_type,
-                  loc1.gln_code AS location_gln_code,
-                  loc1.iata_code AS location_iata_code,
-                  loc2.loc_ID AS loc_of_source_loc_ID,
-                  loc2.loc_desc AS loc_of_source_loc_desc,
-                  loc2.longitude AS loc_of_source_longitude,
-                  loc2.latitude AS loc_of_source_latitude,
-                  loc2.time_zone AS loc_of_source_time_zone,
-                  loc2.city AS loc_of_source_city,
-                  loc2.state AS loc_of_source_state,
-                  loc2.country AS loc_of_source_country,
-                  loc2.pincode AS loc_of_source_pincode,
-                  loc2.loc_type AS loc_of_source_loc_type,
-                  loc2.gln_code AS loc_of_source_gln_code,
-                  loc2.iata_code AS loc_of_source_iata_code
-              FROM 
-                  business_partners bp
-              LEFT JOIN 
-                  master_locations loc1 ON bp.loc_ID = loc1.loc_ID
-              LEFT JOIN 
-                  master_locations loc2 ON bp.loc_of_source = loc2.loc_ID
-              ${whereClause}
-              ORDER BY 
-                  bp.partner_id DESC
-            `;
-    
-            // Execute query
             const [partners] = await db.query(query, queryParams);
+    
+            // If partner_functions and correspondence are stored as JSON strings, parse them
+            const parsedPartners = partners.map((p) => ({
+              ...p,
+              partner_functions: typeof p.partner_functions === 'string'
+                ? JSON.parse(p.partner_functions)
+                : p.partner_functions,
+              correspondence: typeof p.correspondence === 'string'
+                ? JSON.parse(p.correspondence)
+                : p.correspondence,
+            }));
     
             return {
               message: "Business partners retrieved successfully",
-              partners,
+              partners: parsedPartners,
             };
           } catch (error) {
-            logger.error("Error retrieving business partners:", error);
+            console.error("Error fetching partners:", error);
             throw new Error("An error occurred while retrieving business partners.");
           }
         },
+        //finished
         async allCarriers(_, { page, limit }, context) {
-          // Verify authentication
-          // if (!context.user) {
-          //   throw new Error("Unauthorized access");
-          // }
-    
           try {
             let query = `SELECT * FROM carriers`;
             const paginatedQuery = applyPagination(query, page, limit);
             const [carriers] = await db.query(paginatedQuery);
-    
+        
             if (carriers.length === 0) {
               throw new Error("No carriers found.");
             }
-    
+        
             return {
               message: "Carriers retrieved successfully",
-              carriers,
+              carriers: carriers.map(carrier => ({
+                ...carrier,
+                carrier_lanes: Array.isArray(carrier.carrier_lanes) ? carrier.carrier_lanes : [], // Ensure array
+                vehicle_types_handling: Array.isArray(carrier.vehicle_types_handling) ? carrier.vehicle_types_handling : [], // Ensure array
+                carrier_correspondence: carrier.carrier_correspondence || { 
+                  name: null, 
+                  email: null, 
+                  phone: null 
+                }  
+              }))
             };
           } catch (error) {
-            logger.error("Error retrieving carriers:", error);
+       
             throw new Error("An error occurred while retrieving carriers.");
           }
         },
+        
+        
     
         async carrierById(_, { carrier_ID }, context) {
           // if (!context.user) {
@@ -853,30 +904,52 @@ const resolvers = {
               },
             };
           } catch (error) {
-            logger.error("Error retrieving carrier by ID:", error);
+           
             throw new Error("An error occurred while retrieving the carrier.");
           }
         },
-        async getDrivers(_, { page, limit }, context) {
-          // Verify authentication
-          // if (!context.user) {
-          //   throw new Error("Unauthorized access");
-          // }
-    
+        getDrivers: async (_, { page, limit }, context) => {
           try {
-            const query = `SELECT * FROM master_drivers`;
-            const paginatedQuery = applyPagination(query, page, limit);
-            const [drivers] = await db.query(paginatedQuery);
-    
+            let baseQuery = `SELECT * FROM master_drivers`;
+            const queryParams = [];
+        
+            if (page && limit) {
+              const offset = (page - 1) * limit;
+              baseQuery += ` LIMIT ? OFFSET ?`;
+              queryParams.push(parseInt(limit), parseInt(offset));
+            }
+        
+            const [drivers] = await db.query(baseQuery, queryParams);
+        
+            const formattedDrivers = drivers.map(driver => ({
+              ...driver,
+              locations: Array.isArray(driver.locations)
+                ? driver.locations
+                : typeof driver.locations === 'string'
+                  ? driver.locations.split(',').map(v => v.trim())
+                  : [],
+        
+              vehicle_types: Array.isArray(driver.vehicle_types)
+                ? driver.vehicle_types
+                : typeof driver.vehicle_types === 'string'
+                  ? driver.vehicle_types.split(',').map(v => v.trim())
+                  : [],
+        
+              driver_correspondence: typeof driver.driver_correspondence === 'string'
+                ? JSON.parse(driver.driver_correspondence)
+                : driver.driver_correspondence || {},
+            }));
+        
             return {
               message: "Drivers retrieved successfully",
-              drivers,
+              drivers: formattedDrivers,
             };
           } catch (error) {
-            logger.error("Error retrieving drivers:", error);
-            throw new Error("An error occurred while retrieving drivers.");
+            console.error("Error retrieving drivers:", error);
+            throw new Error("An error occurred while retrieving drivers");
           }
         },
+        
     
         async getDriver(_, { dri_ID }, context) {
           // Verify authentication
@@ -942,15 +1015,15 @@ const resolvers = {
               },
             };
           } catch (error) {
-            logger.error("Error retrieving driver:", error);
+          
             throw new Error("An error occurred while retrieving the driver.");
           }
         },
         async getAssignedOrder(_, { assign_ID, order_ID, dri_ID }, context) {
           // Verify authentication
-          if (!context.user) {
-            throw new Error("Unauthorized access");
-          }
+          // if (!context.user) {
+          //   throw new Error("Unauthorized access");
+          // }
     
           if (!assign_ID && !order_ID && !dri_ID) {
             throw new Error("Please provide assign_ID, order_ID, or dri_ID in query.");
@@ -988,12 +1061,12 @@ const resolvers = {
               data: result,
             };
           } catch (error) {
-            logger.error("Error fetching assigned order:", error);
+       
             throw new Error("Internal Server Error");
           }
         },
         async getAllVehicles(_, __, context) {
-          if (!context.user) throw new Error("Unauthorized access");
+          // if (!context.user) throw new Error("Unauthorized access");
     
           try {
             const [vehicles] = await db.query(`

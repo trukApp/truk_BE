@@ -83,9 +83,9 @@ router.post('/assign-carrier', jwtAuth.verifyToken, async (req, res) => {
             return res.status(400).json({ message: 'order_ID is required.' });
         }
 
-        // Get valid carriers (contract = 1 and contract_valid_upto >= today)
+        // Step 1: Get valid carriers
         const [validCarriers] = await db.query(`
-            SELECT carrier_ID FROM carriers
+            SELECT carrier_ID, pricing FROM carriers
             WHERE contract = 1 AND DATE(contract_valid_upto) >= CURDATE()
         `);
 
@@ -94,30 +94,176 @@ router.post('/assign-carrier', jwtAuth.verifyToken, async (req, res) => {
         }
 
         const req_sent_to = validCarriers.map(c => c.carrier_ID);
+        const selectedCarrier = validCarriers[0]; // using first eligible carrier for cost calculation
+
+        // Step 2: Fetch the order's allocation data
+        const [orders] = await db.query(`SELECT allocations FROM orders WHERE order_ID = ?`, [order_ID]);
+        if (!orders.length) {
+            return res.status(404).json({ message: 'Order not found.' });
+        }
+
+        const allocations = JSON.parse(orders[0].allocations || '[]');
+        let totalWeight = 0;
+        let totalDistance = 0;
+
+        allocations.forEach(allocation => {
+            const occupiedWeight = allocation.occupiedWeight || 0;
+            const distanceStr = allocation.route?.[0]?.distance || '';
+            const distanceVal = parseFloat(distanceStr.replace(/[^\d.]/g, '')) || 0;
+
+            totalWeight += occupiedWeight;
+            totalDistance += distanceVal;
+        });
+
+        let pricing = {};
+
+        try {
+            if (typeof selectedCarrier.pricing === 'string') {
+                pricing = JSON.parse(selectedCarrier.pricing);
+            } else if (typeof selectedCarrier.pricing === 'object' && selectedCarrier.pricing !== null) {
+                pricing = selectedCarrier.pricing;
+            } else {
+                pricing = {};
+            }
+        } catch (err) {
+            return res.status(400).json({ message: 'Invalid pricing format in selected carrier.' });
+        }
+        
+
+
+        let calculatedCost = 0;
+        const assignment_cost = {
+            cost_criteria_considered: pricing.cost_criteria_per || '',
+            total_weight: null,
+            total_distance: null,
+            cost: 0
+        };
+
+        if (pricing.cost_criteria_per === 'ton') {
+            assignment_cost.total_weight = totalWeight;
+            calculatedCost = (parseFloat(pricing.cost) || 0) * (totalWeight / 1000);
+        } else if (pricing.cost_criteria_per === 'km') {
+            assignment_cost.total_distance = totalDistance;
+            calculatedCost = (parseFloat(pricing.cost) || 0) * totalDistance;
+        }
+
+        assignment_cost.cost = calculatedCost.toFixed(2);
+
+        // Step 4: Insert into carrier_assignments
         const cas_ID = await generateCasID();
 
         await db.query(`
             INSERT INTO carrier_assignments 
-            (cas_ID, order_ID, req_sent_to, assigned_time, order_status)
-            VALUES (?, ?, ?, ?, ?)
+            (cas_ID, order_ID, req_sent_to, assigned_time, assignment_status, assignment_cost)
+            VALUES (?, ?, ?, ?, ?, ?)
         `, [
             cas_ID,
             order_ID,
             JSON.stringify(req_sent_to),
             assigned_time,
-            'Pending'
+            'Pending',
+            JSON.stringify(assignment_cost)
         ]);
+
+        // Step 5: Update order status
+        await db.query(
+            `UPDATE orders SET order_status = ? WHERE order_ID = ?`,
+            ['carrier assignment', order_ID]
+        );
 
         res.status(201).json({
             message: 'Carrier assignment initialized successfully.',
             cas_ID,
-            req_sent_to
+            req_sent_to,
+            assignment_cost
         });
     } catch (error) {
         logger.error("Error assigning carrier:", error);
         res.status(500).json({ message: "Internal Server Error", error: error.message });
     }
 });
+
+
+router.get('/carrier-assignments', jwtAuth.verifyToken, async (req, res) => {
+    try {
+        const { carrier_ID } = req.query;
+
+        if (!carrier_ID) {
+            return res.status(400).json({ message: 'carrier_ID is required in query.' });
+        }
+
+        // Step 1: Get assignments with matching carrier_ID and assignment_status = 'Pending'
+        const [assignments] = await db.query(`
+            SELECT ca.*, o.*
+            FROM carrier_assignments ca
+            LEFT JOIN orders o ON ca.order_ID = o.order_ID
+            WHERE JSON_CONTAINS(ca.req_sent_to, JSON_QUOTE(?), '$')
+              AND ca.assignment_status = 'Pending'
+            ORDER BY ca.ca_id DESC
+        `, [carrier_ID]);
+
+        if (assignments.length === 0) {
+            return res.status(404).json({ message: 'No assignments found for this carrier with status Pending.' });
+        }
+
+        // Step 2: Collect all unique allocated package IDs
+        const allPackageIDs = new Set();
+
+        for (const a of assignments) {
+            let allocated = [];
+
+            if (Array.isArray(a.allocated_packages)) {
+                allocated = a.allocated_packages;
+            } else if (typeof a.allocated_packages === 'string') {
+                try {
+                    const parsed = JSON.parse(a.allocated_packages);
+                    if (Array.isArray(parsed)) {
+                        allocated = parsed;
+                    } else {
+                        allocated = a.allocated_packages
+                            .replace(/[\[\]"]/g, '')
+                            .split(',')
+                            .map(s => s.trim())
+                            .filter(Boolean);
+                    }
+                } catch {
+                    allocated = a.allocated_packages
+                        .replace(/[\[\]"]/g, '')
+                        .split(',')
+                        .map(s => s.trim())
+                        .filter(Boolean);
+                }
+            }
+
+            allocated.forEach(pkg => allPackageIDs.add(pkg));
+        }
+
+        // Step 3: Fetch all package details
+        const packageList = [...allPackageIDs];
+        let packagesData = [];
+
+        if (packageList.length > 0) {
+            const placeholders = packageList.map(() => '?').join(',');
+            const [packages] = await db.query(
+                `SELECT * FROM packages WHERE pack_ID IN (${placeholders})`,
+                packageList
+            );
+            packagesData = packages;
+        }
+
+        res.status(200).json({
+            assignments,
+            packages: packagesData
+        });
+    } catch (error) {
+        logger.error('Error fetching carrier assignments:', error);
+        res.status(500).json({ message: 'Internal Server Error', error: error.message });
+    }
+});
+
+
+
+
 
 
 // Get all assignments with pagination

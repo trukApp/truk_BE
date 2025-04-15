@@ -43,6 +43,11 @@ router.post('/assign-order', jwtAuth.verifyToken, async (req, res) => {
             [assign_ID, order_ID, JSON.stringify(assigned_vehicle_data), self_transport, JSON.stringify(pod), pod_doc]
         );
 
+        await db.query(
+            `UPDATE orders SET order_status = ? WHERE order_ID = ?`,
+            ['self assigned', order_ID]
+        );
+
         res.status(201).json({ message: "Assigned order created successfully", assign_ID });
     } catch (error) {
         logger.error("Error assigning order:", error);
@@ -169,7 +174,7 @@ router.get('/assigned-order', jwtAuth.verifyToken, async (req, res) => {
             SELECT 
                 ao.assign_ID, ao.order_ID, ao.assigned_vehicle_data, ao.self_transport, ao.pod, ao.pod_doc,
                 o.scenario_label, o.total_cost, o.allocations, o.allocated_packages,
-                o.unallocated_packages, o.allocated_vehicles, o.created_at, o.updated_at, o.order_status
+                o.unallocated_packages, o.allocated_vehicles, o.created_at, o.updated_at, o.order_status, o.order_docs
             FROM assigning_orders ao
             LEFT JOIN orders o ON ao.order_ID = o.order_ID
             WHERE ${condition}

@@ -5,111 +5,272 @@ const { logger } = require('../../logger/logger');
 const { applyPagination } = require('../../pagination/paginate');
 const jwtAuth = require('../../JWT/jwtAuth');
 
+
+// router.post('/confirm-order', jwtAuth.verifyToken, async (req, res) => {
+//     try {
+//       const {
+//         scenario_label,
+//         total_cost,             
+//         allocations,
+//         unallocated_packages,
+//         created_at,
+//         updated_at,
+//         order_docs
+//       } = req.body;
+  
+//       if (!scenario_label || total_cost == null) {
+//         return res.status(400).json({
+//           message: 'Missing required fields: scenario_label, total_cost.'
+//         });
+//       }
+  
+//       const alreadyOrderedSet = new Set();
+  
+//       const placeholdersAll = [];
+//       const allPackages = [];
+//       if (Array.isArray(allocations)) {
+//         allocations.forEach(alloc => {
+//           if (alloc.packages && Array.isArray(alloc.packages)) {
+//             alloc.packages.forEach(pk => allPackages.push(pk));
+//           }
+//         });
+//       }
+  
+//       if (allPackages.length === 0) {
+//         return res.status(400).json({
+//           message: 'No valid packages found for confirmation.'
+//         });
+//       }
+
+//       const placeholders = allPackages.map(() => '?').join(',');
+//       const [existingPackages] = await db.query(
+//         `SELECT pack_ID FROM packages 
+//          WHERE pack_ID IN (${placeholders}) 
+//            AND package_status = 'ordered'`,
+//         allPackages
+//       );
+//       if (existingPackages.length > 0) {
+//         const alreadyConfirmedPackages = existingPackages.map(row => row.pack_ID);
+//         return res.status(400).json({
+//           message: 'Some packages are already confirmed in an existing order.',
+//           alreadyConfirmedPackages
+//         });
+//       }
+  
+//       const [result] = await db.query(`
+//         SELECT order_ID 
+//         FROM orders 
+//         ORDER BY ord_id DESC 
+//         LIMIT 1 FOR UPDATE
+//       `);
+//       let lastOrderID = result[0]?.order_ID || 'ORD000000';
+//       let numericPart = parseInt(lastOrderID.slice(3), 10);
+  
+//       const createdOrders = [];
+  
+//       for (const alloc of allocations) {
+//         const vehicle_ID = alloc.vehicle_ID;
+//         if (!vehicle_ID) {
+//           throw new Error("Allocation is missing vehicle_ID property");
+//         }
+      
+//         const costThis = alloc.cost || 0;
+//         const pkgArr = alloc.packages || [];
+      
+//         numericPart++;
+//         const newNumeric = numericPart;
+//         const padded = String(newNumeric).padStart(6, '0');
+//         const newOrderID = 'ORD' + padded;
+      
+//         const singleAllocJson = JSON.stringify([alloc]);
+//         const allocatedPackagesJson = JSON.stringify(pkgArr);
+//         const allocatedVehiclesJson = JSON.stringify([vehicle_ID]);
+      
+//         await db.query(`
+//           INSERT INTO orders
+//             (order_ID, scenario_label, total_cost, allocations, unallocated_packages,
+//              allocated_packages, allocated_vehicles, created_at, updated_at, order_docs, order_status)
+//           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+//         `, [
+//           newOrderID,
+//           scenario_label,
+//           costThis,
+//           singleAllocJson,
+//           JSON.stringify(unallocated_packages || []),
+//           allocatedPackagesJson,
+//           allocatedVehiclesJson,
+//           created_at || new Date().toISOString(),
+//           updated_at || new Date().toISOString(),
+//           JSON.stringify(order_docs || []),
+//           "assignment pending"
+//         ]);
+      
+//         if (pkgArr.length > 0) {
+//           const placeholders2 = pkgArr.map(() => '?').join(',');
+//           await db.query(`
+//             UPDATE packages
+//             SET package_status = 'ordered'
+//             WHERE pack_ID IN (${placeholders2})
+//           `, pkgArr);
+//         }
+      
+//         createdOrders.push({
+//           order_ID: newOrderID,
+//           vehicle_ID,
+//           allocated_packages: pkgArr,
+//           cost: costThis
+//         });
+//       }
+      
+//       return res.status(201).json({
+//         message: 'Orders confirmed successfully (per vehicle).',
+//         scenario_label,
+//         created_orders: createdOrders,
+//         unallocated_packages: unallocated_packages || []
+//       });
+  
+//     } catch (error) {
+//       logger.error('Error confirming order:', error);
+//       return res.status(500).json({
+//         message: error.message || 'Server error.'
+//       });
+//     }
+//   });
+  
+
 router.post('/confirm-order', jwtAuth.verifyToken, async (req, res) => {
     try {
-        const {
-            scenario_label,
-            total_cost,
-            allocations,
-            unallocated_packages,
-            created_at,
-            updated_at
-        } = req.body;
-
-        if (!scenario_label || total_cost == null) {
-            return res.status(400).json({
-                message: 'Missing required fields: scenario_label, total_cost.'
-            });
-        }
-
-        const allocatedPackagesSet = new Set();
-        const allocatedVehiclesSet = new Set();
-
-        if (Array.isArray(allocations)) {
-            allocations.forEach(alloc => {
-                if (alloc.vehicle_ID) {
-                    allocatedVehiclesSet.add(alloc.vehicle_ID);
-                }
-
-                if (Array.isArray(alloc.packages)) {
-                    alloc.packages.forEach(packID => {
-                        allocatedPackagesSet.add(packID);
-                    });
-                }
-            });
-        }
-
-        const allocatedPackages = Array.from(allocatedPackagesSet);
-        const allocatedVehicles = Array.from(allocatedVehiclesSet);
-
-        if (allocatedPackages.length === 0) {
-            return res.status(400).json({
-                message: 'No valid packages found for confirmation.'
-            });
-        }
-
-        const placeholders = allocatedPackages.map(() => '?').join(',');
-        const [existingPackages] = await db.query(`
-            SELECT pack_ID FROM packages WHERE pack_ID IN (${placeholders}) AND package_status = 'ordered'
-        `, allocatedPackages);
-
-        if (existingPackages.length > 0) {
-            const alreadyConfirmedPackages = existingPackages.map(row => row.pack_ID);
-            return res.status(400).json({
-                message: 'Some packages are already confirmed in an existing order.',
-                alreadyConfirmedPackages
-            });
-        }
-
-        const [result] = await db.query(`
-            SELECT order_ID FROM orders ORDER BY ord_id DESC LIMIT 1 FOR UPDATE
-        `);
-        let lastOrderID = result[0]?.order_ID || 'ORD000000';
-        const numericPart = parseInt(lastOrderID.slice(3), 10);
-        const newNumeric = numericPart + 1;
-        const padded = String(newNumeric).padStart(6, '0');
+      const {
+        scenario_label,
+        total_cost,
+        allocations,
+        unallocated_packages,
+        created_at,
+        updated_at,
+        order_docs
+      } = req.body;
+  
+      if (!scenario_label || total_cost == null) {
+        return res.status(400).json({
+          message: 'Missing required fields: scenario_label, total_cost.'
+        });
+      }
+  
+      const allPackages = allocations.flatMap(alloc => alloc.packages || []);
+  
+      if (allPackages.length === 0) {
+        return res.status(400).json({
+          message: 'No valid packages found for confirmation.'
+        });
+      }
+  
+      const placeholders = allPackages.map(() => '?').join(',');
+      const [existingPackages] = await db.query(
+        `SELECT pack_ID FROM packages 
+         WHERE pack_ID IN (${placeholders}) 
+           AND package_status = 'ordered'`,
+        allPackages
+      );
+      if (existingPackages.length > 0) {
+        const alreadyConfirmedPackages = existingPackages.map(row => row.pack_ID);
+        return res.status(400).json({
+          message: 'Some packages are already confirmed in an existing order.',
+          alreadyConfirmedPackages
+        });
+      }
+  
+      const [result] = await db.query(`
+        SELECT order_ID 
+        FROM orders 
+        ORDER BY ord_id DESC 
+        LIMIT 1 FOR UPDATE
+      `);
+      let lastOrderID = result[0]?.order_ID || 'ORD000000';
+      let numericPart = parseInt(lastOrderID.slice(3), 10);
+  
+      // Get package -> location mapping
+      const [packageLocs] = await db.query(
+        `SELECT pack_ID, ship_from, ship_to FROM packages WHERE pack_ID IN (${placeholders})`,
+        allPackages
+      );
+      const packToLocMap = Object.fromEntries(packageLocs.map(row => [row.pack_ID, row]));
+  
+      const createdOrders = [];
+  
+      for (const alloc of allocations) {
+        numericPart++;
+        const padded = String(numericPart).padStart(6, '0');
         const newOrderID = 'ORD' + padded;
-
+  
+        const allocJson = JSON.stringify([alloc]);
+        const allocatedPackagesJson = JSON.stringify(alloc.packages || []);
+        const allocatedVehiclesJson = JSON.stringify([alloc.vehicle_ID]);
+  
+        // Extract route-based data
+        const routeInfo = alloc.route?.[0] || {};
+        const distanceVal = parseFloat((routeInfo.distance || '').replace(/[^\d.]/g, '')) || 0;
+        const weightVal = alloc.occupiedWeight || 0;
+  
+        const firstPkg = alloc.packages?.[0];
+        const lastPkg = alloc.packages?.[alloc.packages.length - 1];
+        const startLocID = packToLocMap[firstPkg]?.ship_from || null;
+        const endLocID = packToLocMap[lastPkg]?.ship_to || null;
+  
         await db.query(`
-            INSERT INTO orders 
-            (order_ID, scenario_label, total_cost, allocations, unallocated_packages, allocated_packages, allocated_vehicles, created_at, updated_at, order_status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO orders
+            (order_ID, scenario_label, total_cost, allocations, total_weight, total_distance, start_loc_ID, end_loc_ID,
+             allocated_packages, unallocated_packages, allocated_vehicles, created_at, updated_at, order_docs, order_status)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `, [
-            newOrderID,
-            scenario_label,
-            total_cost,
-            JSON.stringify(allocations || []),
-            JSON.stringify(unallocated_packages || []),
-            JSON.stringify(allocatedPackages),
-            JSON.stringify(allocatedVehicles),
-            created_at,
-            updated_at,
-            "order placed"
+          newOrderID,
+          scenario_label,
+          alloc.cost || 0,
+          allocJson,
+          weightVal.toFixed(2),
+          distanceVal.toFixed(2),
+          startLocID,
+          endLocID,
+          allocatedPackagesJson,
+          JSON.stringify(unallocated_packages || []),
+          allocatedVehiclesJson,
+          created_at || new Date().toISOString(),
+          updated_at || new Date().toISOString(),
+          JSON.stringify(order_docs || []),
+          "assignment pending"
         ]);
-
-        await db.query(`
-            UPDATE packages
-            SET package_status = 'ordered'
-            WHERE pack_ID IN (${placeholders})
-        `, allocatedPackages);
-
-        return res.status(201).json({
-            message: 'Order confirmed successfully.',
-            order_ID: newOrderID,
-            scenario_label,
-            total_cost,
-            allocated_packages: allocatedPackages,
-            allocated_vehicles: allocatedVehicles,
-            unallocated_packages: unallocated_packages || []
+  
+        if (alloc.packages?.length) {
+          const pkgPlaceholders = alloc.packages.map(() => '?').join(',');
+          await db.query(
+            `UPDATE packages SET package_status = 'ordered' WHERE pack_ID IN (${pkgPlaceholders})`,
+            alloc.packages
+          );
+        }
+  
+        createdOrders.push({
+          order_ID: newOrderID,
+          vehicle_ID: alloc.vehicle_ID,
+          allocated_packages: alloc.packages || [],
+          cost: alloc.cost || 0
         });
-
+      }
+  
+      return res.status(201).json({
+        message: 'Orders confirmed successfully.',
+        scenario_label,
+        created_orders: createdOrders,
+        unallocated_packages: unallocated_packages || []
+      });
+  
     } catch (error) {
-        logger.error('Error confirming order:', error);
-        return res.status(500).json({
-            message: error.message || 'Server error.'
-        });
+      logger.error('Error confirming order:', error);
+      return res.status(500).json({
+        message: error.message || 'Server error.'
+      });
     }
-});
+  });
+  
+
 
 router.get('/all-orders', jwtAuth.verifyToken, async (req, res) => {
     try {
@@ -194,11 +355,15 @@ router.get('/order-by-id', jwtAuth.verifyToken, async (req, res) => {
 });
 
 
-
 router.put('/edit-order', jwtAuth.verifyToken, async (req, res) => {
     try {
         const { order_ID } = req.query;
-        const { order_status, allocated_packages, allocated_vehicles } = req.body;
+        const {
+            order_status,
+            allocated_packages,
+            allocated_vehicles,
+            order_docs
+        } = req.body;
 
         if (!order_ID) {
             return res.status(400).json({ message: 'Missing required query parameter: order_ID' });
@@ -209,19 +374,42 @@ router.put('/edit-order', jwtAuth.verifyToken, async (req, res) => {
             return res.status(404).json({ message: 'Order not found.' });
         }
 
-        const now = new Date().toISOString();
+        let updateFields = [];
+        let values = [];
 
-        await db.query(`
-            UPDATE orders
-            SET order_status = ?, allocated_packages = ?, allocated_vehicles = ?, updated_at = ?
-            WHERE order_ID = ?
-        `, [
-            order_status,
-            JSON.stringify(allocated_packages || []),
-            JSON.stringify(allocated_vehicles || []),
-            now,
-            order_ID
-        ]);
+        if (order_status) {
+            updateFields.push('order_status = ?');
+            values.push(order_status);
+        }
+
+        if (allocated_packages) {
+            updateFields.push('allocated_packages = ?');
+            values.push(JSON.stringify(allocated_packages));
+        }
+
+        if (allocated_vehicles) {
+            updateFields.push('allocated_vehicles = ?');
+            values.push(JSON.stringify(allocated_vehicles));
+        }
+
+        if (order_docs) {
+            updateFields.push('order_docs = ?');
+            values.push(JSON.stringify(order_docs));
+        }
+
+        // Always update the timestamp
+        const now = new Date().toISOString();
+        updateFields.push('updated_at = ?');
+        values.push(now);
+
+        if (updateFields.length === 0) {
+            return res.status(400).json({ message: 'No fields provided for update.' });
+        }
+
+        values.push(order_ID);
+        const query = `UPDATE orders SET ${updateFields.join(', ')} WHERE order_ID = ?`;
+
+        await db.query(query, values);
 
         return res.status(200).json({ message: 'Order updated successfully.', order_ID });
     } catch (error) {
@@ -229,6 +417,7 @@ router.put('/edit-order', jwtAuth.verifyToken, async (req, res) => {
         return res.status(500).json({ message: 'Server error.', error: error.message });
     }
 });
+
 
 router.delete('/delete-order', jwtAuth.verifyToken, async (req, res) => {
     try {

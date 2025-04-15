@@ -78,6 +78,8 @@ const images = require('./src/routes/images/image');
 const route = require('./src/routes/order/routeValidate');
 const assign = require('./src/routes/order/assignOrder');
 const actVehicles = require('./src/routes/vehicles/actVehicles');
+const selfVehicles = require('./src/routes/vehicles/selfVehicles');
+const assignCarriers = require('./src/routes/order/assignCarrier');
 
 app.use('/jaiMp/reg', signup);
 app.use('/jaiMp/log', login);
@@ -104,5 +106,7 @@ app.use('/truk/image',images);
 app.use('/truk/route',route);
 app.use('/truk/ao',assign);
 app.use('/truk/veh',actVehicles);
+app.use('/truk/self',selfVehicles);
+app.use('/truk/carrier-assignment',assignCarriers);
 
 module.exports = app;

@@ -21,7 +21,7 @@ router.post('/add-vehicles', jwtAuth.verifyToken, async (req, res) => {
         }
 
         const [lastResult] = await db.query(`
-            SELECT act_truk_ID FROM act_vehicles 
+            SELECT act_truk_ID FROM carrier_vehicles 
             ORDER BY LENGTH(act_truk_ID) DESC, act_truk_ID DESC LIMIT 1
         `);
 
@@ -33,6 +33,10 @@ router.post('/add-vehicles', jwtAuth.verifyToken, async (req, res) => {
         const values = [];
 
         for (const vehicle of vehicles) {
+            if (!vehicle.carrier_ID) {
+                return res.status(400).json({ message: 'carrier_ID is required for each vehicle.' });
+            }
+
             lastNumericPart += 1;
             const act_truk_ID = generateTrukID(lastNumericPart);
 
@@ -41,15 +45,17 @@ router.post('/add-vehicles', jwtAuth.verifyToken, async (req, res) => {
                 vehicle.vehicle_ID,
                 vehicle.act_vehicle_num,
                 vehicle.available || 0,
-                vehicle.costing,
-                JSON.stringify(vehicle.vehicle_docs || {})
+                JSON.stringify(vehicle.costing || {}),
+                JSON.stringify(vehicle.vehicle_docs || {}),
+                vehicle.carrier_ID
             ]);
         }
 
         await db.query(`
-            INSERT INTO act_vehicles (act_truk_ID, vehicle_ID, act_vehicle_num, available, costing, vehicle_docs)
-            VALUES ?`, [values]
-        );
+            INSERT INTO carrier_vehicles 
+                (act_truk_ID, vehicle_ID, act_vehicle_num, available, costing, vehicle_docs, carrier_ID)
+            VALUES ?
+        `, [values]);
 
         res.status(201).json({ message: 'Vehicles added successfully.' });
     } catch (error) {
@@ -58,11 +64,11 @@ router.post('/add-vehicles', jwtAuth.verifyToken, async (req, res) => {
     }
 });
 
-
+// Get all vehicles
 router.get('/all-vehicles', jwtAuth.verifyToken, async (req, res) => {
     try {
         const [vehicles] = await db.query(`
-            SELECT * FROM act_vehicles ORDER BY truk_id DESC
+            SELECT * FROM carrier_vehicles ORDER BY truk_id DESC
         `);
         res.status(200).json({ data: vehicles });
     } catch (error) {
@@ -71,8 +77,7 @@ router.get('/all-vehicles', jwtAuth.verifyToken, async (req, res) => {
     }
 });
 
-
-
+// Search trucks
 router.get('/search-trucks', jwtAuth.verifyToken, async (req, res) => {
     try {
         const { searchKey, page, limit } = req.query;
@@ -81,17 +86,35 @@ router.get('/search-trucks', jwtAuth.verifyToken, async (req, res) => {
             return res.status(400).json({ message: 'Search key is required in the query.' });
         }
 
-        const query = `
-            SELECT * FROM act_vehicles 
-            WHERE 
-                act_truk_ID LIKE ? 
-                OR act_vehicle_num LIKE ?
-        `;
-
         const searchPattern = `%${searchKey}%`;
 
+        const query = `
+            SELECT 
+                cv.*, 
+                c.carrier_name, 
+                c.carrier_address,
+                c.carrier_correspondence,
+                c.vehicle_types_handling,
+                c.carrier_network_portal,
+                c.carrier_loc_of_operation,
+                c.carrier_lanes
+            FROM carrier_vehicles cv
+            LEFT JOIN carriers c ON cv.carrier_ID = c.carrier_ID
+            WHERE 
+                cv.act_truk_ID LIKE ? 
+                OR cv.act_vehicle_num LIKE ?
+                OR cv.carrier_ID LIKE ?
+                OR c.carrier_name LIKE ?
+            ORDER BY cv.truk_id DESC
+        `;
+
         const paginatedQuery = applyPagination(query, page, limit);
-        const [trucks] = await db.query(paginatedQuery, [searchPattern, searchPattern]);
+        const [trucks] = await db.query(paginatedQuery, [
+            searchPattern,
+            searchPattern,
+            searchPattern,
+            searchPattern
+        ]);
 
         if (trucks.length === 0) {
             return res.status(404).json({ message: 'No trucks found matching the search criteria.' });
@@ -109,39 +132,53 @@ router.get('/search-trucks', jwtAuth.verifyToken, async (req, res) => {
 });
 
 
+// Get vehicle by filters
 router.get('/vehicle', jwtAuth.verifyToken, async (req, res) => {
     try {
-        const { act_truk_ID, vehicle_ID, available } = req.query;
+        const { act_truk_ID, vehicle_ID, available, carrier_ID } = req.query;
 
-        if (!act_truk_ID && !vehicle_ID && available === undefined) {
-            return res.status(400).json({ message: 'Please provide act_truk_ID, vehicle_ID, or available status.' });
+        if (!act_truk_ID && !vehicle_ID && available === undefined && !carrier_ID) {
+            return res.status(400).json({ message: 'Please provide act_truk_ID, vehicle_ID, available status, or carrier_ID.' });
         }
 
         let condition = [];
         let values = [];
 
         if (act_truk_ID) {
-            condition.push('av.act_truk_ID = ?');
+            condition.push('cv.act_truk_ID = ?');
             values.push(act_truk_ID);
         }
         if (vehicle_ID) {
-            condition.push('av.vehicle_ID = ?');
+            condition.push('cv.vehicle_ID = ?');
             values.push(vehicle_ID);
         }
         if (available !== undefined) {
-            condition.push('av.available = ?');
+            condition.push('cv.available = ?');
             values.push(available);
+        }
+        if (carrier_ID) {
+            condition.push('cv.carrier_ID = ?');
+            values.push(carrier_ID);
         }
 
         const query = `
-            SELECT av.*, mv.*
-            FROM act_vehicles av
-            LEFT JOIN master_vehicles mv ON av.vehicle_ID = mv.vehicle_ID
+            SELECT 
+                cv.*, 
+                mv.*, 
+                c.carrier_name,
+                c.carrier_address,
+                c.carrier_correspondence,
+                c.carrier_network_portal,
+                c.vehicle_types_handling,
+                c.carrier_loc_of_operation,
+                c.carrier_lanes
+            FROM carrier_vehicles cv
+            LEFT JOIN master_vehicles mv ON cv.vehicle_ID = mv.vehicle_ID
+            LEFT JOIN carriers c ON cv.carrier_ID = c.carrier_ID
             WHERE ${condition.join(' OR ')}
         `;
 
         const [result] = await db.query(query, values);
-
         res.status(200).json({ data: result });
     } catch (error) {
         logger.error('Error fetching vehicle:', error);
@@ -150,10 +187,18 @@ router.get('/vehicle', jwtAuth.verifyToken, async (req, res) => {
 });
 
 
+// Edit vehicle
 router.put('/edit-vehicle', jwtAuth.verifyToken, async (req, res) => {
     try {
         const { truk_id } = req.query;
-        const { vehicle_ID, act_vehicle_num, available, costing, vehicle_docs } = req.body;
+        const {
+            vehicle_ID,
+            act_vehicle_num,
+            available,
+            costing,
+            vehicle_docs,
+            carrier_ID
+        } = req.body;
 
         if (!truk_id) {
             return res.status(400).json({ message: 'truk_id is required in query.' });
@@ -176,11 +221,15 @@ router.put('/edit-vehicle', jwtAuth.verifyToken, async (req, res) => {
         }
         if (costing) {
             updateFields.push('costing = ?');
-            values.push(costing);
+            values.push(JSON.stringify(costing));
         }
         if (vehicle_docs) {
             updateFields.push('vehicle_docs = ?');
             values.push(JSON.stringify(vehicle_docs));
+        }
+        if (carrier_ID) {
+            updateFields.push('carrier_ID = ?');
+            values.push(carrier_ID);
         }
 
         if (updateFields.length === 0) {
@@ -188,7 +237,7 @@ router.put('/edit-vehicle', jwtAuth.verifyToken, async (req, res) => {
         }
 
         values.push(truk_id);
-        const query = `UPDATE act_vehicles SET ${updateFields.join(', ')} WHERE truk_id = ?`;
+        const query = `UPDATE carrier_vehicles SET ${updateFields.join(', ')} WHERE truk_id = ?`;
 
         await db.query(query, values);
         res.status(200).json({ message: 'Vehicle updated successfully.' });
@@ -198,7 +247,7 @@ router.put('/edit-vehicle', jwtAuth.verifyToken, async (req, res) => {
     }
 });
 
-
+// Delete vehicle
 router.delete('/delete-vehicle', jwtAuth.verifyToken, async (req, res) => {
     try {
         const { truk_id } = req.query;
@@ -207,7 +256,7 @@ router.delete('/delete-vehicle', jwtAuth.verifyToken, async (req, res) => {
             return res.status(400).json({ message: 'truk_id is required in query.' });
         }
 
-        await db.query(`DELETE FROM act_vehicles WHERE truk_id = ?`, [truk_id]);
+        await db.query(`DELETE FROM carrier_vehicles WHERE truk_id = ?`, [truk_id]);
         res.status(200).json({ message: 'Vehicle deleted successfully.' });
     } catch (error) {
         logger.error('Error deleting vehicle:', error);

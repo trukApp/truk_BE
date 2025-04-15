@@ -33,7 +33,6 @@ router.post('/create-carriers', jwtAuth.verifyToken, async (req, res) => {
             };
         });
 
-
         const insertPromises = newCarriers.map(async (carrier) => {
             const {
                 carrier_ID,
@@ -44,7 +43,12 @@ router.post('/create-carriers', jwtAuth.verifyToken, async (req, res) => {
                 vehicle_types_handling,
                 carrier_loc_of_operation,
                 carrier_lanes,
+                contract,
+                contract_valid_upto,
+                pricing,
             } = carrier;
+
+            const phone = carrier_correspondence?.phone || null;
 
             return db.query(
                 `
@@ -56,8 +60,12 @@ router.post('/create-carriers', jwtAuth.verifyToken, async (req, res) => {
                     carrier_network_portal,
                     vehicle_types_handling,
                     carrier_loc_of_operation,
-                    carrier_lanes
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    carrier_lanes,
+                    contract,
+                    contract_valid_upto,
+                    pricing,
+                    carrier_password
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 `,
                 [
                     carrier_ID,
@@ -68,6 +76,10 @@ router.post('/create-carriers', jwtAuth.verifyToken, async (req, res) => {
                     JSON.stringify(vehicle_types_handling || {}),
                     JSON.stringify(carrier_loc_of_operation || {}),
                     JSON.stringify(carrier_lanes || {}),
+                    contract,
+                    contract_valid_upto,
+                    JSON.stringify(pricing || {}),
+                    phone
                 ]
             );
         });
@@ -84,6 +96,91 @@ router.post('/create-carriers', jwtAuth.verifyToken, async (req, res) => {
         res.status(500).json({ message: 'An error occurred while creating carriers.', error: error.message });
     }
 });
+
+
+
+router.put('/update-carrier-password', jwtAuth.verifyToken, async (req, res) => {
+    const { carrier_ID } = req.query;
+    const { existing_carrier_password, new_carrier_password } = req.body;
+
+    if (!carrier_ID || !existing_carrier_password || !new_carrier_password) {
+        return res.status(400).json({ message: 'carrier_ID, existing_carrier_password, and new_carrier_password are required.' });
+    }
+
+    if (existing_carrier_password === new_carrier_password) {
+        return res.status(400).json({ message: 'New password should not be the same as the existing password.' });
+    }
+
+    try {
+        const [carrierRows] = await db.query(
+            `SELECT carrier_password FROM carriers WHERE carrier_ID = ?`,
+            [carrier_ID]
+        );
+
+        if (carrierRows.length === 0) {
+            return res.status(404).json({ message: 'Carrier not found.' });
+        }
+
+        const currentPassword = carrierRows[0].carrier_password;
+
+        if (currentPassword !== existing_carrier_password) {
+            return res.status(401).json({ message: 'Existing password is incorrect.' });
+        }
+
+        await db.query(
+            `UPDATE carriers SET carrier_password = ? WHERE carrier_ID = ?`,
+            [new_carrier_password, carrier_ID]
+        );
+
+        res.status(200).json({ message: 'Carrier password updated successfully.' });
+    } catch (error) {
+        logger.error("Error updating carrier password:", error);
+        res.status(500).json({ message: 'Internal Server Error', error: error.message });
+    }
+});
+
+
+
+router.post('/carrier-login', async (req, res) => {
+    const { carrier_ID, carrier_password } = req.body;
+
+    if (!carrier_ID || !carrier_password) {
+        return res.status(400).json({ message: 'carrier_ID and carrier_password are required.' });
+    }
+
+    try {
+        const [rows] = await db.query(
+            `SELECT * FROM carriers WHERE carrier_ID = ?`,
+            [carrier_ID]
+        );
+
+        if (rows.length === 0) {
+            return res.status(404).json({ message: 'Carrier not found.' });
+        }
+
+        const carrier = rows[0];
+
+        if (carrier.carrier_password !== carrier_password) {
+            return res.status(401).json({ message: 'Invalid carrier password.' });
+        }
+
+        const accessToken = jwtAuth.generateToken(carrier_ID, "carrier");
+        const refreshToken = jwtAuth.generateRefreshToken(carrier_ID, "carrier");
+
+        res.status(200).json({
+            message: 'Carrier login successful.',
+            accessToken,
+            refreshToken,
+            carrier_ID
+        });
+
+    } catch (error) {
+        console.error('Error in carrier login:', error);
+        res.status(500).json({ message: 'Internal Server Error', error: error.message });
+    }
+});
+
+
 
 
 // router.get('/all-carriers', jwtAuth.verifyToken, async (req, res) => {
@@ -213,55 +310,132 @@ router.get('/carrier-by-id', jwtAuth.verifyToken, async (req, res) => {
 });
 
 
+// ✅ API 1: Edit carrier details (excluding carrier_password)
 router.put('/edit-carrier', jwtAuth.verifyToken, async (req, res) => {
     const { cr_id } = req.query;
-    const { carrier_name, carrier_address, carrier_correspondence, carrier_network_portal, vehicle_types_handling, carrier_loc_of_operation, carrier_lanes } = req.body;
+    const {
+        carrier_name,
+        carrier_address,
+        carrier_correspondence,
+        carrier_network_portal,
+        vehicle_types_handling,
+        carrier_loc_of_operation,
+        carrier_lanes,
+        contract,
+        contract_valid_upto,
+        pricing
+    } = req.body;
 
     if (!cr_id) {
         return res.status(400).json({ message: 'Please provide cr_id in query parameters.' });
     }
 
     try {
-        const updateQuery = `
-            UPDATE carriers 
-            SET 
-                carrier_name = ?, 
-                carrier_address = ?, 
-                carrier_correspondence = ?, 
-                carrier_network_portal = ?, 
-                vehicle_types_handling = ?, 
-                carrier_loc_of_operation = ?, 
-                carrier_lanes = ?
-            WHERE cr_id = ?
-        `;
+        const updateFields = [];
+        const values = [];
 
-        const [result] = await db.query(updateQuery, [
-            carrier_name || null,
-            carrier_address || null,
-            carrier_correspondence ? JSON.stringify(carrier_correspondence) : '{}',
-            carrier_network_portal || null,
-            vehicle_types_handling ? JSON.stringify(vehicle_types_handling) : '[]',
-            carrier_loc_of_operation ? JSON.stringify(carrier_loc_of_operation) : '[]',
-            carrier_lanes ? JSON.stringify(carrier_lanes) : '[]',
-            cr_id,
-        ]);
-
-        if (result.affectedRows === 0) {
-            return res.status(404).json({ message: 'Carrier not found or no changes made.' });
+        if (carrier_name) {
+            updateFields.push('carrier_name = ?');
+            values.push(carrier_name);
+        }
+        if (carrier_address) {
+            updateFields.push('carrier_address = ?');
+            values.push(carrier_address);
+        }
+        if (carrier_correspondence) {
+            updateFields.push('carrier_correspondence = ?');
+            values.push(JSON.stringify(carrier_correspondence));
+        }
+        if (carrier_network_portal !== undefined) {
+            updateFields.push('carrier_network_portal = ?');
+            values.push(carrier_network_portal);
+        }
+        if (vehicle_types_handling) {
+            updateFields.push('vehicle_types_handling = ?');
+            values.push(JSON.stringify(vehicle_types_handling));
+        }
+        if (carrier_loc_of_operation) {
+            updateFields.push('carrier_loc_of_operation = ?');
+            values.push(JSON.stringify(carrier_loc_of_operation));
+        }
+        if (carrier_lanes) {
+            updateFields.push('carrier_lanes = ?');
+            values.push(JSON.stringify(carrier_lanes));
+        }
+        if (contract !== undefined) {
+            updateFields.push('contract = ?');
+            values.push(contract);
+        }
+        if (contract_valid_upto) {
+            updateFields.push('contract_valid_upto = ?');
+            values.push(contract_valid_upto);
+        }
+        if (pricing) {
+            updateFields.push('pricing = ?');
+            values.push(JSON.stringify(pricing));
         }
 
-        const [updatedRecord] = await db.query(
-            `SELECT * FROM carriers WHERE cr_id  = ?`,
-            [cr_id]
-        );
+        if (updateFields.length === 0) {
+            return res.status(400).json({ message: 'No fields provided for update.' });
+        }
 
-        res.status(200).json({
-            message: 'Carrier updated successfully.',
-            updated_record: updatedRecord[0]?.carrier_ID
-        });
+        values.push(cr_id);
+        const query = `UPDATE carriers SET ${updateFields.join(', ')} WHERE cr_id = ?`;
+        await db.query(query, values);
+
+        res.status(200).json({ message: 'Carrier details updated successfully.' });
     } catch (error) {
         logger.error('Error updating carrier:', error);
         res.status(500).json({ message: 'An error occurred while updating the carrier.', error: error.message });
+    }
+});
+
+
+router.put('/update-carrier-contract', jwtAuth.verifyToken, async (req, res) => {
+    const { carrier_ID } = req.query;
+    const { existing_carrier_password, new_carrier_password, contract, contract_valid_upto } = req.body;
+
+    if (!carrier_ID || !existing_carrier_password || !new_carrier_password) {
+        return res.status(400).json({ message: 'carrier_ID, existing_carrier_password, and new_carrier_password are required.' });
+    }
+
+    if (existing_carrier_password === new_carrier_password) {
+        return res.status(400).json({ message: 'New password should not be same as existing password.' });
+    }
+
+    try {
+        const [rows] = await db.query(`SELECT carrier_password FROM carriers WHERE carrier_ID = ?`, [carrier_ID]);
+
+        if (!rows.length) {
+            return res.status(404).json({ message: 'Carrier not found.' });
+        }
+
+        if (rows[0].carrier_password !== existing_carrier_password) {
+            return res.status(401).json({ message: 'Existing password does not match.' });
+        }
+
+        const updateFields = ['carrier_password = ?'];
+        const values = [new_carrier_password];
+
+        if (contract !== undefined) {
+            updateFields.push('contract = ?');
+            values.push(contract);
+        }
+
+        if (contract_valid_upto) {
+            updateFields.push('contract_valid_upto = ?');
+            values.push(contract_valid_upto);
+        }
+
+        values.push(carrier_ID);
+        const updateQuery = `UPDATE carriers SET ${updateFields.join(', ')} WHERE carrier_ID = ?`;
+
+        await db.query(updateQuery, values);
+        res.status(200).json({ message: 'Carrier password and contract fields updated successfully.' });
+
+    } catch (error) {
+        logger.error('Error updating carrier password/contract:', error);
+        res.status(500).json({ message: 'Internal Server Error', error: error.message });
     }
 });
 

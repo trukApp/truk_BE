@@ -207,7 +207,7 @@ router.post('/confirm-order', jwtAuth.verifyToken, async (req, res) => {
           created_at || new Date().toISOString(),
           updated_at || new Date().toISOString(),
           JSON.stringify(order_docs || []),
-          "order placed"
+          "assignment pending"
         ]);
       
         if (pkgArr.length > 0) {

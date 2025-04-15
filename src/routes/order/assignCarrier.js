@@ -29,51 +29,96 @@ const generateCasID = async () => {
 };
 
 // Add carrier assignment
+// router.post('/assign-carrier', jwtAuth.verifyToken, async (req, res) => {
+//     try {
+//         const {
+//             order_ID,
+//             req_sent_to,
+//             confirmed_to,
+//             vehicle_num,
+//             driver_data,
+//             device_ID,
+//             total_cost,
+//             assigned_time,
+//             confirmed_time,
+//             order_status
+//         } = req.body;
+
+//         if (!order_ID) {
+//             return res.status(400).json({ message: 'order_ID is required.' });
+//         }
+
+//         const cas_ID = await generateCasID();
+
+//         await db.query(`
+//             INSERT INTO carrier_assignments 
+//             (cas_ID, order_ID, req_sent_to, confirmed_to, vehicle_num, driver_data, device_ID, total_cost, assigned_time, confirmed_time, order_status)
+//             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+//         `, [
+//             cas_ID,
+//             order_ID,
+//             JSON.stringify(req_sent_to || []),
+//             confirmed_to,
+//             vehicle_num,
+//             JSON.stringify(driver_data || {}),
+//             device_ID,
+//             total_cost,
+//             assigned_time,
+//             confirmed_time,
+//             order_status
+//         ]);
+
+//         res.status(201).json({ message: 'Carrier assignment created successfully.', cas_ID });
+//     } catch (error) {
+//         logger.error("Error assigning carrier:", error);
+//         res.status(500).json({ message: "Internal Server Error", error: error.message });
+//     }
+// });
+
 router.post('/assign-carrier', jwtAuth.verifyToken, async (req, res) => {
     try {
-        const {
-            order_ID,
-            req_sent_to,
-            confirmed_to,
-            vehicle_num,
-            driver_data,
-            device_ID,
-            total_cost,
-            assigned_time,
-            confirmed_time,
-            order_status
-        } = req.body;
+        const { order_ID, assigned_time } = req.body;
 
         if (!order_ID) {
             return res.status(400).json({ message: 'order_ID is required.' });
         }
 
+        // Get valid carriers (contract = 1 and contract_valid_upto >= today)
+        const [validCarriers] = await db.query(`
+            SELECT carrier_ID FROM carriers
+            WHERE contract = 1 AND DATE(contract_valid_upto) >= CURDATE()
+        `);
+
+        if (!validCarriers.length) {
+            return res.status(400).json({ message: 'No valid contracted carriers found.' });
+        }
+
+        const req_sent_to = validCarriers.map(c => c.carrier_ID);
         const cas_ID = await generateCasID();
 
         await db.query(`
             INSERT INTO carrier_assignments 
-            (cas_ID, order_ID, req_sent_to, confirmed_to, vehicle_num, driver_data, device_ID, total_cost, assigned_time, confirmed_time, order_status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (cas_ID, order_ID, req_sent_to, assigned_time, order_status)
+            VALUES (?, ?, ?, ?, ?)
         `, [
             cas_ID,
             order_ID,
-            JSON.stringify(req_sent_to || []),
-            confirmed_to,
-            vehicle_num,
-            JSON.stringify(driver_data || {}),
-            device_ID,
-            total_cost,
+            JSON.stringify(req_sent_to),
             assigned_time,
-            confirmed_time,
-            order_status
+            'Pending'
         ]);
 
-        res.status(201).json({ message: 'Carrier assignment created successfully.', cas_ID });
+        res.status(201).json({
+            message: 'Carrier assignment initialized successfully.',
+            cas_ID,
+            req_sent_to
+        });
     } catch (error) {
         logger.error("Error assigning carrier:", error);
         res.status(500).json({ message: "Internal Server Error", error: error.message });
     }
 });
+
 
 // Get all assignments with pagination
 router.get('/all-assignments', jwtAuth.verifyToken, async (req, res) => {

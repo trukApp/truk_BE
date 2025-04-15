@@ -94,9 +94,13 @@ router.post('/assign-carrier', jwtAuth.verifyToken, async (req, res) => {
         }
 
         const req_sent_to = validCarriers.map(c => c.carrier_ID);
-        const selectedCarrier = validCarriers[0]; // using first eligible carrier for cost calculation
+        const selectedCarrier = validCarriers[0]; // use first one for cost calc
 
-        // Step 2: Fetch the order's allocation data
+        // 🧾 Log the raw pricing value and type
+        console.log('Raw selectedCarrier.pricing:', selectedCarrier.pricing);
+        console.log(' Type of pricing:', typeof selectedCarrier.pricing);
+
+        // Step 2: Get order allocation info
         const [orders] = await db.query(`SELECT allocations FROM orders WHERE order_ID = ?`, [order_ID]);
         if (!orders.length) {
             return res.status(404).json({ message: 'Order not found.' });
@@ -115,21 +119,8 @@ router.post('/assign-carrier', jwtAuth.verifyToken, async (req, res) => {
             totalDistance += distanceVal;
         });
 
-        let pricing = {};
-
-        try {
-            if (typeof selectedCarrier.pricing === 'string') {
-                pricing = JSON.parse(selectedCarrier.pricing);
-            } else if (typeof selectedCarrier.pricing === 'object' && selectedCarrier.pricing !== null) {
-                pricing = selectedCarrier.pricing;
-            } else {
-                pricing = {};
-            }
-        } catch (err) {
-            return res.status(400).json({ message: 'Invalid pricing format in selected carrier.' });
-        }
-        
-
+        // Step 3: Prepare assignment cost
+        const pricing = selectedCarrier.pricing || {};
 
         let calculatedCost = 0;
         const assignment_cost = {
@@ -182,6 +173,7 @@ router.post('/assign-carrier', jwtAuth.verifyToken, async (req, res) => {
         res.status(500).json({ message: "Internal Server Error", error: error.message });
     }
 });
+
 
 
 router.get('/carrier-assignments', jwtAuth.verifyToken, async (req, res) => {

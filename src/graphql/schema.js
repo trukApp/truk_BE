@@ -583,22 +583,31 @@ type Driver {
   logged_in: Int
   vehicle_types: [String]
 }
+type Assiged{
+  dev_ID:String
+  dri_ID:String
+  self_vehicle_num:String
+  strk_ID:String
+}
 type AssignedOrder {
   assign_ID: ID
   order_ID: ID
-  assigned_vehicle_data: String
-  self_transport: Boolean
-  pod: String
-  pod_doc: String
+  assigned_vehicle_data: [Assiged]
+  self_transport: Int
   scenario_label: String
-  total_cost: Float
-  allocations: String
-  allocated_packages: String
-  unallocated_packages: String
-  allocated_vehicles: String
+  total_cost: String
+  allocations: [Allocation]
+  allocated_packages: [String]
+  unallocated_packages: [String]
+  allocated_vehicles: [String]
   created_at: String
   updated_at: String
   order_status: String
+  # order_docs:[String]
+  # pod:[String]
+  pod_doc:String
+  
+
 }
 
 type AssignedOrderResponse {
@@ -731,6 +740,71 @@ type SingleDriverResponse {
   message: String
   driver: Driver
 }
+
+
+
+
+
+type SelfVehicle {
+  available: Boolean
+  costing: Costing
+  self_vehicle_docs: SelfVehicleDocs
+  self_vehicle_num: String
+  str_id: String
+  strk_ID: ID
+  vehicle_ID: String
+}
+
+type Costing {
+  cost: Float
+  cost_criteria_per: String
+}
+
+type SelfVehicleDocs {
+  insurance: String
+  permit: String
+  registration: String
+}
+
+type SelfVehiclesResponse {
+  message: String
+  data: [SelfVehicle]
+}
+
+
+type CarrierVehicle {
+  act_truk_ID: String
+  act_vehicle_num: String
+  carrier_ID: String
+  truk_id: ID
+  carrier_name: String
+  carrier_address: String
+  carrier_correspondence: String
+  vehicle_types_handling: String
+  carrier_network_portal: String
+  carrier_loc_of_operation: String
+  carrier_lanes: String
+
+}
+
+type SearchTrucksResponse {
+  message: String
+  searchKey: String
+  results: [CarrierVehicle]
+}
+
+
+
+type SearchDriversResponse {
+  message: String
+  searchKey: String
+  results: [Driver]
+}
+
+
+
+
+
   type Query {
     getVehicle(vehicle_ID: ID!): VehicleResponse
     # getVehicles(page: Int, limit: Int): VehiclesResponse
@@ -763,6 +837,9 @@ type SingleDriverResponse {
     getAssignedOrder(assign_ID: ID, order_ID: ID, dri_ID: ID): AssignedOrderResponse!
     getAllVehicles: [VehicleResultData]
     searchProducts(searchKey: String!, page: Int, limit: Int): [Product]
+    getAllSelfVehicles: SelfVehiclesResponse
+    searchTrucks(searchKey: String!, page: Int, limit: Int): SearchTrucksResponse
+    searchDrivers(searchKey: String!, page: Int, limit: Int): SearchDriversResponse
   }
 
   type Mutation {

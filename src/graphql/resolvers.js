@@ -622,7 +622,7 @@ const resolvers = {
 
         async getAllDevices(_, { page, limit }, context) {
           try {
-            const baseQuery = `
+            let query = `
               SELECT 
                   d.device_id, d.dev_ID, d.device_type, d.device_UID, d.sim_imei_num, 
                   d.vehicle_number, d.carrier_ID, d.loc_ID,
@@ -632,20 +632,22 @@ const resolvers = {
               LEFT JOIN carriers c ON d.carrier_ID = c.carrier_ID
               LEFT JOIN master_locations l ON d.loc_ID = l.loc_ID
             `;
-    
-            const paginatedQuery = applyPagination(baseQuery, page, limit);
-            const [devices] = await db.query(paginatedQuery);
-    
+        
+            if (page && limit) {
+              query = applyPagination(query, page, limit);
+            }
+        
+            const [devices] = await db.query(query);
+        
             return {
               message: 'Devices retrieved successfully',
               devices,
             };
           } catch (error) {
-       
             throw new Error('An error occurred while fetching devices.');
           }
         },
-    
+        
         async getDevice(_, { dev_ID }, context) {
           // Verify authentication
           // if (!context.user) {
@@ -1065,17 +1067,31 @@ const resolvers = {
             throw new Error("Internal Server Error");
           }
         },
-        async getAllVehicles(_, __, context) {
-          // if (!context.user) throw new Error("Unauthorized access");
-    
+        getAllSelfVehicles: async (_, __, context) => {
           try {
-            const [vehicles] = await db.query(`
-              SELECT * FROM act_vehicles ORDER BY truk_id DESC
-            `);
-            return vehicles;
+            // Optional: add auth check using context.user
+            // if (!context.user) {
+            //   throw new Error("Unauthorized");
+            // }
+    
+            const [vehicles] = await db.query(`SELECT * FROM self_vehicles ORDER BY str_id DESC`);
+    
+            // Optionally format nested fields if stored as JSON strings
+            const formattedVehicles = vehicles.map(vehicle => ({
+              ...vehicle,
+              costing: typeof vehicle.costing === 'string' ? JSON.parse(vehicle.costing) : vehicle.costing,
+              self_vehicle_docs: typeof vehicle.self_vehicle_docs === 'string'
+                ? JSON.parse(vehicle.self_vehicle_docs)
+                : vehicle.self_vehicle_docs,
+            }));
+    
+            return {
+              message: "Self vehicles retrieved successfully",
+              data: formattedVehicles,
+            };
           } catch (error) {
-            console.error('Error fetching vehicles:', error);
-            throw new Error('Internal Server Error');
+            console.error("Error fetching self vehicles:", error);
+            throw new Error("Internal Server Error");
           }
         },
         async searchProducts(_, { searchKey, page = 1, limit = 10 }) {
@@ -1116,38 +1132,113 @@ const resolvers = {
           }
         },
 
-        // async searchTrucks(_, { searchKey, page, limit }, context) {
-        //   if (!context.user) throw new Error("Unauthorized access");
+        searchTrucks: async (_, { searchKey, page, limit }) => {
+          try {
+            if (!searchKey || searchKey.trim().length < 1) {
+              throw new Error("Search key is required.");
+            }
     
-        //   if (!searchKey || searchKey.trim().length < 1) {
-        //     throw new Error("Search key is required.");
-        //   }
+            const searchPattern = `%${searchKey}%`;
     
-        //   try {
-        //     const query = `
-        //       SELECT * FROM act_vehicles 
-        //       WHERE 
-        //           act_truk_ID LIKE ? 
-        //           OR act_vehicle_num LIKE ?
-        //       LIMIT ? OFFSET ?
-        //     `;
+            // Base query
+            let baseQuery = `
+              SELECT 
+                cv.*, 
+                c.carrier_name, 
+                c.carrier_address,
+                c.carrier_correspondence,
+                c.vehicle_types_handling,
+                c.carrier_network_portal,
+                c.carrier_loc_of_operation,
+                c.carrier_lanes
+              FROM carrier_vehicles cv
+              LEFT JOIN carriers c ON cv.carrier_ID = c.carrier_ID
+              WHERE 
+                cv.act_truk_ID LIKE ? 
+                OR cv.act_vehicle_num LIKE ?
+                OR cv.carrier_ID LIKE ?
+                OR c.carrier_name LIKE ?
+              ORDER BY cv.truk_id DESC
+            `;
     
-        //     const searchPattern = `%${searchKey}%`;
-        //     const offset = (page - 1) * limit;
+            // Optional pagination
+            if (page && limit) {
+              const offset = (page - 1) * limit;
+              baseQuery += ` LIMIT ${parseInt(limit)} OFFSET ${parseInt(offset)}`;
+            }
     
-        //     const [trucks] = await db.query(query, [searchPattern, searchPattern, limit, offset]);
+            const [trucks] = await db.query(baseQuery, [
+              searchPattern,
+              searchPattern,
+              searchPattern,
+              searchPattern
+            ]);
     
-        //     if (trucks.length === 0) {
-        //       throw new Error("No trucks found matching the search criteria.");
-        //     }
+            if (!trucks.length) {
+              return {
+                message: "No trucks found matching the search criteria.",
+                searchKey,
+                results: []
+              };
+            }
     
-        //     return trucks;
-        //   } catch (error) {
-        //     throw new Error("An error occurred while searching trucks: " + error.message);
-        //   }
-        // }
+            return {
+              message: "Trucks retrieved successfully.",
+              searchKey,
+              results: trucks
+            };
+          } catch (error) {
+            console.error("Error searching trucks:", error);
+            throw new Error("An error occurred while searching trucks.");
+          }
+        },
+       searchDrivers: async (_, { searchKey, page = 1, limit = 10 }, { db, logger }) => {
+          try {
+            if (!searchKey || searchKey.trim().length < 1) {
+              throw new Error('Search key is required in the query.');
+            }
+        
+            const searchPattern = `%${searchKey}%`;
+        
+            const offset = (page - 1) * limit;
+            const query = `
+              SELECT * FROM master_drivers 
+              WHERE 
+                dri_ID LIKE ? 
+                OR driver_name LIKE ? 
+                OR JSON_EXTRACT(driver_correspondence, '$.phone') LIKE ?
+              LIMIT ? OFFSET ?
+            `;
+        
+            const [drivers] = await db.query(query, [
+              searchPattern,
+              searchPattern,
+              searchPattern,
+              parseInt(limit),
+              parseInt(offset)
+            ]);
+        
+            if (!drivers.length) {
+              return {
+                message: 'No drivers found matching the search criteria.',
+                searchKey,
+                results: []
+              };
+            }
+        
+            return {
+              message: 'Drivers retrieved successfully.',
+              searchKey,
+              results: drivers
+            };
+          } catch (error) {
+           
+            throw new Error('An error occurred while searching drivers.');
+          }
+        },
   },
 
+ 
   Mutation: {
     async signup(_, { input }) {
       const { first_name, last_name, gender, mobile, email, password, user_type } = input;

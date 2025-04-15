@@ -76,7 +76,7 @@ router.post('/add-devices', jwtAuth.verifyToken, async (req, res) => {
             devices: newDevices,
         });
     } catch (error) {
-        logger.error('Error adding devices:', error);
+       
         res.status(500).json({ message: 'An error occurred while adding devices.', error: error.message });
     }
 });
@@ -112,8 +112,8 @@ router.get('/all-devices', jwtAuth.verifyToken, async (req, res) => {
     try {
         const { page, limit } = req.query;
         const query = `
-            SELECT 
-                d.device_id, d.dev_ID, d.device_type, d.device_UID, d.sim_imei_num, 
+            SELECT
+                d.device_id, d.dev_ID, d.device_type, d.device_UID, d.sim_imei_num,
                 d.vehicle_number, d.carrier_ID, d.loc_ID,
                 c.carrier_name, c.carrier_address,
                 l.loc_desc AS location_desc, l.city, l.state, l.country
@@ -129,7 +129,7 @@ router.get('/all-devices', jwtAuth.verifyToken, async (req, res) => {
             devices,
         });
     } catch (error) {
-        logger.error('Error fetching devices:', error);
+       
         res.status(500).json({ message: 'An error occurred while fetching devices.', error: error.message });
     }
 });
@@ -171,7 +171,7 @@ router.get('/device', jwtAuth.verifyToken, async (req, res) => {
             device: device[0],
         });
     } catch (error) {
-        logger.error('Error fetching device:', error);
+      
         res.status(500).json({ message: 'An error occurred while fetching the device.', error: error.message });
     }
 });
@@ -233,7 +233,7 @@ router.put('/edit-device', jwtAuth.verifyToken, async (req, res) => {
             updated_record: updatedRecord[0]?.dev_ID
         });
     } catch (error) {
-        logger.error('Error updating device:', error);
+      
         res.status(500).json({ message: 'An error occurred while updating the device.', error: error.message });
     }
 });
@@ -267,7 +267,7 @@ router.delete('/delete-device', jwtAuth.verifyToken, async (req, res) => {
             deleted_record: getData[0].dev_ID
         });
     } catch (error) {
-        logger.error('Error deleting device:', error);
+        
         res.status(500).json({ message: 'An error occurred while deleting the device.', error: error.message });
     }
 });

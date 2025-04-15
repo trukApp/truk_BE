@@ -28,47 +28,94 @@ const generateCasID = async () => {
     }
 };
 
-// Add carrier assignment
+
 // router.post('/assign-carrier', jwtAuth.verifyToken, async (req, res) => {
 //     try {
-//         const {
-//             order_ID,
-//             req_sent_to,
-//             confirmed_to,
-//             vehicle_num,
-//             driver_data,
-//             device_ID,
-//             total_cost,
-//             assigned_time,
-//             confirmed_time,
-//             order_status
-//         } = req.body;
+//         const { order_ID, assigned_time } = req.body;
 
 //         if (!order_ID) {
 //             return res.status(400).json({ message: 'order_ID is required.' });
 //         }
 
+//         const [validCarriers] = await db.query(`
+//             SELECT carrier_ID, pricing FROM carriers
+//             WHERE contract = 1 AND DATE(contract_valid_upto) >= CURDATE()
+//         `);
+
+//         if (!validCarriers.length) {
+//             return res.status(400).json({ message: 'No valid contracted carriers found.' });
+//         }
+
+//         const req_sent_to = validCarriers.map(c => c.carrier_ID);
+//         const selectedCarrier = validCarriers[0]; 
+
+//         const [orders] = await db.query(`
+//             SELECT total_weight, total_distance FROM orders WHERE order_ID = ?
+//         `, [order_ID]);
+
+//         if (!orders.length) {
+//             return res.status(404).json({ message: 'Order not found.' });
+//         }
+
+//         const { total_weight, total_distance } = orders[0];
+
+//         // Step 3: Prepare assignment cost
+//         let pricing = {};
+//         try {
+//             pricing = typeof selectedCarrier.pricing === 'string'
+//                 ? JSON.parse(selectedCarrier.pricing)
+//                 : selectedCarrier.pricing;
+//         } catch (err) {
+//             return res.status(400).json({ message: 'Invalid pricing JSON format in selected carrier.' });
+//         }
+
+//         let calculatedCost = 0;
+//         const assignment_cost = {
+//             cost_criteria_considered: pricing.cost_criteria_per || '',
+//             total_weight: null,
+//             total_distance: null,
+//             cost: 0
+//         };
+
+//         if (pricing.cost_criteria_per === 'ton') {
+//             assignment_cost.total_weight = total_weight;
+//             calculatedCost = (parseFloat(pricing.cost) || 0) * (parseFloat(total_weight) / 1000);
+//         } else if (pricing.cost_criteria_per === 'km') {
+//             assignment_cost.total_distance = total_distance;
+//             calculatedCost = (parseFloat(pricing.cost) || 0) * parseFloat(total_distance);
+//         }
+
+//         assignment_cost.cost = calculatedCost.toFixed(2);
+
+//         // Step 4: Insert into carrier_assignments
 //         const cas_ID = await generateCasID();
 
 //         await db.query(`
 //             INSERT INTO carrier_assignments 
-//             (cas_ID, order_ID, req_sent_to, confirmed_to, vehicle_num, driver_data, device_ID, total_cost, assigned_time, confirmed_time, order_status)
-//             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+//             (cas_ID, order_ID, req_sent_to, assigned_time, assignment_status, assignment_cost)
+//             VALUES (?, ?, ?, ?, ?, ?)
 //         `, [
 //             cas_ID,
 //             order_ID,
-//             JSON.stringify(req_sent_to || []),
-//             confirmed_to,
-//             vehicle_num,
-//             JSON.stringify(driver_data || {}),
-//             device_ID,
-//             total_cost,
+//             JSON.stringify(req_sent_to),
 //             assigned_time,
-//             confirmed_time,
-//             order_status
+//             'Pending',
+//             JSON.stringify(assignment_cost)
 //         ]);
 
-//         res.status(201).json({ message: 'Carrier assignment created successfully.', cas_ID });
+//         // Step 5: Update order status
+//         await db.query(
+//             `UPDATE orders SET order_status = ? WHERE order_ID = ?`,
+//             ['carrier assignment', order_ID]
+//         );
+
+//         res.status(201).json({
+//             message: 'Carrier assignment initialized successfully.',
+//             cas_ID,
+//             req_sent_to,
+//             assignment_cost
+//         });
+
 //     } catch (error) {
 //         logger.error("Error assigning carrier:", error);
 //         res.status(500).json({ message: "Internal Server Error", error: error.message });
@@ -83,7 +130,6 @@ router.post('/assign-carrier', jwtAuth.verifyToken, async (req, res) => {
             return res.status(400).json({ message: 'order_ID is required.' });
         }
 
-        // Step 1: Get valid carriers
         const [validCarriers] = await db.query(`
             SELECT carrier_ID, pricing FROM carriers
             WHERE contract = 1 AND DATE(contract_valid_upto) >= CURDATE()
@@ -93,35 +139,153 @@ router.post('/assign-carrier', jwtAuth.verifyToken, async (req, res) => {
             return res.status(400).json({ message: 'No valid contracted carriers found.' });
         }
 
-        const req_sent_to = validCarriers.map(c => c.carrier_ID);
-        const selectedCarrier = validCarriers[0]; // use first one for cost calc
+        const [orders] = await db.query(`
+            SELECT total_weight, total_distance FROM orders WHERE order_ID = ?
+        `, [order_ID]);
 
-        // 🧾 Log the raw pricing value and type
-        console.log('Raw selectedCarrier.pricing:', selectedCarrier.pricing);
-        console.log(' Type of pricing:', typeof selectedCarrier.pricing);
-
-        // Step 2: Get order allocation info
-        const [orders] = await db.query(`SELECT allocations FROM orders WHERE order_ID = ?`, [order_ID]);
         if (!orders.length) {
             return res.status(404).json({ message: 'Order not found.' });
         }
 
-        const allocations = JSON.parse(orders[0].allocations || '[]');
-        let totalWeight = 0;
-        let totalDistance = 0;
+        const { total_weight, total_distance } = orders[0];
 
-        allocations.forEach(allocation => {
-            const occupiedWeight = allocation.occupiedWeight || 0;
-            const distanceStr = allocation.route?.[0]?.distance || '';
-            const distanceVal = parseFloat(distanceStr.replace(/[^\d.]/g, '')) || 0;
+        if (validCarriers.length === 1) {
+            const selectedCarrier = validCarriers[0];
 
-            totalWeight += occupiedWeight;
-            totalDistance += distanceVal;
+            let pricing = {};
+            try {
+                pricing = typeof selectedCarrier.pricing === 'string'
+                    ? JSON.parse(selectedCarrier.pricing)
+                    : selectedCarrier.pricing;
+            } catch (err) {
+                return res.status(400).json({ message: 'Invalid pricing JSON format in selected carrier.' });
+            }
+
+            let calculatedCost = 0;
+            const assignment_cost = {
+                cost_criteria_considered: pricing.cost_criteria_per || '',
+                total_weight: null,
+                total_distance: null,
+                cost: 0
+            };
+
+            if (pricing.cost_criteria_per === 'ton') {
+                assignment_cost.total_weight = total_weight;
+                calculatedCost = (parseFloat(pricing.cost) || 0) * (parseFloat(total_weight) / 1000);
+            } else if (pricing.cost_criteria_per === 'km') {
+                assignment_cost.total_distance = total_distance;
+                calculatedCost = (parseFloat(pricing.cost) || 0) * parseFloat(total_distance);
+            }
+
+            assignment_cost.cost = calculatedCost.toFixed(2);
+
+            const cas_ID = await generateCasID();
+
+            await db.query(`
+                INSERT INTO carrier_assignments 
+                (cas_ID, order_ID, req_sent_to, assigned_time, assignment_status, assignment_cost)
+                VALUES (?, ?, ?, ?, ?, ?)
+            `, [
+                cas_ID,
+                order_ID,
+                JSON.stringify([selectedCarrier.carrier_ID]),
+                assigned_time,
+                'Pending',
+                JSON.stringify(assignment_cost)
+            ]);
+
+            await db.query(
+                `UPDATE orders SET order_status = ? WHERE order_ID = ?`,
+                ['carrier assignment', order_ID]
+            );
+
+            return res.status(201).json({
+                message: 'Carrier assignment initialized successfully.',
+                cas_ID,
+                req_sent_to: [selectedCarrier.carrier_ID],
+                assignment_cost
+            });
+        }
+
+        const options = [];
+
+        for (const carrier of validCarriers) {
+            try {
+                const pricing = typeof carrier.pricing === 'string'
+                    ? JSON.parse(carrier.pricing)
+                    : carrier.pricing;
+
+                let cost = 0;
+                if (pricing.cost_criteria_per === 'ton') {
+                    cost = (parseFloat(pricing.cost) || 0) * (parseFloat(total_weight) / 1000);
+                } else if (pricing.cost_criteria_per === 'km') {
+                    cost = (parseFloat(pricing.cost) || 0) * parseFloat(total_distance);
+                }
+
+                options.push({
+                    carrier_ID: carrier.carrier_ID,
+                    cost: cost.toFixed(2),
+                    cost_criteria_considered: pricing.cost_criteria_per,
+                    rate: `${parseFloat(pricing.cost).toFixed(2)} per ${pricing.cost_criteria_per}`
+                });
+            } catch (err) {
+                continue;
+            }
+        }
+
+        return res.status(200).json({
+            message: 'Multiple valid contracted carriers found. Choose one for assignment.',
+            carrier_options: options
         });
 
-        // Step 3: Prepare assignment cost
-        const pricing = selectedCarrier.pricing || {};
+    } catch (error) {
+        logger.error("Error assigning carrier:", error);
+        res.status(500).json({ message: "Internal Server Error", error: error.message });
+    }
+});
 
+router.post('/finalize-carrier-assignment', jwtAuth.verifyToken, async (req, res) => {
+    try {
+        const { order_ID, carrier_ID, assigned_time } = req.body;
+
+        if (!order_ID || !carrier_ID || !assigned_time) {
+            return res.status(400).json({ message: 'order_ID, carrier_ID, and assigned_time are required.' });
+        }
+
+        // 1. Validate carrier
+        const [carrierRows] = await db.query(`
+            SELECT carrier_ID, pricing FROM carriers 
+            WHERE carrier_ID = ? AND contract = 1 AND DATE(contract_valid_upto) >= CURDATE()
+        `, [carrier_ID]);
+
+        if (!carrierRows.length) {
+            return res.status(400).json({ message: 'Invalid or expired contracted carrier.' });
+        }
+
+        const selectedCarrier = carrierRows[0];
+
+        // 2. Get order info (weight + distance)
+        const [orderRows] = await db.query(`
+            SELECT total_weight, total_distance FROM orders WHERE order_ID = ?
+        `, [order_ID]);
+
+        if (!orderRows.length) {
+            return res.status(404).json({ message: 'Order not found.' });
+        }
+
+        const { total_weight, total_distance } = orderRows[0];
+
+        // 3. Parse pricing
+        let pricing = {};
+        try {
+            pricing = typeof selectedCarrier.pricing === 'string'
+                ? JSON.parse(selectedCarrier.pricing)
+                : selectedCarrier.pricing;
+        } catch (err) {
+            return res.status(400).json({ message: 'Invalid pricing JSON format for carrier.' });
+        }
+
+        // 4. Calculate cost
         let calculatedCost = 0;
         const assignment_cost = {
             cost_criteria_considered: pricing.cost_criteria_per || '',
@@ -131,18 +295,19 @@ router.post('/assign-carrier', jwtAuth.verifyToken, async (req, res) => {
         };
 
         if (pricing.cost_criteria_per === 'ton') {
-            assignment_cost.total_weight = totalWeight;
-            calculatedCost = (parseFloat(pricing.cost) || 0) * (totalWeight / 1000);
+            assignment_cost.total_weight = total_weight;
+            calculatedCost = (parseFloat(pricing.cost) || 0) * (parseFloat(total_weight) / 1000);
         } else if (pricing.cost_criteria_per === 'km') {
-            assignment_cost.total_distance = totalDistance;
-            calculatedCost = (parseFloat(pricing.cost) || 0) * totalDistance;
+            assignment_cost.total_distance = total_distance;
+            calculatedCost = (parseFloat(pricing.cost) || 0) * parseFloat(total_distance);
         }
 
         assignment_cost.cost = calculatedCost.toFixed(2);
 
-        // Step 4: Insert into carrier_assignments
+        // 5. Generate cas_ID
         const cas_ID = await generateCasID();
 
+        // 6. Insert into carrier_assignments
         await db.query(`
             INSERT INTO carrier_assignments 
             (cas_ID, order_ID, req_sent_to, assigned_time, assignment_status, assignment_cost)
@@ -150,29 +315,28 @@ router.post('/assign-carrier', jwtAuth.verifyToken, async (req, res) => {
         `, [
             cas_ID,
             order_ID,
-            JSON.stringify(req_sent_to),
+            JSON.stringify([carrier_ID]),
             assigned_time,
             'Pending',
             JSON.stringify(assignment_cost)
         ]);
 
-        // Step 5: Update order status
-        await db.query(
-            `UPDATE orders SET order_status = ? WHERE order_ID = ?`,
-            ['carrier assignment', order_ID]
-        );
+        // 7. Update order status
+        await db.query(`UPDATE orders SET order_status = ? WHERE order_ID = ?`, ['carrier assignment', order_ID]);
 
-        res.status(201).json({
-            message: 'Carrier assignment initialized successfully.',
+        return res.status(201).json({
+            message: 'Carrier assignment sent to selected carrier successfully.',
             cas_ID,
-            req_sent_to,
+            carrier_ID,
             assignment_cost
         });
+
     } catch (error) {
-        logger.error("Error assigning carrier:", error);
-        res.status(500).json({ message: "Internal Server Error", error: error.message });
+        logger.error("Error finalizing carrier assignment:", error);
+        return res.status(500).json({ message: 'Internal Server Error', error: error.message });
     }
 });
+
 
 
 
@@ -254,6 +418,90 @@ router.get('/carrier-assignments', jwtAuth.verifyToken, async (req, res) => {
 });
 
 
+router.post('/carrier-assignment/confirm', jwtAuth.verifyToken, async (req, res) => {
+    try {
+        const {
+            carrier_ID,
+            order_ID,
+            vehicle_num,
+            driver_data,
+            device_ID,
+            confirmed_time
+        } = req.body;
+
+        if (!carrier_ID || !order_ID) {
+            return res.status(400).json({ message: "carrier_ID and order_ID are required." });
+        }
+
+        const [result] = await db.query(
+            `SELECT * FROM carrier_assignments 
+             WHERE order_ID = ? AND JSON_CONTAINS(req_sent_to, JSON_QUOTE(?), '$')`,
+            [order_ID, carrier_ID]
+        );
+
+        if (result.length === 0) {
+            return res.status(404).json({ message: 'No carrier assignment found for this carrier and order.' });
+        }
+
+        await db.query(
+            `UPDATE carrier_assignments SET 
+                confirmed_to = ?,
+                vehicle_num = ?,
+                driver_data = ?,
+                device_ID = ?,
+                confirmed_time = ?,
+                assignment_status = 'carrier confirmed'
+             WHERE order_ID = ? AND JSON_CONTAINS(req_sent_to, JSON_QUOTE(?), '$')`,
+            [
+                carrier_ID,
+                vehicle_num,
+                JSON.stringify(driver_data || {}),
+                device_ID,
+                confirmed_time,
+                order_ID,
+                carrier_ID
+            ]
+        );
+
+        return res.status(200).json({ message: 'Carrier assignment confirmed successfully.' });
+    } catch (error) {
+        logger.error("Error confirming carrier assignment:", error);
+        return res.status(500).json({ message: "Internal Server Error", error: error.message });
+    }
+});
+
+
+router.post('/carrier-assignment/reject', jwtAuth.verifyToken, async (req, res) => {
+    try {
+        const { carrier_ID, order_ID } = req.body;
+
+        if (!carrier_ID || !order_ID) {
+            return res.status(400).json({ message: "carrier_ID and order_ID are required." });
+        }
+
+        const [result] = await db.query(
+            `SELECT * FROM carrier_assignments 
+             WHERE order_ID = ? AND JSON_CONTAINS(req_sent_to, JSON_QUOTE(?), '$')`,
+            [order_ID, carrier_ID]
+        );
+
+        if (result.length === 0) {
+            return res.status(404).json({ message: 'No carrier assignment found for this carrier and order.' });
+        }
+
+        await db.query(
+            `UPDATE carrier_assignments 
+             SET assignment_status = 'carrier rejected' 
+             WHERE order_ID = ? AND JSON_CONTAINS(req_sent_to, JSON_QUOTE(?), '$')`,
+            [order_ID, carrier_ID]
+        );
+
+        return res.status(200).json({ message: 'Carrier assignment rejected successfully.' });
+    } catch (error) {
+        logger.error("Error rejecting carrier assignment:", error);
+        return res.status(500).json({ message: "Internal Server Error", error: error.message });
+    }
+});
 
 
 
@@ -279,26 +527,17 @@ router.get('/all-assignments', jwtAuth.verifyToken, async (req, res) => {
 // Get single assignment by cas_ID or order_ID
 router.get('/assignment', jwtAuth.verifyToken, async (req, res) => {
     try {
-        const { cas_ID, order_ID } = req.query;
+        const { carrier_ID } = req.query;
 
-        if (!cas_ID && !order_ID) {
-            return res.status(400).json({ message: 'Please provide cas_ID or order_ID in query.' });
-        }
-
-        let condition = '';
-        let value = '';
-
-        if (cas_ID) {
-            condition = 'cas_ID = ?';
-            value = cas_ID;
-        } else if (order_ID) {
-            condition = 'order_ID = ?';
-            value = order_ID;
+        if (!carrier_ID) {
+            return res.status(400).json({ message: 'Please provide carrier_ID in query.' });
         }
 
         const [result] = await db.query(`
-            SELECT * FROM carrier_assignments WHERE ${condition}
-        `, [value]);
+            SELECT * FROM carrier_assignments 
+            WHERE confirmed_to = ? 
+               OR JSON_CONTAINS(req_sent_to, JSON_QUOTE(?), '$')
+        `, [carrier_ID, carrier_ID]);
 
         res.status(200).json({ data: result });
     } catch (error) {
@@ -306,6 +545,7 @@ router.get('/assignment', jwtAuth.verifyToken, async (req, res) => {
         res.status(500).json({ message: "Internal Server Error", error: error.message });
     }
 });
+
 
 // Update assignment
 router.put('/edit-assignment', jwtAuth.verifyToken, async (req, res) => {

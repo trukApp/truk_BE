@@ -65,7 +65,7 @@ router.post('/create-carriers', jwtAuth.verifyToken, async (req, res) => {
                     contract_valid_upto,
                     pricing,
                     carrier_password
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 `,
                 [
                     carrier_ID,

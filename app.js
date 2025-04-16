@@ -61,6 +61,7 @@ const assign = require('./src/routes/order/assignOrder');
 const actVehicles = require('./src/routes/vehicles/actVehicles');
 const selfVehicles = require('./src/routes/vehicles/selfVehicles');
 const assignCarriers = require('./src/routes/order/assignCarrier');
+const assignmentBidding = require('./src/routes/order/assignmentBidding');
 
 
 app.use('/truk/reg',signup);
@@ -86,5 +87,6 @@ app.use('/truk/ao',assign);
 app.use('/truk/veh',actVehicles);
 app.use('/truk/self',selfVehicles);
 app.use('/truk/carrier-assignment',assignCarriers);
+app.use('/truk/assignment-bid',assignmentBidding);
 
 module.exports = app;

@@ -234,6 +234,7 @@ type AdditionalInfo {
 
 type Packages {
   pac_ID: String
+  pack_ID:String
   pac_id:String
   package_name: String
   package_description: String
@@ -258,6 +259,9 @@ type Packages {
   dropoff_date_time: String
   return_label: String
   bill_to: String
+  pack_volume:String
+  pack_volume_uom:String
+  package_id:Int
 }
 type Package {
   pac_id: ID
@@ -273,7 +277,13 @@ type Package {
   tax_info: TaxInfo
   product_ID: [Product]
   package_info:String
+  package_id:Int
+
+
+
+
 }
+
 type PackagingType {
   pac_ID: String
   location: String
@@ -621,10 +631,7 @@ type BusinessPartnerResponse {
   partners: [BusinessPartner]
 }
 
-type CountResponse {
-  message: String!
-  counts: Counts
-}
+
 
 type DeviceResponse {
   message: String
@@ -653,15 +660,15 @@ type ProductResponse {
   message: String!
   product: Product
 }
-# type PackageResponse {
-#   message: String
-#   packages: [Package]
-#   package: Package
-# }
+type PackagesResponses {
+  message: String
+  packages: [Packages]
+}
 type PackageResponse {
   message: String
   packages: [Package]
 }
+
 type SignupResponse {
   message: String!
 }
@@ -801,15 +808,39 @@ type SearchDriversResponse {
   results: [Driver]
 }
 
+type CountData {
+  vehicles: Int
+  products: Int
+  locations: Int
+  lanes: Int
+  devices: Int
+  drivers: Int
+  carriers: Int
+  customers: Int
+  vendors: Int
+  packages: Int
+  uoms: Int
+}
 
 
+type CountResponse {
+  message: String
+  counts: CountData
+}
 
+type ProductSearchResult {
+  message: String
+  searchKey: String
+  results: [Product]
+}
 
   type Query {
     getVehicle(vehicle_ID: ID!): VehicleResponse
     # getVehicles(page: Int, limit: Int): VehiclesResponse
     getVehicles(page: Int, limit: Int): VehicleResult
-    getAllPackages(page: Int, limit: Int): PackageResponse
+    # getAllPackages(page: Int, limit: Int): PackagesResponses
+    getAllPackages(page: Int, limit: Int): PackagesResponses
+    allPackages(page: Int, limit: Int): PackagesResponses
     getPackage(pac_ID: ID!): PackageResponse!
     getAllProducts(page: Int, limit: Int): ProductsResponse!
     getProduct(product_ID: ID!): ProductResponse!
@@ -836,10 +867,12 @@ type SearchDriversResponse {
     getDriver(dri_ID: ID!): SingleDriverResponse!
     getAssignedOrder(assign_ID: ID, order_ID: ID, dri_ID: ID): AssignedOrderResponse!
     getAllVehicles: [VehicleResultData]
-    searchProducts(searchKey: String!, page: Int, limit: Int): [Product]
+    # searchProducts(searchKey: String!, page: Int, limit: Int): [Product]
     getAllSelfVehicles: SelfVehiclesResponse
     searchTrucks(searchKey: String!, page: Int, limit: Int): SearchTrucksResponse
     searchDrivers(searchKey: String!, page: Int, limit: Int): SearchDriversResponse
+    getCountData: CountResponse
+    searchProducts(searchKey: String!, page: Int, limit: Int): ProductSearchResult
   }
 
   type Mutation {

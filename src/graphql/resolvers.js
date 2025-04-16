@@ -39,10 +39,49 @@ const resolvers = {
           console.error("Error fetching vehicle:", error);
           throw new Error("An error occurred while fetching the vehicle.");
         }},
+        // getVehicles: async (_, { page, limit }) => {
+        //   try {
+        //     const offset = (page - 1) * limit;
+        //     const query = `
+        //       SELECT 
+        //           v.*, 
+        //           l.loc_ID, l.loc_desc, l.longitude, l.latitude, l.time_zone, 
+        //           l.city, l.state, l.country, l.pincode, l.loc_type, 
+        //           l.gln_code, l.iata_code
+        //       FROM master_vehicles v
+        //       LEFT JOIN master_locations l ON v.loc_ID = l.loc_ID
+        //       LIMIT ? OFFSET ?
+        //     `;
+        
+        //     const [vehicles] = await db.query(query, [parseInt(limit), parseInt(offset)]);
+        
+        //     // Optionally parse nested JSON fields like `physical_properties`, etc.
+        //     vehicles.forEach(vehicle => {
+        //       try {
+        //         vehicle.physical_properties = JSON.parse(vehicle.physical_properties || '{}');
+        //         vehicle.capacity = JSON.parse(vehicle.capacity || '{}');
+        //         vehicle.transportation_details = JSON.parse(vehicle.transportation_details || '{}');
+        //         vehicle.vehicle_group = JSON.parse(vehicle.vehicle_group || '{}');
+        //         vehicle.downtimes = JSON.parse(vehicle.downtimes || '{}');
+        //         vehicle.additional_details = JSON.parse(vehicle.additional_details || '{}');
+        //       } catch (e) {
+        //         // Fallback or log parsing error
+        //       }
+        //     });
+        
+        //     return {
+        //       message: "Vehicles fetched successfullys",
+        //       vehicles,
+        //     };
+        //   } catch (error) {
+        //     console.error("Error fetching vehicles:", error);
+        //     throw new Error("An error occurred while fetching vehicles.");
+        //   }
+        // },
+
         getVehicles: async (_, { page, limit }) => {
           try {
-            const offset = (page - 1) * limit;
-            const query = `
+            let query = `
               SELECT 
                   v.*, 
                   l.loc_ID, l.loc_desc, l.longitude, l.latitude, l.time_zone, 
@@ -50,10 +89,21 @@ const resolvers = {
                   l.gln_code, l.iata_code
               FROM master_vehicles v
               LEFT JOIN master_locations l ON v.loc_ID = l.loc_ID
-              LIMIT ? OFFSET ?
             `;
         
-            const [vehicles] = await db.query(query, [parseInt(limit), parseInt(offset)]);
+            let vehicles; // Declare vehicles variable here
+        
+            // Apply pagination only if both page and limit are provided
+            if (page && limit) {
+              const offset = (page - 1) * limit;
+              query += ` LIMIT ? OFFSET ?`;
+              const [results] = await db.query(query, [parseInt(limit), parseInt(offset)]);
+              vehicles = results; // Assign the result to the vehicles variable
+            } else {
+              // Fetch all vehicles if pagination is not provided
+              const [results] = await db.query(query);
+              vehicles = results; // Assign the result to the vehicles variable
+            }
         
             // Optionally parse nested JSON fields like `physical_properties`, etc.
             vehicles.forEach(vehicle => {
@@ -78,23 +128,28 @@ const resolvers = {
             throw new Error("An error occurred while fetching vehicles.");
           }
         },
-      
-        async getAllPackages(_, { page, limit}, context) {
+        
+        
+     
+        getAllPackages: async (_, { page, limit }) => {
           try {
-            const query = `SELECT * FROM packages`;
-            let paginatedQuery = query
+            let query = 'SELECT * FROM master_package_info ORDER BY package_id DESC';
+            let paginatedQuery = query;
+    
             if (limit && page) {
-              paginatedQuery = applyPagination(query, page, limit);
+              // Apply pagination if limit and page are provided
+              paginatedQuery = applyPagination(query, page, limit); // Assuming applyPagination is a utility function
             }
+    
             const [packages] = await db.query(paginatedQuery);
     
             return {
-              message: "Packages retrieved successfully",
+              message: 'Packages retrieved successfully',
               packages,
             };
           } catch (error) {
-            console.error("Error fetching packages:", error);
-            throw new Error("An error occurred while fetching packages.");
+            console.error('Error fetching packages:', error);
+            throw new Error('An error occurred while fetching packages.');
           }
         },
         async getPackage(_, { pac_ID }, context) {
@@ -124,6 +179,27 @@ const resolvers = {
           } catch (error) {
      
             throw new Error("An error occurred while fetching the package.");
+          }
+        },
+        allPackages: async (_, { page, limit }) => {
+          try {
+            const query = `SELECT * FROM packages`; // Base query
+    
+            let paginatedQuery = query;
+            if (page && limit) {
+              paginatedQuery = applyPagination(query, page, limit); // Apply pagination if both page and limit are provided
+            }
+    
+            const [packages] = await db.query(paginatedQuery); // Execute the query
+    
+            // Return the result
+            return {
+              message: 'Packages retrieved successfully',
+              packages,
+            };
+          } catch (error) {
+            console.error('Error fetching packages:', error);
+            throw new Error('An error occurred while fetching packages.');
           }
         },
        //finished
@@ -523,14 +599,13 @@ const resolvers = {
           }
         },
          //finished
-        async searchLocations(_, { searchKey, page, limit }) {
-     
+         async searchLocations(_, { searchKey, page, limit }) {
           try {
             if (!searchKey || searchKey.trim().length < 1) {
               throw new Error("Search key is required in the query.");
             }
-    
-            const query = `
+        
+            const baseQuery = `
               SELECT * FROM master_locations 
               WHERE 
                 loc_ID LIKE ? 
@@ -539,17 +614,23 @@ const resolvers = {
                 OR pincode LIKE ? 
                 OR loc_type LIKE ?
             `;
-    
+        
             const searchPattern = `%${searchKey}%`;
-            const paginatedQuery = applyPagination(query, page, limit);
-            const [locations] = await db.query(paginatedQuery, [
+            const values = [
               searchPattern,
               searchPattern,
               searchPattern,
               searchPattern,
               searchPattern,
-            ]);
-    
+            ];
+        
+            // ✅ Apply pagination only when page and limit are provided
+            const finalQuery = (page != null && limit != null)
+              ? applyPagination(baseQuery, page, limit)
+              : baseQuery;
+        
+            const [locations] = await db.query(finalQuery, values);
+        
             if (locations.length === 0) {
               return {
                 message: "No locations found matching the search criteria.",
@@ -557,16 +638,18 @@ const resolvers = {
                 results: [],
               };
             }
-    
+        
             return {
               message: "Locations retrieved successfully.",
               searchKey,
               results: locations,
             };
           } catch (error) {
+            console.error("searchLocations error:", error);
             throw new Error("An error occurred while searching locations.");
           }
         },
+        
     
         async locationByID(_, { loc_ID }, context) {
           // if (!context.user) {
@@ -807,8 +890,13 @@ const resolvers = {
         async allCarriers(_, { page, limit }, context) {
           try {
             let query = `SELECT * FROM carriers`;
-            const paginatedQuery = applyPagination(query, page, limit);
-            const [carriers] = await db.query(paginatedQuery);
+        
+            // Apply pagination only if both page and limit are provided
+            if (page != null && limit != null) {
+              query = applyPagination(query, page, limit);
+            }
+        
+            const [carriers] = await db.query(query);
         
             if (carriers.length === 0) {
               throw new Error("No carriers found.");
@@ -818,20 +906,21 @@ const resolvers = {
               message: "Carriers retrieved successfully",
               carriers: carriers.map(carrier => ({
                 ...carrier,
-                carrier_lanes: Array.isArray(carrier.carrier_lanes) ? carrier.carrier_lanes : [], // Ensure array
-                vehicle_types_handling: Array.isArray(carrier.vehicle_types_handling) ? carrier.vehicle_types_handling : [], // Ensure array
-                carrier_correspondence: carrier.carrier_correspondence || { 
-                  name: null, 
-                  email: null, 
-                  phone: null 
-                }  
+                carrier_lanes: Array.isArray(carrier.carrier_lanes) ? carrier.carrier_lanes : [],
+                vehicle_types_handling: Array.isArray(carrier.vehicle_types_handling) ? carrier.vehicle_types_handling : [],
+                carrier_correspondence: carrier.carrier_correspondence || {
+                  name: null,
+                  email: null,
+                  phone: null
+                }
               }))
             };
           } catch (error) {
-       
+            console.error("Error in allCarriers:", error);
             throw new Error("An error occurred while retrieving carriers.");
           }
         },
+        
         
         
     
@@ -1094,12 +1183,12 @@ const resolvers = {
             throw new Error("Internal Server Error");
           }
         },
-        async searchProducts(_, { searchKey, page = 1, limit = 10 }) {
-          if (!searchKey || searchKey.trim().length < 1) {
-            throw new Error('Search key is required.');
-          }
-    
+        searchProducts: async (_, { searchKey, page, limit }, context) => {
           try {
+            if (!searchKey || searchKey.trim().length < 1) {
+              throw new Error('Search key is required.');
+            }
+        
             const query = `
               SELECT * FROM master_products 
               WHERE 
@@ -1107,28 +1196,29 @@ const resolvers = {
                 OR product_name LIKE ? 
                 OR sku_num LIKE ? 
                 OR hsn_code LIKE ?
-              LIMIT ?, ?
             `;
-    
             const searchPattern = `%${searchKey}%`;
-            const offset = (page - 1) * limit;
-    
-            const [products] = await db.query(query, [
-              searchPattern,
-              searchPattern,
-              searchPattern,
-              searchPattern,
-              offset,
-              limit,
-            ]);
-    
-            if (products.length === 0) {
-              return [];
+            const params = [searchPattern, searchPattern, searchPattern, searchPattern];
+        
+            let finalQuery = query;
+            if (page != null && limit != null) {
+              finalQuery = applyPagination(query, page, limit);
             }
-    
-            return products;
+        
+            const [products] = await db.query(finalQuery, params);
+        
+            if (products.length === 0) {
+              throw new Error('No products found matching the search criteria.');
+            }
+        
+            return {
+              message: 'Products retrieved successfully.',
+              searchKey,
+              results: products,
+            };
           } catch (error) {
-            throw new Error('An error occurred while searching for products: ' + error.message);
+            console.error('GraphQL searchProducts error:', error);
+            throw new Error(error.message || 'An error occurred while searching products.');
           }
         },
 
@@ -1236,6 +1326,51 @@ const resolvers = {
             throw new Error('An error occurred while searching drivers.');
           }
         },
+        getCountData: async (_, __, { db, logger }) => {
+          if (!db || typeof db.query !== 'function') {
+            console.error('DB instance is missing or invalid!');
+            throw new Error('Database connection not available.');
+          }
+          try {
+            const queries = {
+              vehicles: `SELECT COUNT(*) AS count FROM master_vehicles`,
+              products: `SELECT COUNT(*) AS count FROM master_products`,
+              locations: `SELECT COUNT(*) AS count FROM master_locations`,
+              lanes: `SELECT COUNT(*) AS count FROM master_lanes`,
+              devices: `SELECT COUNT(*) AS count FROM master_devices`,
+              drivers: `SELECT COUNT(*) AS count FROM master_drivers`,
+              carriers: `SELECT COUNT(*) AS count FROM carriers`,
+              customers: `SELECT COUNT(*) AS count FROM business_partners WHERE partner_type = 'customer'`,
+              vendors: `SELECT COUNT(*) AS count FROM business_partners WHERE partner_type = 'vendor'`,
+              packages: `SELECT COUNT(*) AS count FROM master_package_info`,
+              uoms: `SELECT COUNT(*) AS count FROM master_uom`
+            };
+        
+            const results = await Promise.all(
+              Object.entries(queries).map(async ([key, query]) => {
+                try {
+                  const [rows] = await db.query(query);
+                  return { [key]: rows[0]?.count};
+                } catch (queryError) {
+                  console.log(`Error fetching count for ${key}:`, queryError);
+                  return { [key]: 0 };
+                }
+              })
+            );
+        
+            // Combine results into single object
+            const counts = results.reduce((acc, item) => ({ ...acc, ...item }), {});
+        
+            return {
+              message: "Counts retrieved successfully",
+              counts,
+            };
+          } catch (error) {
+            console.log("getCountData failed:", error);
+            throw new Error("An error occurred while retrieving counts.");
+          }
+        },
+        
   },
 
  

@@ -4,98 +4,148 @@ const db = require('../../../dbConnection');
 const { logger } = require('../../logger/logger');
 const { applyPagination } = require('../../pagination/paginate');
 const jwtAuth = require('../../JWT/jwtAuth');
+require('dotenv').config();
+
+const nodemailer = require('nodemailer');
+
+
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: process.env.MAIL_USER, 
+    pass: process.env.MAIL_PASS
+  }
+});
 
 
 router.post('/create-carriers', jwtAuth.verifyToken, async (req, res) => {
-    const carriers = req.body.carriers;
+  const carriers = req.body.carriers;
 
-    if (!carriers || carriers.length === 0) {
-        return res.status(400).json({ message: 'Please provide carrier data.' });
+  if (!carriers || carriers.length === 0) {
+    return res.status(400).json({ message: 'Please provide carrier data.' });
+  }
+
+  try {
+    const carrierData = Array.isArray(carriers) ? carriers : [carriers];
+
+    const [lastCarrier] = await db.query(`
+      SELECT carrier_ID FROM carriers ORDER BY cr_id DESC LIMIT 1 FOR UPDATE
+    `);
+
+    let lastCarrierNumber = 0;
+    if (lastCarrier.length > 0 && lastCarrier[0].carrier_ID) {
+      lastCarrierNumber = parseInt(lastCarrier[0].carrier_ID.replace('CR', '')) || 0;
     }
 
-    try {
-        const carrierData = Array.isArray(carriers) ? carriers : [carriers];
+    const newCarriers = carrierData.map((carrier, index) => {
+      const carrier_ID = `CR${String(lastCarrierNumber + index + 1).padStart(6, '0')}`;
+      return {
+        ...carrier,
+        carrier_ID,
+      };
+    });
 
-        const [lastCarrier] = await db.query(`
-            SELECT carrier_ID FROM carriers ORDER BY cr_id DESC LIMIT 1 FOR UPDATE
-        `);
+    const insertPromises = newCarriers.map(async (carrier) => {
+      const {
+        carrier_ID,
+        carrier_name,
+        carrier_address,
+        carrier_correspondence,
+        carrier_network_portal,
+        vehicle_types_handling,
+        carrier_loc_of_operation,
+        carrier_lanes,
+        contract,
+        contract_valid_upto,
+        pricing,
+      } = carrier;
 
-        let lastCarrierNumber = 0;
-        if (lastCarrier.length > 0 && lastCarrier[0].carrier_ID) {
-            lastCarrierNumber = parseInt(lastCarrier[0].carrier_ID.replace('CR', '')) || 0;
-        }
+      const phone = carrier_correspondence?.phone || null;
 
-        const newCarriers = carrierData.map((carrier, index) => {
-            const carrier_ID = `CR${String(lastCarrierNumber + index + 1).padStart(6, '0')}`;
-            return {
-                ...carrier,
-                carrier_ID,
-            };
-        });
+      await db.query(
+        `
+        INSERT INTO carriers (
+          carrier_ID,
+          carrier_name,
+          carrier_address,
+          carrier_correspondence,
+          carrier_network_portal,
+          vehicle_types_handling,
+          carrier_loc_of_operation,
+          carrier_lanes,
+          contract,
+          contract_valid_upto,
+          pricing,
+          carrier_password
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          carrier_ID,
+          carrier_name,
+          carrier_address,
+          JSON.stringify(carrier_correspondence || {}),
+          carrier_network_portal,
+          JSON.stringify(vehicle_types_handling || {}),
+          JSON.stringify(carrier_loc_of_operation || {}),
+          JSON.stringify(carrier_lanes || {}),
+          contract,
+          contract_valid_upto,
+          JSON.stringify(pricing || {}),
+          phone
+        ]
+      );
+    });
 
-        const insertPromises = newCarriers.map(async (carrier) => {
-            const {
-                carrier_ID,
-                carrier_name,
-                carrier_address,
-                carrier_correspondence,
-                carrier_network_portal,
-                vehicle_types_handling,
-                carrier_loc_of_operation,
-                carrier_lanes,
-                contract,
-                contract_valid_upto,
-                pricing,
-            } = carrier;
+    await Promise.all(insertPromises);
 
-            const phone = carrier_correspondence?.phone || null;
+    res.status(201).json({
+      message: 'Carriers added successfully and emails sent.',
+      created_records: newCarriers.map(record => record.carrier_ID),
+      carriers: newCarriers,
+    });
 
-            return db.query(
-                `
-                INSERT INTO carriers (
-                    carrier_ID,
-                    carrier_name,
-                    carrier_address,
-                    carrier_correspondence,
-                    carrier_network_portal,
-                    vehicle_types_handling,
-                    carrier_loc_of_operation,
-                    carrier_lanes,
-                    contract,
-                    contract_valid_upto,
-                    pricing,
-                    carrier_password
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                `,
-                [
-                    carrier_ID,
-                    carrier_name,
-                    carrier_address,
-                    JSON.stringify(carrier_correspondence || {}),
-                    carrier_network_portal,
-                    JSON.stringify(vehicle_types_handling || {}),
-                    JSON.stringify(carrier_loc_of_operation || {}),
-                    JSON.stringify(carrier_lanes || {}),
-                    contract,
-                    contract_valid_upto,
-                    JSON.stringify(pricing || {}),
-                    phone
-                ]
-            );
-        });
+    sendCarrierEmailsInBackground(newCarriers);
 
-        await Promise.all(insertPromises);
-
-        res.status(201).json({
-            message: 'Carriers added successfully',
-            created_records: newCarriers.map(record => record.carrier_ID),
-            carriers: newCarriers,
-        });
-    } catch (error) {
-        logger.error('Error creating carriers:', error);
-        res.status(500).json({ message: 'An error occurred while creating carriers.', error: error.message });
-    }
+  } catch (error) {
+    logger.error('Error creating carriers:', error);
+    res.status(500).json({ message: 'An error occurred while creating carriers.', error: error.message });
+  }
 });
+
+
+async function sendCarrierEmailsInBackground(carriers) {
+    for (const carrier of carriers) {
+        try {
+            const email = carrier.carrier_correspondence?.email;
+            const phone = carrier.carrier_correspondence?.phone;
+            const carrier_ID = carrier.carrier_ID;
+
+            if (email) {
+                await transporter.sendMail({
+                    to: email,
+                    subject: 'Welcome to Our Logistics Platform!',
+                    html: `
+                      <h3>Dear ${carrier.carrier_name || 'Carrier'},</h3>
+                      <p>Welcome! Here are your login credentials:</p>
+                      <ul>
+                        <li><b>Carrier ID:</b> ${carrier_ID}</li>
+                        <li><b>Password:</b> ${phone}</li>
+                      </ul>
+                      <p>Please login and update your password after first login.</p>
+                      <br/>
+                      <p>Thank you,</p>
+                      <p><b>Trukapp Team</b></p>
+                    `
+                });
+                logger.info(`Mail sent to: ${email}`);
+            }
+        } catch (err) {
+            logger.error(`Failed to send mail for carrier: ${carrier.carrier_ID}`, err);
+        }
+    }
+}
+
+
 
 
 

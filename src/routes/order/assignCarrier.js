@@ -5,7 +5,59 @@ const { logger } = require('../../logger/logger');
 const { applyPagination } = require('../../pagination/paginate');
 const jwtAuth = require('../../JWT/jwtAuth');
 
-// Generate unique cas_ID like "CA000001"
+const nodemailer = require('nodemailer');
+
+
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    // user: process.env.MAIL_USER, 
+    // pass: process.env.MAIL_PASS
+    user:'itsupport@trukapp.com',
+    pass:'iytz zfrm cktq isyw'
+  }
+});
+
+
+async function sendAssignmentMail(carrier_ID, order_ID) {
+    try {
+      const [carriers] = await db.query(`SELECT carrier_correspondence FROM carriers WHERE carrier_ID = ?`, [carrier_ID]);
+      if (!carriers.length) return;
+  
+     
+    let carrierCorrespondence = carriers[0].carrier_correspondence;
+
+ 
+    if (typeof carrierCorrespondence === 'string') {
+      carrierCorrespondence = JSON.parse(carrierCorrespondence);
+    }
+      const email = carrierCorrespondence.email;
+      if (!email) return;
+  
+      const subject = 'New Assignment Waiting for Confirmation';
+      const htmlContent = `
+        <p>Dear Carrier,</p>
+        <p>A new assignment (Order ID: <b>${order_ID}</b>) is waiting for your confirmation.</p>
+        <p>Please login to your dashboard and provide Vehicle and Driver details to confirm it.</p>
+        <br/>
+        <p>Thank you,</p>
+        <p><b>Trukapp Team</b></p>
+      `;
+  
+      await transporter.sendMail({
+        to: email,
+        subject,
+        html: htmlContent
+      });
+  
+      logger.info(`Assignment mail sent to carrier: ${carrier_ID}`);
+    } catch (err) {
+      logger.error(`Failed to send assignment mail to carrier: ${carrier_ID}`, err);
+    }
+  }
+  
+
+
 const generateCasID = async () => {
     try {
         const [result] = await db.query(
@@ -27,100 +79,6 @@ const generateCasID = async () => {
         throw new Error("Failed to generate cas_ID");
     }
 };
-
-
-// router.post('/assign-carrier', jwtAuth.verifyToken, async (req, res) => {
-//     try {
-//         const { order_ID, assigned_time } = req.body;
-
-//         if (!order_ID) {
-//             return res.status(400).json({ message: 'order_ID is required.' });
-//         }
-
-//         const [validCarriers] = await db.query(`
-//             SELECT carrier_ID, pricing FROM carriers
-//             WHERE contract = 1 AND DATE(contract_valid_upto) >= CURDATE()
-//         `);
-
-//         if (!validCarriers.length) {
-//             return res.status(400).json({ message: 'No valid contracted carriers found.' });
-//         }
-
-//         const req_sent_to = validCarriers.map(c => c.carrier_ID);
-//         const selectedCarrier = validCarriers[0]; 
-
-//         const [orders] = await db.query(`
-//             SELECT total_weight, total_distance FROM orders WHERE order_ID = ?
-//         `, [order_ID]);
-
-//         if (!orders.length) {
-//             return res.status(404).json({ message: 'Order not found.' });
-//         }
-
-//         const { total_weight, total_distance } = orders[0];
-
-//         // Step 3: Prepare assignment cost
-//         let pricing = {};
-//         try {
-//             pricing = typeof selectedCarrier.pricing === 'string'
-//                 ? JSON.parse(selectedCarrier.pricing)
-//                 : selectedCarrier.pricing;
-//         } catch (err) {
-//             return res.status(400).json({ message: 'Invalid pricing JSON format in selected carrier.' });
-//         }
-
-//         let calculatedCost = 0;
-//         const assignment_cost = {
-//             cost_criteria_considered: pricing.cost_criteria_per || '',
-//             total_weight: null,
-//             total_distance: null,
-//             cost: 0
-//         };
-
-//         if (pricing.cost_criteria_per === 'ton') {
-//             assignment_cost.total_weight = total_weight;
-//             calculatedCost = (parseFloat(pricing.cost) || 0) * (parseFloat(total_weight) / 1000);
-//         } else if (pricing.cost_criteria_per === 'km') {
-//             assignment_cost.total_distance = total_distance;
-//             calculatedCost = (parseFloat(pricing.cost) || 0) * parseFloat(total_distance);
-//         }
-
-//         assignment_cost.cost = calculatedCost.toFixed(2);
-
-//         // Step 4: Insert into carrier_assignments
-//         const cas_ID = await generateCasID();
-
-//         await db.query(`
-//             INSERT INTO carrier_assignments 
-//             (cas_ID, order_ID, req_sent_to, assigned_time, assignment_status, assignment_cost)
-//             VALUES (?, ?, ?, ?, ?, ?)
-//         `, [
-//             cas_ID,
-//             order_ID,
-//             JSON.stringify(req_sent_to),
-//             assigned_time,
-//             'Pending',
-//             JSON.stringify(assignment_cost)
-//         ]);
-
-//         // Step 5: Update order status
-//         await db.query(
-//             `UPDATE orders SET order_status = ? WHERE order_ID = ?`,
-//             ['carrier assignment', order_ID]
-//         );
-
-//         res.status(201).json({
-//             message: 'Carrier assignment initialized successfully.',
-//             cas_ID,
-//             req_sent_to,
-//             assignment_cost
-//         });
-
-//     } catch (error) {
-//         logger.error("Error assigning carrier:", error);
-//         res.status(500).json({ message: "Internal Server Error", error: error.message });
-//     }
-// });
 
 router.post('/assign-carrier', jwtAuth.verifyToken, async (req, res) => {
     try {
@@ -199,6 +157,8 @@ router.post('/assign-carrier', jwtAuth.verifyToken, async (req, res) => {
                 ['carrier assignment', order_ID]
             );
 
+            sendAssignmentMail(selectedCarrier.carrier_ID, order_ID);
+
             return res.status(201).json({
                 message: 'Carrier assignment initialized successfully.',
                 cas_ID,
@@ -252,7 +212,6 @@ router.post('/finalize-carrier-assignment', jwtAuth.verifyToken, async (req, res
             return res.status(400).json({ message: 'order_ID, carrier_ID, and assigned_time are required.' });
         }
 
-        // 1. Validate carrier
         const [carrierRows] = await db.query(`
             SELECT carrier_ID, pricing FROM carriers 
             WHERE carrier_ID = ? AND contract = 1 AND DATE(contract_valid_upto) >= CURDATE()
@@ -264,7 +223,6 @@ router.post('/finalize-carrier-assignment', jwtAuth.verifyToken, async (req, res
 
         const selectedCarrier = carrierRows[0];
 
-        // 2. Get order info (weight + distance)
         const [orderRows] = await db.query(`
             SELECT total_weight, total_distance FROM orders WHERE order_ID = ?
         `, [order_ID]);
@@ -275,7 +233,6 @@ router.post('/finalize-carrier-assignment', jwtAuth.verifyToken, async (req, res
 
         const { total_weight, total_distance } = orderRows[0];
 
-        // 3. Parse pricing
         let pricing = {};
         try {
             pricing = typeof selectedCarrier.pricing === 'string'
@@ -285,7 +242,6 @@ router.post('/finalize-carrier-assignment', jwtAuth.verifyToken, async (req, res
             return res.status(400).json({ message: 'Invalid pricing JSON format for carrier.' });
         }
 
-        // 4. Calculate cost
         let calculatedCost = 0;
         const assignment_cost = {
             cost_criteria_considered: pricing.cost_criteria_per || '',
@@ -304,10 +260,8 @@ router.post('/finalize-carrier-assignment', jwtAuth.verifyToken, async (req, res
 
         assignment_cost.cost = calculatedCost.toFixed(2);
 
-        // 5. Generate cas_ID
         const cas_ID = await generateCasID();
 
-        // 6. Insert into carrier_assignments
         await db.query(`
             INSERT INTO carrier_assignments 
             (cas_ID, order_ID, req_sent_to, assigned_time, assignment_status, assignment_cost)
@@ -321,8 +275,9 @@ router.post('/finalize-carrier-assignment', jwtAuth.verifyToken, async (req, res
             JSON.stringify(assignment_cost)
         ]);
 
-        // 7. Update order status
         await db.query(`UPDATE orders SET order_status = ? WHERE order_ID = ?`, ['carrier assignment', order_ID]);
+
+        sendAssignmentMail(carrier_ID, order_ID);
 
         return res.status(201).json({
             message: 'Carrier assignment sent to selected carrier successfully.',

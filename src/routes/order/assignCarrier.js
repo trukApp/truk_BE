@@ -418,6 +418,12 @@ router.post('/carrier-assignment/confirm', jwtAuth.verifyToken, async (req, res)
             ]
         );
 
+        await db.query(
+            `UPDATE orders SET order_status = 'carrier confirmed' WHERE order_ID = ?`,
+            [order_ID]
+          );
+          
+
         return res.status(200).json({ message: 'Carrier assignment confirmed successfully.' });
     } catch (error) {
         logger.error("Error confirming carrier assignment:", error);
@@ -450,6 +456,12 @@ router.post('/carrier-assignment/reject', jwtAuth.verifyToken, async (req, res) 
              WHERE order_ID = ? AND JSON_CONTAINS(req_sent_to, JSON_QUOTE(?), '$')`,
             [order_ID, carrier_ID]
         );
+
+        await db.query(
+            `UPDATE orders SET order_status = 'carrier rejected' WHERE order_ID = ?`,
+            [order_ID]
+          );
+          
 
         return res.status(200).json({ message: 'Carrier assignment rejected successfully.' });
     } catch (error) {

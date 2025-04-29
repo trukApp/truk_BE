@@ -471,6 +471,43 @@ async function findMinCostArrangement(cluster, vehicles, sourceLoc) {
   }
 }
 
+
+function generateUnallocationReason(pkgInfo, vehicles) {
+
+  if (vehicles.length === 0) {
+    return "No vehicles left after validity / downtime filters.";
+  }
+
+  const fleetFlags = vehicles.map(getVehicleSpecialFlags);
+
+  if (pkgInfo.specialFlags.tempCtrl &&
+      !fleetFlags.some(v => v.temp_controlled_vehicle))
+    return "Needs temperature-controlled truck none available.";
+
+  if (pkgInfo.specialFlags.fragile &&
+      !fleetFlags.some(v => v.fragile_vehicle))
+    return "Needs fragile-goods truck none available.";
+
+  if (pkgInfo.specialFlags.dangerous &&
+      !fleetFlags.some(v => v.danger_proof))
+    return "Needs dangerous-goods truck none available.";
+
+  if (pkgInfo.specialFlags.hazardous &&
+      !fleetFlags.some(v => v.hazardous_proof))
+    return "Needs hazardous-goods truck none available.";
+
+  const maxPayload = Math.max(...vehicles.map(v => v.weightCapKg));
+  const maxVolume  = Math.max(...vehicles.map(v => v.volumeCapM3));
+
+  if (pkgInfo.totalWeight > maxPayload)
+    return "Package weight exceeds every truck's payload capacity.";
+  if (pkgInfo.totalVolume > maxVolume)
+    return "Package volume exceeds every truck's cubic capacity.";
+
+  return "Package could not be allocated due to multiple constraints.";
+}
+
+
 async function allocatePackages(packagesData, vehicles, sourceLocation, productMap, packagingInfoMap) {
   const allocations = [];
   let totalCost = 0;
@@ -575,7 +612,14 @@ async function allocatePackages(packagesData, vehicles, sourceLocation, productM
       totalCost+= cost;
       allocations.push(...subAllocs);
       if (unallocated && unallocated.length>0) {
-        unallocatedPackages.push(...unallocated);
+        // unallocatedPackages.push(...unallocated);
+        unallocated.forEach(id => {
+          const info = pkgInfos.find(p => p.pack_ID === id);
+          unallocatedPackages.push({
+            pack_ID : id,
+            reason  : generateUnallocationReason(info, vehicles)
+          });
+        });
       }
     }
   }
@@ -726,3 +770,6 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
 });
 
 module.exports = router;
+
+
+

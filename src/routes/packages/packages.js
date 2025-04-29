@@ -70,7 +70,7 @@ router.post('/generate-package', jwtAuth.verifyToken, async (req, res) => {
 
         packages.forEach(pkg => {
             const {
-                ship_from, ship_to, product_ID, package_info, bill_to,
+                ship_from, ship_to, destination_radius, product_ID, package_info, bill_to,
                 return_label, additional_info, pickup_date_time, dropoff_date_time, tax_info
             } = pkg;
 
@@ -82,7 +82,7 @@ router.post('/generate-package', jwtAuth.verifyToken, async (req, res) => {
             insertedPackIDs.push(lastPackID);
 
             insertValues.push([
-                lastPackID, ship_from, ship_to, JSON.stringify(product_ID || []), package_info,
+                lastPackID, ship_from, ship_to, destination_radius, JSON.stringify(product_ID || []), package_info,
                 bill_to, return_label || 0, JSON.stringify(additional_info || {}),
                 pickup_date_time || null, dropoff_date_time || null, JSON.stringify(tax_info || {})
             ]);
@@ -90,7 +90,7 @@ router.post('/generate-package', jwtAuth.verifyToken, async (req, res) => {
 
         await db.query(
             `INSERT INTO packages 
-            (pack_ID, ship_from, ship_to, product_ID, package_info, bill_to, return_label, additional_info, pickup_date_time, dropoff_date_time, tax_info)
+            (pack_ID, ship_from, ship_to, destination_radius, product_ID, package_info, bill_to, return_label, additional_info, pickup_date_time, dropoff_date_time, tax_info)
             VALUES ?`,
             [insertValues]
         );
@@ -215,58 +215,99 @@ router.put('/edit-package', jwtAuth.verifyToken, async (req, res) => {
         const { pac_id } = req.query;
 
         if (!pac_id) {
-            return res.status(400).json({ message: 'pac_id is required in the query.' });
+            return res.status(400).json({ message: 'Missing required query parameter: pac_id' });
+        }
+
+        const [packageExists] = await db.query(`SELECT * FROM packages WHERE pac_id = ?`, [pac_id]);
+        if (!packageExists.length) {
+            return res.status(404).json({ message: 'Package not found.' });
         }
 
         const {
-            ship_from, ship_to, product_ID, package_info, bill_to,
-            return_label, additional_info, pickup_date_time, dropoff_date_time, tax_info
+            ship_from,
+            ship_to,
+            destination_radius,
+            product_ID,
+            package_info,
+            bill_to,
+            return_label,
+            additional_info,
+            pickup_date_time,
+            dropoff_date_time,
+            tax_info
         } = req.body;
 
-        // Convert objects to JSON strings if they exist
-        const productIDJson = product_ID ? JSON.stringify(product_ID) : null;
-        const additionalInfoJson = additional_info ? JSON.stringify(additional_info) : null;
-        const taxInfoJson = tax_info ? JSON.stringify(tax_info) : null;
+        let updateFields = [];
+        let values = [];
 
-        const [updateResult] = await db.query(
-            `UPDATE packages 
-            SET 
-                ship_from = COALESCE(?, ship_from),
-                ship_to = COALESCE(?, ship_to),
-                product_ID = COALESCE(?, product_ID),
-                package_info = COALESCE(?, package_info),
-                bill_to = COALESCE(?, bill_to),
-                return_label = COALESCE(?, return_label),
-                additional_info = COALESCE(?, additional_info),
-                pickup_date_time = COALESCE(?, pickup_date_time),
-                dropoff_date_time = COALESCE(?, dropoff_date_time),
-                tax_info = COALESCE(?, tax_info)
-            WHERE pac_id = ?`,
-            [
-                ship_from || null, ship_to || null, productIDJson,
-                package_info || null, bill_to || null, return_label || null,
-                additionalInfoJson, pickup_date_time || null, dropoff_date_time || null,
-                taxInfoJson, pac_id
-            ]
-        );
-
-        if (updateResult.affectedRows === 0) {
-            return res.status(404).json({ message: 'Package not found or no changes made.' });
+        if (ship_from) {
+            updateFields.push('ship_from = ?');
+            values.push(ship_from);
         }
 
-        const [updatedRecord] = await db.query(
-            `SELECT * FROM master_locations WHERE pac_id = ?`,
-            [pac_id]
-        );
+        if (ship_to) {
+            updateFields.push('ship_to = ?');
+            values.push(ship_to);
+        }
 
-        res.status(200).json({
-            message: 'Package updated successfully.',
-            updated_record: updatedRecord[0].pack_ID
-        });
+        if (destination_radius) {
+            updateFields.push('destination_radius = ?');
+            values.push(destination_radius);
+        }
 
+        if (product_ID) {
+            updateFields.push('product_ID = ?');
+            values.push(JSON.stringify(product_ID));
+        }
+
+        if (package_info) {
+            updateFields.push('package_info = ?');
+            values.push(package_info);
+        }
+
+        if (bill_to) {
+            updateFields.push('bill_to = ?');
+            values.push(bill_to);
+        }
+
+        if (return_label) {
+            updateFields.push('return_label = ?');
+            values.push(return_label);
+        }
+
+        if (additional_info) {
+            updateFields.push('additional_info = ?');
+            values.push(JSON.stringify(additional_info));
+        }
+
+        if (pickup_date_time) {
+            updateFields.push('pickup_date_time = ?');
+            values.push(pickup_date_time);
+        }
+
+        if (dropoff_date_time) {
+            updateFields.push('dropoff_date_time = ?');
+            values.push(dropoff_date_time);
+        }
+
+        if (tax_info) {
+            updateFields.push('tax_info = ?');
+            values.push(JSON.stringify(tax_info));
+        }
+
+        if (updateFields.length === 0) {
+            return res.status(400).json({ message: 'No fields provided for update.' });
+        }
+
+        values.push(pac_id);
+        const query = `UPDATE packages SET ${updateFields.join(', ')} WHERE pac_id = ?`;
+
+        await db.query(query, values);
+
+        return res.status(200).json({ message: 'Package updated successfully.', pac_id });
     } catch (error) {
         logger.error('Error updating package:', error);
-        res.status(500).json({ message: 'An error occurred while updating the package.', error: error.message });
+        return res.status(500).json({ message: 'Server error.', error: error.message });
     }
 });
 

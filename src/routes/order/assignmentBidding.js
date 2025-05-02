@@ -46,6 +46,11 @@ router.post('/initiate-open-bidding', jwtAuth.verifyToken, async (req, res) => {
             bid_start_time
         ]);
 
+         await db.query(
+                    `UPDATE orders SET order_status = 'open bidding' WHERE order_ID = ?`,
+                    [order_ID]
+                  );
+
         res.status(201).json({
             message: 'Open bidding initiated successfully.',
             order_ID,

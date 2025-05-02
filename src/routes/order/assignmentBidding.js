@@ -254,6 +254,34 @@ router.get('/carrier-bids', jwtAuth.verifyToken, async (req, res) => {
 });
 
 
+router.get('/bids-order-id', jwtAuth.verifyToken, async (req, res) => {
+    try {
+      const { order_ID } = req.query;
+  
+      if (!order_ID) {
+        return res.status(400).json({ message: 'order_ID is required in query.' });
+      }
+  
+      const [results] = await db.query(`
+        SELECT * FROM assignment_bidding WHERE order_ID = ?
+      `, [order_ID]);
+  
+      if (!results.length) {
+        return res.status(404).json({ message: 'No data found for the given order_ID.' });
+      }
+  
+      res.status(200).json({
+        message: 'Data fetched successfully.',
+        data: results
+      });
+  
+    } catch (error) {
+      logger.error('Error fetching assigning_orders:', error);
+      res.status(500).json({ message: 'Internal Server Error', error: error.message });
+    }
+  });
+  
+
 
 router.get('/finalised-bids', jwtAuth.verifyToken, async (req, res) => {
     try {

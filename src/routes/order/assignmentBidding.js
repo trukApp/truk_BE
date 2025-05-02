@@ -171,5 +171,134 @@ router.post('/place-bid', jwtAuth.verifyToken, async (req, res) => {
 
 
 
+router.get('/carrier-bids', jwtAuth.verifyToken, async (req, res) => {
+    try {
+        const { carrier_ID } = req.query;
+
+        if (!carrier_ID) {
+            return res.status(400).json({ message: 'carrier_ID is required in query.' });
+        }
+
+        const [results] = await db.query(`
+            SELECT ab.*, o.*
+            FROM assignment_bidding ab
+            JOIN orders o ON ab.order_ID = o.order_ID
+            WHERE JSON_CONTAINS(ab.all_bids, JSON_OBJECT('bid_from', ?))
+        `, [carrier_ID]);
+
+        if (!results.length) {
+            return res.status(404).json({ message: 'No bids found placed by this carrier.' });
+        }
+
+        // Optional: filter sensitive fields if needed
+        const filteredResults = results.map(row => {
+            const {
+                bid_reqs,
+                finalised_bid,
+                ...rest
+            } = row;
+            return rest;
+        });
+
+        res.status(200).json({
+            message: 'Carrier participation bids fetched successfully.',
+            carrier_ID,
+            data: filteredResults
+        });
+
+    } catch (error) {
+        logger.error('Error fetching carrier bids:', error);
+        res.status(500).json({ message: 'Internal Server Error', error: error.message });
+    }
+});
+
+
+
+router.get('/carrier-bids', jwtAuth.verifyToken, async (req, res) => {
+    try {
+        const { carrier_ID } = req.query;
+
+        if (!carrier_ID) {
+            return res.status(400).json({ message: 'carrier_ID is required in query.' });
+        }
+
+        const [results] = await db.query(`
+            SELECT ab.*, o.*
+            FROM assignment_bidding ab
+            JOIN orders o ON ab.order_ID = o.order_ID
+            WHERE JSON_CONTAINS(ab.all_bids, JSON_OBJECT('bid_from', ?))
+        `, [carrier_ID]);
+
+        if (!results.length) {
+            return res.status(404).json({ message: 'No bids found placed by this carrier.' });
+        }
+
+        // Optional: filter sensitive fields if needed
+        const filteredResults = results.map(row => {
+            const {
+                bid_reqs,
+                finalised_bid,
+                ...rest
+            } = row;
+            return rest;
+        });
+
+        res.status(200).json({
+            message: 'Carrier participation bids fetched successfully.',
+            carrier_ID,
+            data: filteredResults
+        });
+
+    } catch (error) {
+        logger.error('Error fetching carrier bids:', error);
+        res.status(500).json({ message: 'Internal Server Error', error: error.message });
+    }
+});
+
+
+
+router.get('/finalised-bids', jwtAuth.verifyToken, async (req, res) => {
+    try {
+        const { carrier_ID } = req.query;
+
+        if (!carrier_ID) {
+            return res.status(400).json({ message: 'carrier_ID is required in query.' });
+        }
+
+        const [results] = await db.query(`
+            SELECT ab.*, o.*
+            FROM assignment_bidding ab
+            JOIN orders o ON ab.order_ID = o.order_ID
+            WHERE JSON_EXTRACT(ab.finalised_bid, '$.bid_from') = ?
+        `, [carrier_ID]);
+
+        if (!results.length) {
+            return res.status(404).json({ message: 'No finalized bids found for this carrier.' });
+        }
+
+        // Optional: remove internal/sensitive fields if needed
+        const cleanedResults = results.map(row => {
+            const {
+                bid_reqs,
+                all_bids,
+                ...rest
+            } = row;
+            return rest;
+        });
+
+        res.status(200).json({
+            message: 'Finalised bids fetched successfully.',
+            carrier_ID,
+            data: cleanedResults
+        });
+
+    } catch (error) {
+        logger.error('Error fetching finalised bids for carrier:', error);
+        res.status(500).json({ message: 'Internal Server Error', error: error.message });
+    }
+});
+
+
+
 
 module.exports = router;

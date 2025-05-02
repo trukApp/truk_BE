@@ -190,7 +190,6 @@ router.get('/carrier-bids', jwtAuth.verifyToken, async (req, res) => {
             return res.status(404).json({ message: 'No bids found placed by this carrier.' });
         }
 
-        // Optional: filter sensitive fields if needed
         const filteredResults = results.map(row => {
             const {
                 bid_reqs,
@@ -233,7 +232,6 @@ router.get('/carrier-bids', jwtAuth.verifyToken, async (req, res) => {
             return res.status(404).json({ message: 'No bids found placed by this carrier.' });
         }
 
-        // Optional: filter sensitive fields if needed
         const filteredResults = results.map(row => {
             const {
                 bid_reqs,
@@ -276,7 +274,6 @@ router.get('/finalised-bids', jwtAuth.verifyToken, async (req, res) => {
             return res.status(404).json({ message: 'No finalized bids found for this carrier.' });
         }
 
-        // Optional: remove internal/sensitive fields if needed
         const cleanedResults = results.map(row => {
             const {
                 bid_reqs,

@@ -267,7 +267,7 @@ router.get('/finalised-bids', jwtAuth.verifyToken, async (req, res) => {
             SELECT ab.*, o.*
             FROM assignment_bidding ab
             JOIN orders o ON ab.order_ID = o.order_ID
-            WHERE JSON_EXTRACT(ab.finalised_bid, '$.bid_from') = ?
+            WHERE JSON_EXTRACT(ab.finalised_bid, '$.finalised_for') = ?
         `, [carrier_ID]);
 
         if (!results.length) {

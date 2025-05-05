@@ -434,7 +434,8 @@ router.post('/carrier-assignment/confirm', jwtAuth.verifyToken, async (req, res)
                 driver_data = ?,
                 device_ID = ?,
                 confirmed_time = ?,
-                assignment_status = 'carrier confirmed'
+                assignment_status = 'carrier confirmed',
+                dock_allocation_status = 'Pending'
              WHERE order_ID = ? AND JSON_CONTAINS(req_sent_to, JSON_QUOTE(?), '$')`,
             [
                 carrier_ID,
@@ -539,6 +540,111 @@ router.get('/assignment', jwtAuth.verifyToken, async (req, res) => {
     } catch (error) {
         logger.error("Error fetching assignment:", error);
         res.status(500).json({ message: "Internal Server Error", error: error.message });
+    }
+});
+
+
+router.get('/get-pending-dock', jwtAuth.verifyToken,async(req,res)=>{
+    try{
+    const { carrier_ID } = req.query;
+        if (!carrier_ID) {
+            return res.status(400).json({ message: 'Please provide carrier_ID in query.' });
+        }
+        const [result] = await db.query(`
+            SELECT * FROM carrier_assignments 
+            WHERE dock_allocation_status = 'Pending'
+               AND confirmed_to = ?
+        `, [carrier_ID]);
+    
+        res.status(200).json({ data: result });
+    }catch(error){
+        logger.error("Error fetching assignment:", error);
+        res.status(500).json({ message: "Internal Server Error", error: error.message });
+    }
+});
+
+
+router.get('/get-dock-reqs', jwtAuth.verifyToken,async(req,res)=>{
+    try{
+        const [result] = await db.query(`
+            SELECT * FROM carrier_assignments 
+            WHERE dock_allocation_status = 'requested'
+        `,);
+    
+        res.status(200).json({ data: result });
+    }catch(error){
+        logger.error("Error fetching assignment:", error);
+        res.status(500).json({ message: "Internal Server Error", error: error.message });
+    }
+});
+
+// Carrier schedules dock time
+router.put('/schedule-dock-time', jwtAuth.verifyToken, async (req, res) => {
+    try {
+        const { cas_ID, order_ID, dock_time_requested } = req.body;
+
+        if (!cas_ID || !order_ID || !dock_time_requested) {
+            return res.status(400).json({ message: 'cas_ID, order_ID and dock_time_requested are required in the body.' });
+        }
+
+        const [orderRows] = await db.query(`SELECT allocated_packages FROM orders WHERE order_ID = ?`, [order_ID]);
+        if (!orderRows.length) {
+            return res.status(404).json({ message: 'Order not found.' });
+        }
+
+        let allocatedPackages = [];
+        try {
+            const raw = orderRows[0].allocated_packages || '[]';
+            allocatedPackages = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        } catch (err) {
+            return res.status(400).json({ message: 'Invalid JSON format in allocated_packages.' });
+        }
+
+        if (!Array.isArray(allocatedPackages) || allocatedPackages.length === 0) {
+            return res.status(400).json({ message: 'No allocated packages for this order.' });
+        }
+
+        const [packageRow] = await db.query(
+            `SELECT pickup_date_time FROM packages WHERE pack_ID = ? LIMIT 1`,
+            [allocatedPackages[0]]
+        );
+
+        if (!packageRow.length) {
+            return res.status(404).json({ message: 'Package data not found.' });
+        }
+
+        const pickupDateTime = new Date(packageRow[0].pickup_date_time);
+        const requestedTime = new Date(dock_time_requested);
+
+        if (isNaN(pickupDateTime.getTime()) || isNaN(requestedTime.getTime())) {
+            return res.status(400).json({ message: 'Invalid date format in pickup_date_time or dock_time_requested.' });
+        }
+
+        const oneHourBeforePickup = new Date(pickupDateTime);
+        oneHourBeforePickup.setHours(oneHourBeforePickup.getHours() - 1);
+
+        if (requestedTime.getTime() > oneHourBeforePickup.getTime()) {
+            return res.status(400).json({
+                message: `Dock time must be at least one hour before pickup time: ${pickupDateTime.toISOString()}`
+            });
+        }
+
+        await db.query(
+            `UPDATE carrier_assignments 
+             SET dock_time_requested = ?, dock_allocation_status = 'requested' 
+             WHERE cas_ID = ?`,
+            [dock_time_requested, cas_ID]
+        );
+
+        return res.status(200).json({
+            message: 'Dock time scheduled successfully.',
+            cas_ID,
+            dock_time_requested,
+            status: 'requested'
+        });
+    } catch (error) {
+        logger.error('Error scheduling dock time:', error);
+        return res.status(500).json({ message: 'Server error.', error: error.message });
     }
 });
 

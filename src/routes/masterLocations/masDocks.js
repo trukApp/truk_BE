@@ -175,7 +175,8 @@ router.put('/edit-dock', jwtAuth.verifyToken, async (req, res) => {
             loc_ID,
             dock_name,
             dock_timings,
-            dock_availability
+            dock_availability,
+            default_carriers 
         } = req.body;
 
         if (!dock_ID) {
@@ -206,6 +207,10 @@ router.put('/edit-dock', jwtAuth.verifyToken, async (req, res) => {
             updateFields.push('dock_availability = ?');
             values.push(dock_availability);
         }
+        if (default_carriers !== undefined) {
+            updateFields.push('default_carriers = ?');
+            values.push(JSON.stringify(default_carriers));
+        }
 
         if (updateFields.length === 0) {
             return res.status(400).json({ message: 'No fields provided for update.' });
@@ -222,6 +227,7 @@ router.put('/edit-dock', jwtAuth.verifyToken, async (req, res) => {
         return res.status(500).json({ message: 'Server error.', error: error.message });
     }
 });
+
 
 
 router.delete('/delete-dock', jwtAuth.verifyToken, async (req, res) => {

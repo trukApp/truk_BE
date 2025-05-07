@@ -167,6 +167,7 @@ const generateCasID = async () => {
         logger.error("Error generating cas_ID:", error);
         throw new Error("Failed to generate cas_ID");
     }
+    
 };
 
 async function findAvailableDockForCarrier(carrier_ID, pickupLocID) {

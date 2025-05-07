@@ -29,11 +29,12 @@ router.post('/create-dock', jwtAuth.verifyToken, async (req, res) => {
 
         const insertValues = [];
         const insertedDockIDs = [];
+
         const [result] = await db.query("SELECT dock_ID FROM master_docks ORDER BY dk_id DESC LIMIT 1 FOR UPDATE");
         let lastDockID = result[0]?.dock_ID || 'DCK0000';
 
         docks.forEach(dock => {
-            const { loc_ID, dock_name, dock_timings, dock_availability } = dock;
+            const { loc_ID, dock_name, dock_timings, dock_availability, default_carriers } = dock;
 
             if (!loc_ID || !dock_name || !dock_timings || dock_availability === undefined) {
                 throw new Error('Missing required fields in one of the docks.');
@@ -42,11 +43,20 @@ router.post('/create-dock', jwtAuth.verifyToken, async (req, res) => {
             lastDockID = `DCK${String(parseInt(lastDockID.slice(3)) + 1).padStart(6, '0')}`;
             insertedDockIDs.push(lastDockID);
 
-            insertValues.push([lastDockID, loc_ID, dock_name, dock_timings, dock_availability]);
+            insertValues.push([
+                lastDockID,
+                loc_ID,
+                dock_name,
+                dock_timings,
+                dock_availability,
+                JSON.stringify(default_carriers || [])
+            ]);
         });
 
         await db.query(
-            "INSERT INTO master_docks (dock_ID, loc_ID, dock_name, dock_timings, dock_availability) VALUES ?",
+            `INSERT INTO master_docks 
+            (dock_ID, loc_ID, dock_name, dock_timings, dock_availability, default_carriers) 
+            VALUES ?`,
             [insertValues]
         );
 
@@ -156,8 +166,6 @@ router.get('/dock', jwtAuth.verifyToken, async (req, res) => {
         res.status(500).json({ message: 'Server error.' });
     }
 });
-
-
 
 
 router.put('/edit-dock', jwtAuth.verifyToken, async (req, res) => {

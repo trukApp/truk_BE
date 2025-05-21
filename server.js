@@ -2,7 +2,7 @@
 const http = require('http');
 const app = require('./app');
 const { logger } = require('./src/logger/logger');
-const port = process.env.PORT || 80 || 8088;
+const port = process.env.PORT || 8088;
 
 const server = http.createServer(app);
 

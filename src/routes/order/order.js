@@ -630,7 +630,6 @@ async function allocatePackages(packagesData, vehicles, sourceLocation, productM
   };
 }
 
-
 async function getPackagesByIds(packageIDs) {
   const placeholders = packageIDs.map(()=>'?').join(',');
   const [rows] = await db.query(`

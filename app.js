@@ -5,6 +5,8 @@ const mongoose = require('mongoose');
 const mysql = require('mysql2');
 const connection = require('./dbConnection');
 const cors = require('cors');
+const fs = require('fs');
+const swaggerUi = require('swagger-ui-express');
 require('dotenv').config();
 
 //Mongo
@@ -36,6 +38,52 @@ app.get("/", (req, res, next)=>{
         message:"Hii, I'm working"
     })
 })
+
+const masterSwaggerDocument = JSON.parse(fs.readFileSync('./src/swagger/master-swagger.json', 'utf8'));
+// const userSwaggerDocument = JSON.parse(fs.readFileSync('./src/swagger/user-swagger.json', 'utf8'));
+
+
+const combinedSwaggerDocument = {
+  openapi: '3.0.0',
+  info: {
+    title: 'TrukApp API',
+    version: '1.0.0',
+    description: 'TrukApp API documentation'
+  },
+  servers: [
+    {
+      url: 'http://localhost:8088'
+    },
+    {
+      url: 'https://dev-api.trukapp.com'
+    }
+  ],
+
+  tags: [
+    ...masterSwaggerDocument.tags
+
+  ],
+  paths: {
+    ...masterSwaggerDocument.paths
+
+  },
+  components: {
+    securitySchemes: {
+      bearerAuth: {
+        type: 'http',
+        scheme: 'bearer',
+        bearerFormat: 'JWT'
+      }
+    }
+  },
+  security: [
+    {
+      bearerAuth: []
+    }
+  ]
+};
+
+app.use('/trukapp-api-docs', swaggerUi.serve, swaggerUi.setup(combinedSwaggerDocument));
 
 
 const signup = require('./src/routes/signup/signup');
@@ -90,5 +138,17 @@ app.use('/truk/self',selfVehicles);
 app.use('/truk/carrier-assignment',assignCarriers);
 app.use('/truk/assignment-bid',assignmentBidding);
 app.use('/truk/masterDock',masDocks)
+
+
+// Global error handling middleware
+app.use((err, req, res, next) => {
+    logger.error(err.stack);
+    res.status(500).json({
+        message: "Internal Server Error",
+        detail: err.message
+    });
+});
+
+
 
 module.exports = app;

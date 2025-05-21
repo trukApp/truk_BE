@@ -1,0 +1,296 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "TrukApp Master API Documentation",
+    "version": "1.0.0",
+    "description": "This API handles master data operations."
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8088"
+    },
+    {
+      "url": "https://dev-api.trukapp.com"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Master Locations",
+      "description": "Operations for managing master locations"
+    },
+    {
+      "name": "Master Docks",
+      "description": "Operations for managing master docks"
+    },
+    {
+      "name": "Master Products",
+      "description": "Operations for managing master products"
+    }
+  ],
+  "paths": {
+    "/truk/masLoc/create-location": {
+      "post": {
+        "tags": [
+          "Master Locations"
+        ],
+        "summary": "Create one or more locations",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "locations": {
+                    "type": "array",
+                    "items": {
+                      "type": "object"
+                    }
+                  }
+                },
+                "required": [
+                  "locations"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Locations created successfully"
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+
+    "/truk/masLoc/all-locations": {
+      "get": {
+        "tags": [
+          "Master Locations"
+        ],
+        "summary": "Get all locations with optional pagination",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Locations retrieved successfully"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+
+    "/truk/masLoc/edit-location": {
+      "put": {
+        "tags": [
+          "Master Locations"
+        ],
+        "summary": "Edit location by ID",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Location updated"
+          },
+          "404": {
+            "description": "Location not found"
+          }
+        }
+      }
+    },
+
+    "/truk/masLoc/delete-location": {
+      "delete": {
+        "tags": [
+          "Master Locations"
+        ],
+        "summary": "Delete location by ID",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted successfully"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        }
+      }
+    },
+
+    "/truk/masterDock/create-dock": {
+      "post": {
+        "tags": [
+          "Master Docks"
+        ],
+        "summary": "Create one or more docks",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "docks": {
+                    "type": "array",
+                    "items": {
+                      "type": "object"
+                    }
+                  }
+                },
+                "required": [
+                  "docks"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Docks created successfully"
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+
+
+    "/truk/masterProducts/add-products": {
+      "post": {
+        "tags": [
+          "Master Products"
+        ],
+        "summary": "Add one or more products",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "products": {
+                    "type": "array",
+                    "items": {
+                      "type": "object"
+                    }
+                  }
+                },
+                "required": [
+                  "products"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Products added successfully"
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    }
+  },
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ]
+}

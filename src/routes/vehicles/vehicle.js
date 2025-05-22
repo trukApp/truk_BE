@@ -282,9 +282,9 @@ router.put('/edit-vehicle', jwtAuth.verifyToken, async (req, res) => {
         return res.status(400).json({ message: 'Missing required query parameter: veh_id' });
       }
   
-      // make sure the vehicle exists
+      // ensure vehicle exists
       const [exists] = await db.query(
-        `SELECT * FROM master_vehicles WHERE veh_id = ?`,
+        `SELECT 1 FROM master_vehicles WHERE veh_id = ?`,
         [veh_id]
       );
       if (!exists.length) {
@@ -325,7 +325,7 @@ router.put('/edit-vehicle', jwtAuth.verifyToken, async (req, res) => {
       }
       if (vehicle_group !== undefined) {
         updateFields.push('vehicle_group = ?');
-        values.push(vehicle_group);
+        values.push(JSON.stringify(vehicle_group));
       }
       if (additional_details !== undefined) {
         updateFields.push('additional_details = ?');
@@ -352,7 +352,7 @@ router.put('/edit-vehicle', jwtAuth.verifyToken, async (req, res) => {
         return res.status(400).json({ message: 'No fields provided to update.' });
       }
   
-      // finalize query
+      // finalize and execute
       values.push(veh_id);
       const sql = `
         UPDATE master_vehicles
@@ -373,6 +373,7 @@ router.put('/edit-vehicle', jwtAuth.verifyToken, async (req, res) => {
       });
     }
   });
+  
   
 
 router.delete('/delete-vehicle', jwtAuth.verifyToken, async (req, res) => {

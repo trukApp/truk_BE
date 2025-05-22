@@ -184,9 +184,85 @@ router.get('/vehicle', jwtAuth.verifyToken, async (req, res) => {
 });
 
 
+// router.put('/edit-vehicle', jwtAuth.verifyToken, async (req, res) => {
+//     const { veh_id } = req.query;
+//     const {
+//         loc_ID,
+//         unlimited_usage,
+//         individual_resource,
+//         transportation_details,
+//         capacity,
+//         physical_properties,
+//         downtimes,
+//         vehicle_group,
+//         additional_details,
+//         fragile_vehicle,
+//         danger_proof,
+//         hazardous_proof,
+//         temp_controlled_vehicle
+//     } = req.body;
+
+//     if (!veh_id) {
+//         return res.status(400).json({ message: 'veh_id is required in the query.' });
+//     }
+
+//     try {
+//         const updateResult = await db.query(`
+//             UPDATE master_vehicles 
+//             SET 
+//                 loc_ID = COALESCE(?, loc_ID), 
+//                 unlimited_usage = COALESCE(?, unlimited_usage), 
+//                 individual_resource = COALESCE(?, individual_resource), 
+//                 transportation_details = COALESCE(?, transportation_details), 
+//                 capacity = COALESCE(?, capacity), 
+//                 physical_properties = COALESCE(?, physical_properties), 
+//                 downtimes = COALESCE(?, downtimes), 
+//                 vehicle_group = COALESCE(?, vehicle_group),
+//                 additional_details = COALESCE(?, additional_details),
+//                 fragile_vehicle = COALESCE(?, fragile_vehicle),
+//                 danger_proof = COALESCE(?, danger_proof),
+//                 hazardous_proof = COALESCE(?, hazardous_proof),
+//                 temp_controlled_vehicle = COALESCE(?, temp_controlled_vehicle)
+//             WHERE veh_id = ?
+//         `, [
+//             loc_ID || null,
+//             unlimited_usage || null,
+//             individual_resource || null,
+//             JSON.stringify(transportation_details || {}),
+//             JSON.stringify(capacity || {}),
+//             JSON.stringify(physical_properties || {}),
+//             JSON.stringify(downtimes || {}),
+//             JSON.stringify(vehicle_group || {}),
+//             JSON.stringify(additional_details || {}),
+//             fragile_vehicle,
+//             danger_proof,
+//             hazardous_proof,
+//             temp_controlled_vehicle,
+//             veh_id,
+//         ]);
+
+//         if (updateResult.affectedRows === 0) {
+//             return res.status(404).json({ message: 'Vehicle not found or no changes made.' });
+//         }
+
+//         const [updatedRecord] = await db.query(
+//             `SELECT * FROM master_vehicles WHERE veh_id  = ?`,
+//             [veh_id]
+//         );
+//         res.status(200).json({
+//             message: 'Vehicle updated successfully',
+//             updated_record: updatedRecord[0]?.vehicle_ID
+//         });
+//     } catch (error) {
+//         logger.error('Error updating vehicle:', error);
+//         res.status(500).json({ message: 'An error occurred while updating the vehicle.', error: error.message });
+//     }
+// });
+
 router.put('/edit-vehicle', jwtAuth.verifyToken, async (req, res) => {
-    const { veh_id } = req.query;
-    const {
+    try {
+      const { veh_id } = req.query;
+      const {
         loc_ID,
         unlimited_usage,
         individual_resource,
@@ -200,66 +276,104 @@ router.put('/edit-vehicle', jwtAuth.verifyToken, async (req, res) => {
         danger_proof,
         hazardous_proof,
         temp_controlled_vehicle
-    } = req.body;
-
-    if (!veh_id) {
-        return res.status(400).json({ message: 'veh_id is required in the query.' });
-    }
-
-    try {
-        const updateResult = await db.query(`
-            UPDATE master_vehicles 
-            SET 
-                loc_ID = COALESCE(?, loc_ID), 
-                unlimited_usage = COALESCE(?, unlimited_usage), 
-                individual_resource = COALESCE(?, individual_resource), 
-                transportation_details = COALESCE(?, transportation_details), 
-                capacity = COALESCE(?, capacity), 
-                physical_properties = COALESCE(?, physical_properties), 
-                downtimes = COALESCE(?, downtimes), 
-                vehicle_group = COALESCE(?, vehicle_group),
-                additional_details = COALESCE(?, additional_details),
-                fragile_vehicle = COALESCE(?, fragile_vehicle),
-                danger_proof = COALESCE(?, danger_proof),
-                hazardous_proof = COALESCE(?, hazardous_proof),
-                temp_controlled_vehicle = COALESCE(?, temp_controlled_vehicle)
-            WHERE veh_id = ?
-        `, [
-            loc_ID || null,
-            unlimited_usage || null,
-            individual_resource || null,
-            JSON.stringify(transportation_details || {}),
-            JSON.stringify(capacity || {}),
-            JSON.stringify(physical_properties || {}),
-            JSON.stringify(downtimes || {}),
-            JSON.stringify(vehicle_group || {}),
-            JSON.stringify(additional_details || {}),
-            fragile_vehicle,
-            danger_proof,
-            hazardous_proof,
-            temp_controlled_vehicle,
-            veh_id,
-        ]);
-
-        if (updateResult.affectedRows === 0) {
-            return res.status(404).json({ message: 'Vehicle not found or no changes made.' });
-        }
-
-        const [updatedRecord] = await db.query(
-            `SELECT * FROM master_vehicles WHERE veh_id  = ?`,
-            [veh_id]
-        );
-        res.status(200).json({
-            message: 'Vehicle updated successfully',
-            updated_record: updatedRecord[0]?.vehicle_ID
-        });
+      } = req.body;
+  
+      if (!veh_id) {
+        return res.status(400).json({ message: 'Missing required query parameter: veh_id' });
+      }
+  
+      // make sure the vehicle exists
+      const [exists] = await db.query(
+        `SELECT * FROM master_vehicles WHERE veh_id = ?`,
+        [veh_id]
+      );
+      if (!exists.length) {
+        return res.status(404).json({ message: 'Vehicle not found.' });
+      }
+  
+      // build dynamic SET clauses
+      const updateFields = [];
+      const values = [];
+  
+      if (loc_ID !== undefined) {
+        updateFields.push('loc_ID = ?');
+        values.push(loc_ID);
+      }
+      if (unlimited_usage !== undefined) {
+        updateFields.push('unlimited_usage = ?');
+        values.push(unlimited_usage);
+      }
+      if (individual_resource !== undefined) {
+        updateFields.push('individual_resource = ?');
+        values.push(individual_resource);
+      }
+      if (transportation_details !== undefined) {
+        updateFields.push('transportation_details = ?');
+        values.push(JSON.stringify(transportation_details));
+      }
+      if (capacity !== undefined) {
+        updateFields.push('capacity = ?');
+        values.push(JSON.stringify(capacity));
+      }
+      if (physical_properties !== undefined) {
+        updateFields.push('physical_properties = ?');
+        values.push(JSON.stringify(physical_properties));
+      }
+      if (downtimes !== undefined) {
+        updateFields.push('downtimes = ?');
+        values.push(JSON.stringify(downtimes));
+      }
+      if (vehicle_group !== undefined) {
+        updateFields.push('vehicle_group = ?');
+        values.push(vehicle_group);
+      }
+      if (additional_details !== undefined) {
+        updateFields.push('additional_details = ?');
+        values.push(JSON.stringify(additional_details));
+      }
+      if (fragile_vehicle !== undefined) {
+        updateFields.push('fragile_vehicle = ?');
+        values.push(fragile_vehicle);
+      }
+      if (danger_proof !== undefined) {
+        updateFields.push('danger_proof = ?');
+        values.push(danger_proof);
+      }
+      if (hazardous_proof !== undefined) {
+        updateFields.push('hazardous_proof = ?');
+        values.push(hazardous_proof);
+      }
+      if (temp_controlled_vehicle !== undefined) {
+        updateFields.push('temp_controlled_vehicle = ?');
+        values.push(temp_controlled_vehicle);
+      }
+  
+      if (updateFields.length === 0) {
+        return res.status(400).json({ message: 'No fields provided to update.' });
+      }
+  
+      // finalize query
+      values.push(veh_id);
+      const sql = `
+        UPDATE master_vehicles
+        SET ${updateFields.join(', ')}
+        WHERE veh_id = ?
+      `;
+      await db.query(sql, values);
+  
+      return res.status(200).json({
+        message: 'Vehicle updated successfully.',
+        veh_id
+      });
     } catch (error) {
-        logger.error('Error updating vehicle:', error);
-        res.status(500).json({ message: 'An error occurred while updating the vehicle.', error: error.message });
+      logger.error('Error updating vehicle:', error);
+      return res.status(500).json({
+        message: 'Server error while updating vehicle.',
+        error: error.message
+      });
     }
-});
-
-
+  });
+  
 
 router.delete('/delete-vehicle', jwtAuth.verifyToken, async (req, res) => {
     const { veh_id } = req.query;

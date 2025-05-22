@@ -383,34 +383,82 @@ router.put('/edit-vehicle', jwtAuth.verifyToken, async (req, res) => {
   
   
 
+// router.delete('/delete-vehicle', jwtAuth.verifyToken, async (req, res) => {
+//     const { veh_id } = req.query;
+
+//     if (!veh_id) {
+//         return res.status(400).json({ message: 'veh_id is required in the query.' });
+//     }
+
+//     try {
+//         const query = "SELECT * FROM master_vehicles where veh_id = ?";
+//         const [getData] = await db.query(query, veh_id);
+
+//         const deleteResult = await db.query(`
+//             DELETE FROM master_vehicles WHERE veh_id = ?
+//         `, [veh_id]);
+
+//         if (deleteResult.affectedRows === 0) {
+//             return res.status(404).json({ message: 'Vehicle not found.' });
+//         }
+
+//         res.status(200).json({
+//             message: 'Vehicle deleted successfully',
+//             deleted_record: getData[0].vehicle_ID
+//         });
+//     } catch (error) {
+//         logger.error('Error deleting vehicle:', error);
+//         res.status(500).json({ message: 'An error occurred while deleting the vehicle.', error: error.message });
+//     }
+// });
+
 router.delete('/delete-vehicle', jwtAuth.verifyToken, async (req, res) => {
     const { veh_id } = req.query;
-
     if (!veh_id) {
-        return res.status(400).json({ message: 'veh_id is required in the query.' });
+      return res.status(400).json({ message: 'Missing required query parameter: veh_id' });
     }
-
+  
     try {
-        const query = "SELECT * FROM master_vehicles where veh_id = ?";
-        const [getData] = await db.query(query, veh_id);
-
-        const deleteResult = await db.query(`
-            DELETE FROM master_vehicles WHERE veh_id = ?
-        `, [veh_id]);
-
-        if (deleteResult.affectedRows === 0) {
-            return res.status(404).json({ message: 'Vehicle not found.' });
-        }
-
-        res.status(200).json({
-            message: 'Vehicle deleted successfully',
-            deleted_record: getData[0].vehicle_ID
+      // 1) fetch the master record
+      const [masterRows] = await db.query(
+        `SELECT vehicle_ID FROM master_vehicles WHERE veh_id = ?`,
+        [veh_id]
+      );
+      if (!masterRows.length) {
+        return res.status(404).json({ message: 'Vehicle not found.' });
+      }
+      const vehicleID = masterRows[0].vehicle_ID;
+  
+      // 2) check self_vehicles for any references
+      const [selfRows] = await db.query(
+        `SELECT 1 FROM self_vehicles WHERE vehicle_ID = ? LIMIT 1`,
+        [vehicleID]
+      );
+      if (selfRows.length) {
+        return res.status(400).json({
+          message: `Cannot delete vehicle ${vehicleID} because it exists in self_vehicles.`
         });
+      }
+  
+      // 3) safe to delete
+      const [deleteResult] = await db.query(
+        `DELETE FROM master_vehicles WHERE veh_id = ?`,
+        [veh_id]
+      );
+  
+      return res.status(200).json({
+        message: 'Vehicle deleted successfully.',
+        deleted_record: vehicleID
+      });
     } catch (error) {
-        logger.error('Error deleting vehicle:', error);
-        res.status(500).json({ message: 'An error occurred while deleting the vehicle.', error: error.message });
+      logger.error('Error deleting vehicle:', error);
+      return res.status(500).json({
+        message: 'Server error while deleting vehicle.',
+        error: error.message
+      });
     }
-});
+  });
 
-
+  
+  
 module.exports = router;

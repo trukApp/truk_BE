@@ -283,15 +283,15 @@ router.put('/edit-vehicle', jwtAuth.verifyToken, async (req, res) => {
       }
   
       // ensure vehicle exists
-      const [exists] = await db.query(
+      const [[exists]] = await db.query(
         `SELECT 1 FROM master_vehicles WHERE veh_id = ?`,
         [veh_id]
       );
-      if (!exists.length) {
+      if (!exists) {
         return res.status(404).json({ message: 'Vehicle not found.' });
       }
   
-      // build dynamic SET clauses
+      // collect only the fields you actually want to update
       const updateFields = [];
       const values = [];
   
@@ -352,7 +352,7 @@ router.put('/edit-vehicle', jwtAuth.verifyToken, async (req, res) => {
         return res.status(400).json({ message: 'No fields provided to update.' });
       }
   
-      // finalize and execute
+      // finalize and execute UPDATE
       values.push(veh_id);
       const sql = `
         UPDATE master_vehicles
@@ -361,9 +361,16 @@ router.put('/edit-vehicle', jwtAuth.verifyToken, async (req, res) => {
       `;
       await db.query(sql, values);
   
+      // now fetch exactly the vehicle_ID
+      const [[{ vehicle_ID }]] = await db.query(
+        `SELECT vehicle_ID FROM master_vehicles WHERE veh_id = ?`,
+        [veh_id]
+      );
+  
       return res.status(200).json({
         message: 'Vehicle updated successfully.',
-        veh_id
+        veh_id,
+        vehicle_ID
       });
     } catch (error) {
       logger.error('Error updating vehicle:', error);

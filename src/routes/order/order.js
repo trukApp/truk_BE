@@ -1359,7 +1359,11 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
     });
 
     // load vehicles
-    let [dbVehicles] = await db.query(`SELECT * FROM master_resources`);
+    let [dbVehicles] = await db.query(
+      `SELECT * FROM master_resources
+       WHERE JSON_CONTAINS(loc_ID, ?)`,
+      [ JSON.stringify(firstFrom) ]
+    );
     dbVehicles = dbVehicles.map(v => {
       const trans = safeJsonParse(v.transportation_details);
       const downs = safeJsonParse(v.downtimes);

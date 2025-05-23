@@ -8,7 +8,7 @@ router.get('/count-data', jwtAuth.verifyToken, async (req, res) => {
     try {
 
         const queries = {
-            vehicles: `SELECT COUNT(*) AS count FROM master_vehicles`,
+            vehicles: `SELECT COUNT(*) AS count FROM master_resources`,
             products: `SELECT COUNT(*) AS count FROM master_products`,
             locations: `SELECT COUNT(*) AS count FROM master_locations`,
             lanes: `SELECT COUNT(*) AS count FROM master_lanes`,

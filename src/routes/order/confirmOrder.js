@@ -349,7 +349,7 @@ router.get('/order-by-id', jwtAuth.verifyToken, async (req, res) => {
         if (allocatedVehicles.length > 0) {
             const vehiclePlaceholders = allocatedVehicles.map(() => '?').join(',');
             const [vehicles] = await db.query(`
-                SELECT * FROM master_vehicles WHERE vehicle_ID IN (${vehiclePlaceholders})
+                SELECT * FROM master_resources WHERE vehicle_ID IN (${vehiclePlaceholders})
             `, allocatedVehicles);
             vehicleDetails = vehicles;
         }

@@ -173,7 +173,7 @@ router.get('/vehicle', jwtAuth.verifyToken, async (req, res) => {
                 c.carrier_loc_of_operation,
                 c.carrier_lanes
             FROM carrier_vehicles cv
-            LEFT JOIN master_vehicles mv ON cv.vehicle_ID = mv.vehicle_ID
+            LEFT JOIN master_resources mv ON cv.vehicle_ID = mv.vehicle_ID
             LEFT JOIN carriers c ON cv.carrier_ID = c.carrier_ID
             WHERE ${condition.join(' OR ')}
         `;

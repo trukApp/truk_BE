@@ -136,7 +136,7 @@ router.get('/self-vehicle', jwtAuth.verifyToken, async (req, res) => {
         const query = `
             SELECT sv.*, mv.*
             FROM self_vehicles sv
-            LEFT JOIN master_vehicles mv ON sv.vehicle_ID = mv.vehicle_ID
+            LEFT JOIN master_resources mv ON sv.vehicle_ID = mv.vehicle_ID
             WHERE ${condition.join(' OR ')}
         `;
 

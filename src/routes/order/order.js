@@ -712,7 +712,7 @@
 //         packaging_type: r.packaging_type
 //       };
 //     });
-//     let [dbVehicles] = await db.query(`SELECT * FROM master_vehicles`);
+//     let [dbVehicles] = await db.query(`SELECT * FROM master_resources`);
 //     dbVehicles = dbVehicles.map(v => {
 //       const trans = safeJsonParse(v.transportation_details);
 //       const downs = safeJsonParse(v.downtimes);
@@ -1359,7 +1359,7 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
     });
 
     // load vehicles
-    let [dbVehicles] = await db.query(`SELECT * FROM master_vehicles`);
+    let [dbVehicles] = await db.query(`SELECT * FROM master_resources`);
     dbVehicles = dbVehicles.map(v => {
       const trans = safeJsonParse(v.transportation_details);
       const downs = safeJsonParse(v.downtimes);

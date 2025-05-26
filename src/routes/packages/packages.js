@@ -6,6 +6,7 @@ const { applyPagination } = require('../../pagination/paginate');
 const jwtAuth = require('../../JWT/jwtAuth');
 
 
+
 // router.post('/generate-package', jwtAuth.verifyToken, async (req, res) => {
 //     try {
 //         const packages = req.body.packages;
@@ -17,9 +18,11 @@ const jwtAuth = require('../../JWT/jwtAuth');
 //         let lastPackID = result[0]?.pack_ID || 'PACK000000';
 
 //         const insertValues = [];
+//         const insertedPackIDs = [];
+
 //         packages.forEach(pkg => {
 //             const {
-//                 ship_from, ship_to, product_ID, package_info, bill_to,
+//                 ship_from, ship_to, destination_radius, product_ID, package_info, bill_to,
 //                 return_label, additional_info, pickup_date_time, dropoff_date_time, tax_info
 //             } = pkg;
 
@@ -28,25 +31,31 @@ const jwtAuth = require('../../JWT/jwtAuth');
 //             }
 
 //             lastPackID = `PACK${String(parseInt(lastPackID.slice(4)) + 1).padStart(6, '0')}`;
+//             insertedPackIDs.push(lastPackID);
 
 //             insertValues.push([
-//                 lastPackID, ship_from, ship_to, JSON.stringify(product_ID || []), package_info,
+//                 lastPackID, ship_from, ship_to, destination_radius, JSON.stringify(product_ID || []), package_info,
 //                 bill_to, return_label || 0, JSON.stringify(additional_info || {}),
 //                 pickup_date_time || null, dropoff_date_time || null, JSON.stringify(tax_info || {})
 //             ]);
 //         });
 
-//         const recordData = await db.query(
+//         await db.query(
 //             `INSERT INTO packages 
-//             (pack_ID, ship_from, ship_to, product_ID, package_info, bill_to, return_label, additional_info, pickup_date_time, dropoff_date_time, tax_info)
+//             (pack_ID, ship_from, ship_to, destination_radius, product_ID, package_info, bill_to, return_label, additional_info, pickup_date_time, dropoff_date_time, tax_info)
 //             VALUES ?`,
 //             [insertValues]
 //         );
 
+//         const [createdRecords] = await db.query(
+//             `SELECT * FROM packages WHERE pack_ID IN (?)`,
+//             [insertedPackIDs]
+//         );
+
 //         res.status(201).json({
 //             message: 'Packages created successfully.',
-//             data: recordData,
-//             count: insertValues.length
+//             count: insertedPackIDs.length,
+//             created_records: createdRecords.map(record => record.pack_ID)
 //         });
 //     } catch (error) {
 //         logger.error(error);
@@ -68,7 +77,7 @@ router.post('/generate-package', jwtAuth.verifyToken, async (req, res) => {
         const insertValues = [];
         const insertedPackIDs = [];
 
-        packages.forEach(pkg => {
+        for (const pkg of packages) {
             const {
                 ship_from, ship_to, destination_radius, product_ID, package_info, bill_to,
                 return_label, additional_info, pickup_date_time, dropoff_date_time, tax_info
@@ -78,6 +87,28 @@ router.post('/generate-package', jwtAuth.verifyToken, async (req, res) => {
                 throw new Error('Missing required fields in one of the packages.');
             }
 
+            // ✅ Validate stacking factor
+            const productIDs = (product_ID || []).map(p => p.prod_ID);
+            if (productIDs.length === 0) {
+                throw new Error('No products provided in one of the packages.');
+            }
+
+            const [stackingRows] = await db.query(
+                `SELECT product_ID, stacking_factor FROM master_products WHERE product_ID IN (?)`,
+                [productIDs]
+            );
+
+            const stackingMap = {};
+            stackingRows.forEach(row => {
+                stackingMap[row.product_ID] = row.stacking_factor;
+            });
+
+            const stackingSet = new Set(product_ID.map(p => stackingMap[p.prod_ID]));
+            if (stackingSet.size !== 1) {
+                throw new Error(`All products in a package must have the same stacking factor. Found: ${Array.from(stackingSet).join(', ')}`);
+            }
+
+            // ✅ Proceed to create the package
             lastPackID = `PACK${String(parseInt(lastPackID.slice(4)) + 1).padStart(6, '0')}`;
             insertedPackIDs.push(lastPackID);
 
@@ -86,7 +117,7 @@ router.post('/generate-package', jwtAuth.verifyToken, async (req, res) => {
                 bill_to, return_label || 0, JSON.stringify(additional_info || {}),
                 pickup_date_time || null, dropoff_date_time || null, JSON.stringify(tax_info || {})
             ]);
-        });
+        }
 
         await db.query(
             `INSERT INTO packages 

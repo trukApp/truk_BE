@@ -19,7 +19,6 @@ function toRadians(deg) {
   return deg * Math.PI / 180;
 }
 
-
 function distanceBetweenCoords(lat1, lon1, lat2, lon2) {
   const R = 6371; // km
   const dLat = toRadians(lat2 - lat1);

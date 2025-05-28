@@ -866,4 +866,51 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
   }
 });
 
+
+
+
+router.post('/sample-route', jwtAuth.verifyToken, async (req, res) => {
+  try {
+    const { locations } = req.body;
+    if (!Array.isArray(locations) || locations.length < 2) {
+      return res
+        .status(400)
+        .json({ error: 'Provide at least origin and destination in locations array.' });
+    }
+
+    // build the Google Directions URL
+    const origin = locations[0];
+    const dest   = locations[locations.length - 1];
+    const waypoints = locations.length > 2
+      ? locations.slice(1, -1).map(l => `${l.latitude},${l.longitude}`).join('|')
+      : '';
+    const url =
+      `https://maps.googleapis.com/maps/api/directions/json?origin=${origin.latitude},${origin.longitude}` +
+      `&destination=${dest.latitude},${dest.longitude}` +
+      (waypoints ? `&waypoints=${waypoints}` : '') +
+      `&key=${GOOGLE_API_KEY}`;
+
+    // fetch directions
+    const resp = await axios.get(url);
+    if (resp.data.status !== 'OK') {
+      return res.status(502).json({ error: `Google API: ${resp.data.status}` });
+    }
+
+    // decode the overview polyline to raw coords
+    const decoded = polyline
+      .decode(resp.data.routes[0].overview_polyline.points)
+      .map(([lat, lng]) => ({ lat, lng }));
+
+    // sample every ~20 km
+    const sampledRoutePoints = sampleRoutePoints(decoded, 20);
+
+    return res.status(200).json({ sampledRoutePoints });
+  } catch (err) {
+    logger.error('Error sampling route:', err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+
+
 module.exports = router;

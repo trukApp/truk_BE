@@ -230,7 +230,6 @@ router.put('/edit-dock', jwtAuth.verifyToken, async (req, res) => {
 });
 
 
-
 router.delete('/delete-dock', jwtAuth.verifyToken, async (req, res) => {
     try {
         const { id } = req.query;

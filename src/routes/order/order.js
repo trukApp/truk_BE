@@ -363,7 +363,6 @@ async function findMinCostArrangement(cluster, vehicles, sourceLoc) {
     }
     const v = vehicles[iVeh], subsets = [];
 
-
     // build all subsets that fit
     function buildSub(idx, chosen, sumW, sumV, flags) {
       if (idx === rem.length) {

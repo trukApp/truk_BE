@@ -105,7 +105,7 @@ async function getOptimizedRouteWithLoad(locations, shipmentLoads) {
     if (leg.start_address !== leg.end_address) {
       optimizedRoute.push({
         start: { address: leg.start_address, latitude: locations[i].latitude, longitude: locations[i].longitude },
-        end:   { address: leg.end_address,   latitude: locations[i+1].latitude, longitude: locations[i+1].longitude },
+        end: { address: leg.end_address, latitude: locations[i + 1].latitude, longitude: locations[i + 1].longitude },
         distance: leg.distance.text,
         duration: leg.duration.text,
         loadAfterStop: currentLoad
@@ -128,7 +128,7 @@ function getBearing(lat1, lon1, lat2, lon2) {
   const toRad = d => d * Math.PI / 180;
   const y = Math.sin(toRad(lon2 - lon1)) * Math.cos(toRad(lat2));
   const x = Math.cos(toRad(lat1)) * Math.sin(toRad(lat2)) -
-            Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(toRad(lon2 - lon1));
+    Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(toRad(lon2 - lon1));
   let brng = (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
   return brng;
 }
@@ -147,9 +147,9 @@ function getDirection8(b) {
 
 
 function isDirectionCompatible(a, b) {
-  const dirs = ["N","NE","E","SE","S","SW","W","NW"];
+  const dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
   let iA = dirs.indexOf(a), iB = dirs.indexOf(b);
-  if (iA<0||iB<0) return false;
+  if (iA < 0 || iB < 0) return false;
   let d = Math.abs(iA - iB);
   if (d > 4) d = 8 - d;
   return d <= 1;
@@ -180,7 +180,7 @@ function groupPackagesByDirection(pkgs) {
 
 function isVehicleValid(v) {
   const t = new Date(), from = new Date(v.transportation_details.validity_from),
-        to   = new Date(v.transportation_details.validity_to);
+    to = new Date(v.transportation_details.validity_to);
   return t >= from && t <= to;
 }
 
@@ -188,21 +188,21 @@ function isVehicleValid(v) {
 function isVehicleDown(v) {
   if (!v.downtimes.downtime_starts_from) return false;
   const now = new Date(),
-        s = new Date(v.downtimes.downtime_starts_from),
-        e = new Date(v.downtimes.downtime_ends_from);
+    s = new Date(v.downtimes.downtime_starts_from),
+    e = new Date(v.downtimes.downtime_ends_from);
   return now >= s && now <= e;
 }
 
 
-function convertVehicleWeight(n=0, u="") {
-  if (!n||!u) return 0;
-  return u.toLowerCase()==="ton"? n*1000 : parseFloat(n);
+function convertVehicleWeight(n = 0, u = "") {
+  if (!n || !u) return 0;
+  return u.toLowerCase() === "ton" ? n * 1000 : parseFloat(n);
 }
 
 
-function convertVehicleVolume(n=0, u="") {
-  if (!n||!u) return 0;
-  return u.toLowerCase().includes("m")? parseFloat(n) : parseFloat(n)/1000;
+function convertVehicleVolume(n = 0, u = "") {
+  if (!n || !u) return 0;
+  return u.toLowerCase().includes("m") ? parseFloat(n) : parseFloat(n) / 1000;
 }
 
 
@@ -219,35 +219,35 @@ async function getLocationById(loc_ID) {
 }
 
 
-function safeJsonParse(val, def=[]) {
+function safeJsonParse(val, def = []) {
   if (typeof val === "string") {
     try { return JSON.parse(val); }
     catch { return def; }
   }
-  return val||def;
+  return val || def;
 }
 
 
 function getPackageSpecialFlags(pkg, productMap) {
-  let f=0,d=0,h=0,t=0;
+  let f = 0, d = 0, h = 0, t = 0;
   for (let pr of pkg.products) {
     const info = productMap[pr.prod_ID];
     if (!info) continue;
-    if (info.fragile_goods) f=1;
-    if (info.dangerous_goods) d=1;
-    if (info.hazardous) h=1;
-    if (info.temp_controlled) t=1;
+    if (info.fragile_goods) f = 1;
+    if (info.dangerous_goods) d = 1;
+    if (info.hazardous) h = 1;
+    if (info.temp_controlled) t = 1;
   }
-  return { fragile:f, dangerous:d, hazardous:h, tempCtrl:t };
+  return { fragile: f, dangerous: d, hazardous: h, tempCtrl: t };
 }
 
 
 function getVehicleSpecialFlags(v) {
   return {
-    fragile_vehicle: v.fragile_vehicle||0,
-    danger_proof:    v.danger_proof   ||0,
-    hazardous_proof: v.hazardous_proof||0,
-    temp_controlled_vehicle: v.temp_controlled_vehicle||0
+    fragile_vehicle: v.fragile_vehicle || 0,
+    danger_proof: v.danger_proof || 0,
+    hazardous_proof: v.hazardous_proof || 0,
+    temp_controlled_vehicle: v.temp_controlled_vehicle || 0
   };
 }
 
@@ -272,10 +272,10 @@ function checkPackageVehicleCompatibility(pkgF, vehF) {
   }
 
 
-  if (pkgF.fragile   && !vehF.fragile_vehicle)        return false;
-  if (pkgF.dangerous && !vehF.danger_proof)            return false;
-  if (pkgF.hazardous && !vehF.hazardous_proof)         return false;
-  if (pkgF.tempCtrl  && !vehF.temp_controlled_vehicle) return false;
+  if (pkgF.fragile && !vehF.fragile_vehicle) return false;
+  if (pkgF.dangerous && !vehF.danger_proof) return false;
+  if (pkgF.hazardous && !vehF.hazardous_proof) return false;
+  if (pkgF.tempCtrl && !vehF.temp_controlled_vehicle) return false;
 
 
   return true;
@@ -288,10 +288,10 @@ function checkPackageVehicleCompatibility(pkgF, vehF) {
 
 async function loadAllPackageInfo(pacIDs) {
   if (!pacIDs.length) return {};
-  const ph = pacIDs.map(_=>'?').join(',');
+  const ph = pacIDs.map(_ => '?').join(',');
   const [rows] = await db.query(`
     SELECT * FROM master_package_info WHERE pac_ID IN (${ph})`, pacIDs);
-  return rows.reduce((m,r)=>{ m[r.pac_ID]=r; return m; }, {});
+  return rows.reduce((m, r) => { m[r.pac_ID] = r; return m; }, {});
 }
 
 
@@ -345,20 +345,20 @@ async function sumPackageWeightVolume(pkg, productMap, pkgInfoMap) {
 
 
 async function findMinCostArrangement(cluster, vehicles, sourceLoc) {
-  vehicles = vehicles.slice().sort((a,b)=> a.cost_per_ton - b.cost_per_ton);
+  vehicles = vehicles.slice().sort((a, b) => a.cost_per_ton - b.cost_per_ton);
   let best = { cost: Infinity, allocations: [], unallocated: [] };
 
 
   async function backtrack(rem, iVeh, used) {
     if (!rem.length) {
-      const total = used.reduce((s,a)=> s + a.cost, 0);
+      const total = used.reduce((s, a) => s + a.cost, 0);
       if (total < best.cost) {
         best = { cost: total, allocations: JSON.parse(JSON.stringify(used)), unallocated: [] };
       }
       return;
     }
     if (iVeh >= vehicles.length) {
-      if (best.cost === Infinity) best.unallocated = rem.map(r=>r.pack_ID);
+      if (best.cost === Infinity) best.unallocated = rem.map(r => r.pack_ID);
       return;
     }
     const v = vehicles[iVeh], subsets = [];
@@ -369,7 +369,7 @@ async function findMinCostArrangement(cluster, vehicles, sourceLoc) {
         subsets.push({ chosen, sumW, sumV, flags });
         return;
       }
-      buildSub(idx+1, chosen, sumW, sumV, flags);
+      buildSub(idx + 1, chosen, sumW, sumV, flags);
       const pkg = rem[idx];
       const newW = sumW + pkg.totalWeight;
       const newV = sumV + pkg.totalVolume;
@@ -380,44 +380,44 @@ async function findMinCostArrangement(cluster, vehicles, sourceLoc) {
         nf.hazardous ||= pkg.specialFlags.hazardous;
         nf.tempCtrl ||= pkg.specialFlags.tempCtrl;
         if (checkPackageVehicleCompatibility(nf, getVehicleSpecialFlags(v))) {
-          buildSub(idx+1, [...chosen, pkg], newW, newV, nf);
+          buildSub(idx + 1, [...chosen, pkg], newW, newV, nf);
         }
       }
     }
 
 
-    buildSub(0, [], 0, 0, { fragile:0, dangerous:0, hazardous:0, tempCtrl:0 });
+    buildSub(0, [], 0, 0, { fragile: 0, dangerous: 0, hazardous: 0, tempCtrl: 0 });
 
 
     for (let { chosen, sumW } of subsets) {
       if (!chosen.length) continue;
       // sort by distance
-      chosen.sort((a,b)=> a.distFromSource - b.distFromSource);
-      const locs = [sourceLoc, ...chosen.map(x=>x.destination)];
+      chosen.sort((a, b) => a.distFromSource - b.distFromSource);
+      const locs = [sourceLoc, ...chosen.map(x => x.destination)];
       const shipments = new Array(chosen.length).fill(1);
       const { optimizedRoute, sampledCoords } = await getOptimizedRouteWithLoad(locs, shipments);
 
 
       // total distance of this optimizedRoute
-      const totalDist = optimizedRoute.reduce((s,leg)=> s + parseDistanceText(leg.distance), 0);
+      const totalDist = optimizedRoute.reduce((s, leg) => s + parseDistanceText(leg.distance), 0);
       const tons = sumW / 1000;
       const cost = tons * v.cost_per_ton * totalDist;
 
 
       const reversed = [...optimizedRoute].reverse();
-      let loadArr = [], remainIDs = chosen.map(x=>x.pack_ID);
-      reversed.forEach((leg,i)=> {
-        const stop = i+1, matches = [];
+      let loadArr = [], remainIDs = chosen.map(x => x.pack_ID);
+      reversed.forEach((leg, i) => {
+        const stop = i + 1, matches = [];
         for (let id of remainIDs) {
-          const pObj = chosen.find(x=>x.pack_ID === id);
+          const pObj = chosen.find(x => x.pack_ID === id);
           if (pObj &&
-              pObj.destination.latitude === leg.end.latitude &&
-              pObj.destination.longitude === leg.end.longitude) {
+            pObj.destination.latitude === leg.end.latitude &&
+            pObj.destination.longitude === leg.end.longitude) {
             matches.push(id);
           }
         }
         if (matches.length) {
-          matches.forEach(m=> remainIDs.splice(remainIDs.indexOf(m),1));
+          matches.forEach(m => remainIDs.splice(remainIDs.indexOf(m), 1));
           loadArr.push({ stop, location: leg.end.address, packages: matches });
         }
       });
@@ -428,24 +428,24 @@ async function findMinCostArrangement(cluster, vehicles, sourceLoc) {
         totalWeightCapacity: v.totalWeightCapacity,
         totalVolumeCapacity: v.totalVolumeCapacity,
         occupiedWeight: sumW,
-        occupiedVolume: chosen.reduce((s,p)=> s + p.totalVolume, 0),
+        occupiedVolume: chosen.reduce((s, p) => s + p.totalVolume, 0),
         leftoverWeight: v.weightCapKg - sumW,
-        leftoverVolume: v.volumeCapM3 - chosen.reduce((s,p)=> s + p.totalVolume, 0),
+        leftoverVolume: v.volumeCapM3 - chosen.reduce((s, p) => s + p.totalVolume, 0),
         cost,
-        packages: chosen.map(x=> x.pack_ID),
+        packages: chosen.map(x => x.pack_ID),
         route: optimizedRoute,
         loadArrangement: loadArr,
         sampledRoutePoints: sampledCoords
       });
 
 
-      await backtrack(rem.filter(r=> !chosen.includes(r)), iVeh+1, used);
+      await backtrack(rem.filter(r => !chosen.includes(r)), iVeh + 1, used);
       used.pop();
     }
 
 
     // also try skipping this vehicle
-    await backtrack(rem, iVeh+1, used);
+    await backtrack(rem, iVeh + 1, used);
   }
 
 
@@ -460,21 +460,21 @@ function generateUnallocationReason(pkgInfo, vehicles) {
   if (!vehicles.length) return "No vehicles after filters.";
   const fleet = vehicles.map(getVehicleSpecialFlags);
   if (pkgInfo.specialFlags.tempCtrl &&
-      !fleet.some(v=>v.temp_controlled_vehicle))
+    !fleet.some(v => v.temp_controlled_vehicle))
     return "Needs temperature-controlled truck.";
   if (pkgInfo.specialFlags.fragile &&
-      !fleet.some(v=>v.fragile_vehicle))
+    !fleet.some(v => v.fragile_vehicle))
     return "Needs fragile-goods truck.";
   if (pkgInfo.specialFlags.dangerous &&
-      !fleet.some(v=>v.danger_proof))
+    !fleet.some(v => v.danger_proof))
     return "Needs dangerous-goods truck.";
   if (pkgInfo.specialFlags.hazardous &&
-      !fleet.some(v=>v.hazardous_proof))
+    !fleet.some(v => v.hazardous_proof))
     return "Needs hazardous-goods truck.";
 
 
-  const maxW = Math.max(...vehicles.map(v=>v.weightCapKg));
-  const maxV = Math.max(...vehicles.map(v=>v.volumeCapM3));
+  const maxW = Math.max(...vehicles.map(v => v.weightCapKg));
+  const maxV = Math.max(...vehicles.map(v => v.volumeCapM3));
   if (pkgInfo.totalWeight > maxW)
     return "Package too heavy for any truck.";
   if (pkgInfo.totalVolume > maxV)
@@ -518,35 +518,35 @@ async function allocatePackages(packagesData, vehicles, sourceLocation, productM
   // group and process
   const groups = groupPackagesByDirection(pkgInfos);
   for (let group of groups) {
-    const sumW = group.reduce((s, g)=> s + g.totalWeight, 0);
-    const sumV = group.reduce((s, g)=> s + g.totalVolume, 0);
-    const combinedFlags = group.reduce((f,g)=> ({
-      fragile: f.fragile||g.specialFlags.fragile,
-      dangerous: f.dangerous||g.specialFlags.dangerous,
-      hazardous: f.hazardous||g.specialFlags.hazardous,
-      tempCtrl: f.tempCtrl||g.specialFlags.tempCtrl
-    }), {fragile:0,dangerous:0,hazardous:0,tempCtrl:0});
+    const sumW = group.reduce((s, g) => s + g.totalWeight, 0);
+    const sumV = group.reduce((s, g) => s + g.totalVolume, 0);
+    const combinedFlags = group.reduce((f, g) => ({
+      fragile: f.fragile || g.specialFlags.fragile,
+      dangerous: f.dangerous || g.specialFlags.dangerous,
+      hazardous: f.hazardous || g.specialFlags.hazardous,
+      tempCtrl: f.tempCtrl || g.specialFlags.tempCtrl
+    }), { fragile: 0, dangerous: 0, hazardous: 0, tempCtrl: 0 });
 
 
     let feasible = vehicles.filter(v =>
       v.weightCapKg >= sumW &&
-      v.usableVol    >= sumV &&               // ← usable volume
+      v.usableVol >= sumV &&               // ← usable volume
       checkPackageVehicleCompatibility(combinedFlags, getVehicleSpecialFlags(v))
     );
 
 
     if (feasible.length) {
-      feasible.sort((a,b)=> a.cost_per_ton - b.cost_per_ton);
+      feasible.sort((a, b) => a.cost_per_ton - b.cost_per_ton);
       const chosen = feasible[0];
       // route
-      group.sort((a,b)=> a.distFromSource - b.distFromSource);
-      const routeLocs = [sourceLocation, ...group.map(g=>g.destination)];
+      group.sort((a, b) => a.distFromSource - b.distFromSource);
+      const routeLocs = [sourceLocation, ...group.map(g => g.destination)];
       const shipments = new Array(group.length).fill(1);
       const { optimizedRoute, sampledCoords } = await getOptimizedRouteWithLoad(routeLocs, shipments);
 
 
       // total distance
-      const totalDist = optimizedRoute.reduce((s,leg)=> s + parseDistanceText(leg.distance), 0);
+      const totalDist = optimizedRoute.reduce((s, leg) => s + parseDistanceText(leg.distance), 0);
       const tons = sumW / 1000;
       const cost = tons * chosen.cost_per_ton * totalDist;
       totalCost += cost;
@@ -554,34 +554,36 @@ async function allocatePackages(packagesData, vehicles, sourceLocation, productM
 
       // load arrangement
       const reversed = [...optimizedRoute].reverse();
-      let loadArr = [], remainIDs = group.map(g=>g.pack_ID);
-      reversed.forEach((leg,i)=> {
-        const stop = i+1, using = [];
+      let loadArr = [], remainIDs = group.map(g => g.pack_ID);
+      reversed.forEach((leg, i) => {
+        const stop = i + 1, using = [];
         remainIDs.forEach(id => {
-          const pkg = group.find(g=>g.pack_ID === id);
+          const pkg = group.find(g => g.pack_ID === id);
           if (pkg &&
-              pkg.destination.latitude === leg.end.latitude &&
-              pkg.destination.longitude === leg.end.longitude) {
+            pkg.destination.latitude === leg.end.latitude &&
+            pkg.destination.longitude === leg.end.longitude) {
             using.push(id);
           }
         });
         if (using.length) {
-          using.forEach(id=> remainIDs.splice(remainIDs.indexOf(id),1));
+          using.forEach(id => remainIDs.splice(remainIDs.indexOf(id), 1));
           loadArr.push({ stop, location: leg.end.address, packages: using });
         }
       });
 
+      const pkgVolumes = group.map(g => g.totalVolume);
 
       allocations.push({
         vehicle_ID: chosen.vehicle_ID,
         totalWeightCapacity: chosen.totalWeightCapacity,
         totalVolumeCapacity: chosen.totalVolumeCapacity,
         occupiedWeight: sumW,
-        occupiedVolume: group.reduce((s,g)=> s+g.totalVolume, 0),
+        occupiedVolume: group.reduce((s, g) => s + g.totalVolume, 0),
         leftoverWeight: chosen.weightCapKg - sumW,
-        leftoverVolume: chosen.volumeCapM3 - group.reduce((s,g)=> s+g.totalVolume, 0),
+        leftoverVolume: chosen.volumeCapM3 - group.reduce((s, g) => s + g.totalVolume, 0),
         cost,
-        packages: group.map(g=>g.pack_ID),
+        packages: group.map(g => g.pack_ID),
+        pkgVolumes,
         route: optimizedRoute,
         loadArrangement: loadArr,
         sampledRoutePoints: sampledCoords
@@ -592,7 +594,7 @@ async function allocatePackages(packagesData, vehicles, sourceLocation, productM
       totalCost += cost;
       allocations.push(...subAllocs);
       unallocated.forEach(id => {
-        const info = pkgInfos.find(p=>p.pack_ID===id);
+        const info = pkgInfos.find(p => p.pack_ID === id);
         unallocatedPackages.push({
           pack_ID: id,
           reason: generateUnallocationReason(info, vehicles)
@@ -607,11 +609,11 @@ async function allocatePackages(packagesData, vehicles, sourceLocation, productM
 
 
 async function getPackagesByIds(packageIDs) {
-  const ph = packageIDs.map(_=>'?').join(',');
+  const ph = packageIDs.map(_ => '?').join(',');
   const [rows] = await db.query(`
     SELECT * FROM packages WHERE pack_ID IN (${ph})`, packageIDs);
   if (!rows.length) throw new Error(`No matching packages`);
-  return rows.map(r=>({
+  return rows.map(r => ({
     pack_ID: r.pack_ID,
     ship_from: r.ship_from,
     ship_to: r.ship_to,
@@ -654,7 +656,7 @@ async function getPackagesByIds(packageIDs) {
 //         if (!allProdIDs.length) {
 //           return res.status(400).json({ error: 'No products in packages' });
 //         }
-   
+
 //         const [stackRows] = await db.query(
 //           `SELECT product_ID, COALESCE(stacking_factor, '0') AS stacking_factor
 //              FROM master_products
@@ -663,7 +665,7 @@ async function getPackagesByIds(packageIDs) {
 //         );
 //         const stackMap = {};
 //         stackRows.forEach(r => { stackMap[r.product_ID] = r.stacking_factor; });
-   
+
 //         const factorSet = new Set(
 //           allProdLines.map(p => stackMap[p.prod_ID] || '0')
 //         );
@@ -781,7 +783,7 @@ async function getPackagesByIds(packageIDs) {
 
 
 // inside order.js
- 
+
 function parseDimension(str = '') {
   const m = String(str).match(/(\d+(?:\.\d+)?)/);
   if (!m) return 0;
@@ -813,9 +815,9 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
       `SELECT product_ID, COALESCE(stacking_factor,'0') AS sf FROM master_products WHERE product_ID IN (?)`,
       [prodIDs]
     );
-    const sfMap = sfRows.reduce((m,r) => (m[r.product_ID]=+r.sf, m), {});
-    const sfSet = new Set(lines.map(l=>sfMap[l.prod_ID]));
-    if (sfSet.size!==1) return res.status(400).json({
+    const sfMap = sfRows.reduce((m, r) => (m[r.product_ID] = +r.sf, m), {});
+    const sfSet = new Set(lines.map(l => sfMap[l.prod_ID]));
+    if (sfSet.size !== 1) return res.status(400).json({
       error: `Stacking-factor mismatch: [${[...sfSet].join(', ')}]`
     });
     const productStackFactor = [...sfSet][0];
@@ -826,10 +828,10 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
       [...new Set(lines.map(l => l.package_info))]
     );
     const heights = lines
-      .map(l=>pkgInfoMap[l.package_info])
+      .map(l => pkgInfoMap[l.package_info])
       .filter(Boolean)
-      .map(i=>parseDimension(i.pack_height+' '+i.dimensions_uom));
-    const maxPkgH = heights.length? Math.max(...heights) : 0;
+      .map(i => parseDimension(i.pack_height + ' ' + i.dimensions_uom));
+    const maxPkgH = heights.length ? Math.max(...heights) : 0;
 
 
     // 4) load vehicles & compute volumes
@@ -838,44 +840,44 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
       [JSON.stringify(origin)]
     );
     let fleet = dbVehicles.map(v => {
-      const caps  = safeJsonParse(v.capacity, {});
+      const caps = safeJsonParse(v.capacity, {});
       const phys = safeJsonParse(v.physical_properties, {});
-   
+
       // 1) raw interior volume
       const rawVol = parseVolumeAndUOM(caps.cubic_capacity, caps.cubic_capacity_unit);
-   
+
       const W = parseDimension(caps.interior_width);
       const L = parseDimension(caps.interior_length);
       const H = parseDimension(caps.interior_height);
       const floorArea = W * L;
-   
+
       // 3) stacking
       const oneLayerM3 = maxPkgH > 0 ? floorArea * maxPkgH : 0;
-      const maxLayers  = maxPkgH > 0 ? Math.floor(H / maxPkgH) : 0;
+      const maxLayers = maxPkgH > 0 ? Math.floor(H / maxPkgH) : 0;
       const allowedLayers = productStackFactor === 0
         ? maxLayers
         : Math.min(maxLayers, productStackFactor);
       const usableVol = oneLayerM3 * allowedLayers;
-   
+
       // 4) **now put weightCapKg back in**
       const weightCapKg = parseWeightAndUOM(caps.payload_weight, caps.payload_weight_unit);
-   
+
       return {
         ...v,
-        weightCapKg,                        
-        totalWeightCapacity: weightCapKg,    
+        weightCapKg,
+        totalWeightCapacity: weightCapKg,
         totalVolumeCapacity: rawVol,
         oneLayerM3,
         usableVol,
-        volumeCapM3: usableVol,            
+        volumeCapM3: usableVol,
         maxLayers,
         allowedLayers,
         transportation_details: safeJsonParse(v.transportation_details, {}),
-        downtimes:            safeJsonParse(v.downtimes, {}),
-        cost_per_ton:         +safeJsonParse(v.additional_details, {}).cost_per_ton || 0
+        downtimes: safeJsonParse(v.downtimes, {}),
+        cost_per_ton: +safeJsonParse(v.additional_details, {}).cost_per_ton || 0
       };
     });
-   
+
 
 
     // 5) filters & sorts
@@ -884,7 +886,7 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
       fleet = fleet.filter(v => {
         const from = new Date(v.transportation_details.validity_from).getTime();
         const to = new Date(v.transportation_details.validity_to).getTime();
-        return now>=from && now<=to;
+        return now >= from && now <= to;
       });
     }
     if (filters?.checkDowntime) {
@@ -892,12 +894,12 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
         if (!v.downtimes.downtime_starts_from) return true;
         const s = new Date(v.downtimes.downtime_starts_from).getTime();
         const e = new Date(v.downtimes.downtime_ends_from).getTime();
-        return now<s || now>e;
+        return now < s || now > e;
       });
     }
-    if (filters?.sortUnlimitedUsage) fleet.sort((a,b)=>(a.unlimited_usage||0)-(b.unlimited_usage||0));
-    if (filters?.sortOwnership)      fleet.sort((a,b)=>(a.individual_resource||'').localeCompare(b.individual_resource||''));
-    fleet.sort((a,b)=>a.cost_per_ton-b.cost_per_ton);
+    if (filters?.sortUnlimitedUsage) fleet.sort((a, b) => (a.unlimited_usage || 0) - (b.unlimited_usage || 0));
+    if (filters?.sortOwnership) fleet.sort((a, b) => (a.individual_resource || '').localeCompare(b.individual_resource || ''));
+    fleet.sort((a, b) => a.cost_per_ton - b.cost_per_ton);
 
 
     // 6) build productMap
@@ -905,7 +907,7 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
       `SELECT product_ID, weight, weight_uom, packaging_type FROM master_products WHERE product_ID IN (?)`,
       [prodIDs]
     );
-    const productMap = prodRows.reduce((m,r)=>(m[r.product_ID]=r,m),{});
+    const productMap = prodRows.reduce((m, r) => (m[r.product_ID] = r, m), {});
 
 
     // 7) origin coords
@@ -920,16 +922,30 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
 
     // 9) enrich & respond
     const enriched = allocations.map(a => {
-      const v = fleet.find(x=>x.vehicle_ID===a.vehicle_ID) || {};
-      const pct = v.usableVol>0 ? +((a.occupiedVolume/v.usableVol)*100).toFixed(2) : 0;
+      const v = fleet.find(x => x.vehicle_ID === a.vehicle_ID) || {};
+      const usable = v.usableVol || v.totalVolumeCapacity;  // fallback
+      const occupied = a.occupiedVolume;
+      const occupiedPercent = usable > 0
+        ? +(occupied / usable * 100).toFixed(2)
+        : 0;
+      // const pct = v.usableVol>0 ? +((a.occupiedVolume/v.usableVol)*100).toFixed(2) : 0;
+
+      const packageDetails = a.packages.map((pkgID, idx) => {
+        const vol = a.pkgVolumes[idx];                              // m³
+        const pct = usable > 0
+          ? +(vol / usable * 100).toFixed(2)
+          : 0;
+        return { pkg_ID: pkgID, volumeM3: vol, percentOfTruck: pct };
+      });
+
       return {
         ...a,
-        occupiedPercent: pct,
-        truckCapacity: {
+        occupiedPercent,         // overall
+        packageDetails,          // new array of {pkg_ID, volumeM3, percentOfTruck}
+        truckCapacity: {         // existing capacity breakdown
           rawM3: v.totalVolumeCapacity,
           oneLayerM3: v.oneLayerM3,
-          usableM3: v.usableVol,
-          maxM3: v.oneLayerM3 * v.maxLayers,
+          usableM3: usable,
           maxLayers: v.maxLayers,
           allowedLayers: v.allowedLayers
         }
@@ -968,7 +984,7 @@ router.post('/sample-route', jwtAuth.verifyToken, async (req, res) => {
 
     // build the Google Directions URL
     const origin = locations[0];
-    const dest   = locations[locations.length - 1];
+    const dest = locations[locations.length - 1];
     const waypoints = locations.length > 2
       ? locations.slice(1, -1).map(l => `${l.latitude},${l.longitude}`).join('|')
       : '';

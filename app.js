@@ -42,7 +42,6 @@ app.get("/", (req, res, next)=>{
 const masterSwaggerDocument = JSON.parse(fs.readFileSync('./src/swagger/master-swagger.json', 'utf8'));
 // const userSwaggerDocument = JSON.parse(fs.readFileSync('./src/swagger/user-swagger.json', 'utf8'));
 
-
 const combinedSwaggerDocument = {
   openapi: '3.0.0',
   info: {

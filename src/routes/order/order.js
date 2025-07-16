@@ -923,12 +923,17 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
     // 9) enrich & respond
     const enriched = allocations.map(a => {
       const v = fleet.find(x => x.vehicle_ID === a.vehicle_ID) || {};
+      const caps = v.capacity || {};
       const usable = v.usableVol || v.totalVolumeCapacity;  // fallback
       const occupied = a.occupiedVolume;
       const occupiedPercent = usable > 0
         ? +(occupied / usable * 100).toFixed(2)
         : 0;
       // const pct = v.usableVol>0 ? +((a.occupiedVolume/v.usableVol)*100).toFixed(2) : 0;
+
+      const widthM  = parseDimension(caps.interior_width);
+      const lengthM = parseDimension(caps.interior_length);
+      const heightM = parseDimension(caps.interior_height);
 
       const packageDetails = a.packages.map((pkgID, idx) => {
         const vol = a.pkgVolumes[idx];                              // m³
@@ -940,6 +945,11 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
 
       return {
         ...a,
+        vehicleDimensions: {
+          interiorWidthM:  widthM,   
+          interiorLengthM: lengthM, 
+          interiorHeightM: heightM   
+        },
         occupiedPercent,         // overall
         packageDetails,          // new array of {pkg_ID, volumeM3, percentOfTruck}
         truckCapacity: {         // existing capacity breakdown

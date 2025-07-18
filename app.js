@@ -9,6 +9,7 @@ const fs = require('fs');
 const swaggerUi = require('swagger-ui-express');
 require('dotenv').config();
 
+
 //Mongo
 // const uri="mongodb+srv://jaimptrust:R1c312qPF6CPTs96@jaimp-dev.k7qfi2a.mongodb.net/?retryWrites=true&w=majority&appName=jaiMP-dev";
 

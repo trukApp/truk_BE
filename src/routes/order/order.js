@@ -618,6 +618,7 @@ async function getPackagesByIds(packageIDs) {
     ship_from: r.ship_from,
     ship_to: r.ship_to,
     products: safeJsonParse(r.product_ID),
+    package_info: r.package_info,    
     pickup_date_time: r.pickup_date_time
   }));
 }
@@ -792,6 +793,62 @@ function parseDimension(str = '') {
 }
 
 
+function computeBoxPlacements(pkgIDs, pkgInfoMap, vehicleDims) {
+  const { interior_width: W, interior_length: L, interior_height: H } = vehicleDims;
+
+  // current cursor in the floor plane
+  let cursorX = 0;
+  let cursorY = 0;
+  // track the tallest box in the current row to know when to wrap Y
+  let rowMaxY = 0;
+
+  const placements = {};
+
+  for (const pkg_ID of pkgIDs) {
+    // lookup the single‐unit dimensions
+    const info = pkgInfoMap[pkg_ID];
+    if (!info) continue;
+
+    const boxW = parseFloat(info.pack_length);   // along X
+    const boxL = parseFloat(info.pack_width);    // along Y
+    const boxH = parseFloat(info.pack_height);   // along Z
+
+    // if this box would overflow length, wrap to next row
+    if (cursorX + boxW > L) {
+      cursorX = 0;
+      cursorY += rowMaxY;
+      rowMaxY = 0;
+    }
+    // if wrapping makes overflow width, we’ve run out of floor → stop placing
+    if (cursorY + boxL > W) {
+      console.warn(`No more floor space for ${pkg_ID}`);
+      break;
+    }
+
+    // center‐position in 3D:
+    //   x = cursorX + boxW/2, y = cursorY + boxL/2, z = boxH/2
+    const pos = [
+      cursorX + boxW/2,
+      cursorY + boxL/2,
+      boxH / 2
+    ];
+
+    // record it
+    placements[pkg_ID] = placements[pkg_ID] || { boxes: [] };
+    placements[pkg_ID].boxes.push({
+      dimensions: [boxW, boxL, boxH],
+      position:   pos
+    });
+
+    // advance cursorX and rowMaxY
+    cursorX += boxW;
+    rowMaxY = Math.max(rowMaxY, boxL);
+  }
+
+  return placements;
+}
+
+
 router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
   try {
     const { packages: packageIDs, filters } = req.body;
@@ -806,6 +863,16 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
       if (p.ship_from !== origin) throw new Error('All packages must share ship_from');
       if (p.pickup_date_time.split('T')[0] !== pickupDate) throw new Error('All packages must share pickup date');
     });
+
+    const packToPacID = packagesData.reduce((m,p) => {
+      m[p.pack_ID] = p.package_info;  
+      return m;
+    }, {});
+
+
+    const packagingInfoMap = await loadAllPackageInfo(
+      Object.values(packToPacID)
+    );
 
 
     // 2) stacking-factor
@@ -929,46 +996,70 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
       const occupiedPercent = usable > 0
         ? +(occupied / usable * 100).toFixed(2)
         : 0;
-      // const pct = v.usableVol>0 ? +((a.occupiedVolume/v.usableVol)*100).toFixed(2) : 0;
-
+    
+      // parse out interior dims
       const widthM  = parseDimension(caps.interior_width);
       const lengthM = parseDimension(caps.interior_length);
       const heightM = parseDimension(caps.interior_height);
-
+    
+      // build package‐level details
       const packageDetails = a.packages.map((pkgID, idx) => {
-        const vol = a.pkgVolumes[idx];                              // m³
+        const vol = a.pkgVolumes[idx];        // m³
         const pct = usable > 0
           ? +(vol / usable * 100).toFixed(2)
           : 0;
         return { pkg_ID: pkgID, volumeM3: vol, percentOfTruck: pct };
       });
-
+    
+      const pkgInfoMapForThisAlloc = {};
+      a.packages.forEach(pkgID => {
+        const pacID = packToPacID[pkgID];
+        pkgInfoMapForThisAlloc[pkgID] = packagingInfoMap[pacID];
+      });
+    
+      // define vehicleDims for 3D‐packing
+      const vehicleDims = {
+        interior_width:  widthM,
+        interior_length: lengthM,
+        interior_height: heightM
+      };
+    
+      // compute 3D placements
+      const boxPlacements = computeBoxPlacements(
+        a.packages,
+        pkgInfoMapForThisAlloc,
+        vehicleDims
+      );
+    
       return {
         ...a,
+        boxPlacements,
         vehicleDimensions: {
-          interiorWidthM:  widthM,   
-          interiorLengthM: lengthM, 
-          interiorHeightM: heightM   
+          interiorWidthM:  widthM,
+          interiorLengthM: lengthM,
+          interiorHeightM: heightM
         },
-        occupiedPercent,         // overall
-        packageDetails,          // new array of {pkg_ID, volumeM3, percentOfTruck}
-        truckCapacity: {         // existing capacity breakdown
-          rawM3: v.totalVolumeCapacity,
+        occupiedPercent,   // overall % full
+        packageDetails,    // per‐pkg % & volume
+        truckCapacity: {   // unchanged
+          rawM3:      v.totalVolumeCapacity,
           oneLayerM3: v.oneLayerM3,
-          usableM3: usable,
-          maxLayers: v.maxLayers,
+          usableM3:   usable,
+          maxLayers:  v.maxLayers,
           allowedLayers: v.allowedLayers
         }
       };
     });
-
-
+    
     return res.status(200).json({
-      message: enriched.length ? 'Best Combinational Scenario' : 'No suitable vehicles found',
+      message: enriched.length
+        ? 'Best Combinational Scenario'
+        : 'No suitable vehicles found',
       totalCost: enriched.length ? totalCost : null,
       allocations: enriched,
       unallocatedPackages: unallocated
     });
+    
   } catch (err) {
     logger.error('Error creating order:', err);
     return res.status(500).json({ error: err.message });

@@ -85,6 +85,7 @@ const combinedSwaggerDocument = {
 
 app.use('/trukapp-api-docs', swaggerUi.serve, swaggerUi.setup(combinedSwaggerDocument));
 
+
 const signup = require('./src/routes/signup/signup');
 const login = require('./src/routes/login/login');
 const userData = require('./src/routes/user/userData');

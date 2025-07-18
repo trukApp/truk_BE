@@ -1031,6 +1031,7 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
         vehicleDims
       );
     
+      
       return {
         ...a,
         boxPlacements,

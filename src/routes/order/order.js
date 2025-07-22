@@ -996,11 +996,32 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
       const occupiedPercent = usable > 0
         ? +(occupied / usable * 100).toFixed(2)
         : 0;
+
+        
     
       // parse out interior dims
       const widthM  = parseDimension(caps.interior_width);
       const lengthM = parseDimension(caps.interior_length);
       const heightM = parseDimension(caps.interior_height);
+
+      const packageInfoDetails = a.packages.map(pkgID => {
+        const pkgRecord = packagesData.find(p => p.pack_ID === pkgID);
+        const products  = pkgRecord.products;      // [{ prod_ID, quantity }, …]
+        const pacID     = packToPacID[pkgID];
+        const packInfo  = packagingInfoMap[pacID]; // full row from master_package_info
+
+        // optionally convert dims
+        const lengthPM = parseDimension(`${packInfo.pack_length} ${packInfo.pack_length_uom}`);
+        const widthPM  = parseDimension(`${packInfo.pack_width}  ${packInfo.pack_width_uom}`);
+        const heightPM = parseDimension(`${packInfo.pack_height} ${packInfo.pack_height_uom}`);
+
+        return {
+          pkg_ID:              pkgID,
+          products,                      // quantity & prod_ID
+          package_info:       packInfo,  // raw DB row
+          packagingDimensions: { lengthM: lengthPM, widthM: widthPM, heightM: heightPM }
+        };
+      });
     
       // build package‐level details
       const packageDetails = a.packages.map((pkgID, idx) => {
@@ -1040,6 +1061,7 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
           interiorLengthM: lengthM,
           interiorHeightM: heightM
         },
+        packageInfoDetails ,
         occupiedPercent,   // overall % full
         packageDetails,    // per‐pkg % & volume
         truckCapacity: {   // unchanged
@@ -1066,11 +1088,6 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
     return res.status(500).json({ error: err.message });
   }
 });
-
-
-
-
-
 
 
 

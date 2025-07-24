@@ -1865,6 +1865,7 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
         return { pkg_ID: pkgID, volumeM3: vol, percentOfTruck: pct };
       });
 
+      
       // build boxes array for 3D placement
       const pkgInfoMapForAlloc = {};
       a.packages.forEach(pkgID => {

@@ -303,69 +303,165 @@ router.get('/all-orders', jwtAuth.verifyToken, async (req, res) => {
     }
 });
 
+// router.get('/order-by-id', jwtAuth.verifyToken, async (req, res) => {
+//     try {
+//         const { order_ID } = req.query;
+//         if (!order_ID) {
+//             return res.status(400).json({ message: 'Missing required query parameter: order_ID' });
+//         }
+
+//         const [orderResult] = await db.query(`SELECT * FROM orders WHERE order_ID = ?`, [order_ID]);
+//         if (!orderResult.length) {
+//             return res.status(404).json({ message: 'Order not found.' });
+//         }
+
+//         const order = orderResult[0];
+//         let allocatedPackages = [];
+//         let allocatedVehicles = [];
+
+//         // Safe JSON parsing function
+//         const safeParse = (data) => {
+//             if (!data) return [];
+//             if (Array.isArray(data)) return data;
+//             if (typeof data === 'string') {
+//                 try {
+//                     return JSON.parse(data);
+//                 } catch {
+//                     return data.split(',').map(item => item.trim());
+//                 }
+//             }
+//             return [];
+//         };
+
+//         allocatedPackages = safeParse(order.allocated_packages);
+//         allocatedVehicles = safeParse(order.allocated_vehicles);
+
+//         let packageDetails = [];
+//         if (allocatedPackages.length > 0) {
+//             const packagePlaceholders = allocatedPackages.map(() => '?').join(',');
+//             const [packages] = await db.query(`
+//                 SELECT * FROM packages WHERE pack_ID IN (${packagePlaceholders})
+//             `, allocatedPackages);
+//             packageDetails = packages;
+//         }
+
+//         let vehicleDetails = [];
+//         if (allocatedVehicles.length > 0) {
+//             const vehiclePlaceholders = allocatedVehicles.map(() => '?').join(',');
+//             const [vehicles] = await db.query(`
+//                 SELECT * FROM master_resources WHERE vehicle_ID IN (${vehiclePlaceholders})
+//             `, allocatedVehicles);
+//             vehicleDetails = vehicles;
+//         }
+
+//         return res.status(200).json({
+//             message: 'Order retrieved successfully.',
+//             order,
+//             allocated_packages_details: packageDetails,
+//             allocated_vehicles: vehicleDetails
+//         });
+
+//     } catch (error) {
+//         logger.error('Error fetching order by ID:', error);
+//         return res.status(500).json({ message: 'Server error.', error: error.message });
+//     }
+// });
+
+
 router.get('/order-by-id', jwtAuth.verifyToken, async (req, res) => {
     try {
-        const { order_ID } = req.query;
-        if (!order_ID) {
-            return res.status(400).json({ message: 'Missing required query parameter: order_ID' });
-        }
-
-        const [orderResult] = await db.query(`SELECT * FROM orders WHERE order_ID = ?`, [order_ID]);
-        if (!orderResult.length) {
-            return res.status(404).json({ message: 'Order not found.' });
-        }
-
-        const order = orderResult[0];
-        let allocatedPackages = [];
-        let allocatedVehicles = [];
-
-        // Safe JSON parsing function
-        const safeParse = (data) => {
-            if (!data) return [];
-            if (Array.isArray(data)) return data;
-            if (typeof data === 'string') {
-                try {
-                    return JSON.parse(data);
-                } catch {
-                    return data.split(',').map(item => item.trim());
-                }
-            }
-            return [];
-        };
-
-        allocatedPackages = safeParse(order.allocated_packages);
-        allocatedVehicles = safeParse(order.allocated_vehicles);
-
-        let packageDetails = [];
-        if (allocatedPackages.length > 0) {
-            const packagePlaceholders = allocatedPackages.map(() => '?').join(',');
-            const [packages] = await db.query(`
-                SELECT * FROM packages WHERE pack_ID IN (${packagePlaceholders})
-            `, allocatedPackages);
-            packageDetails = packages;
-        }
-
-        let vehicleDetails = [];
-        if (allocatedVehicles.length > 0) {
-            const vehiclePlaceholders = allocatedVehicles.map(() => '?').join(',');
-            const [vehicles] = await db.query(`
-                SELECT * FROM master_resources WHERE vehicle_ID IN (${vehiclePlaceholders})
-            `, allocatedVehicles);
-            vehicleDetails = vehicles;
-        }
-
-        return res.status(200).json({
-            message: 'Order retrieved successfully.',
-            order,
-            allocated_packages_details: packageDetails,
-            allocated_vehicles: vehicleDetails
-        });
-
-    } catch (error) {
-        logger.error('Error fetching order by ID:', error);
-        return res.status(500).json({ message: 'Server error.', error: error.message });
+      const { order_ID } = req.query;
+      if (!order_ID) {
+        return res.status(400).json({ message: 'Missing required query parameter: order_ID' });
+      }
+  
+      // 1) fetch the order
+      const [orderRows] = await db.query(
+        `SELECT * FROM orders WHERE order_ID = ?`, 
+        [order_ID]
+      );
+      if (!orderRows.length) {
+        return res.status(404).json({ message: 'Order not found.' });
+      }
+      const order = orderRows[0];
+  
+      // 2) parse the allocated package and vehicle arrays
+      const safeParseList = val => {
+        if (!val) return [];
+        if (Array.isArray(val)) return val;
+        try { return JSON.parse(val); }
+        catch { return String(val).split(',').map(s => s.trim()); }
+      };
+      const allocatedPackages = safeParseList(order.allocated_packages);
+      const allocatedVehicles = safeParseList(order.allocated_vehicles);
+  
+      // 3) load package details (with bill_to)
+      let packageDetails = [];
+      if (allocatedPackages.length) {
+        const ph = allocatedPackages.map(() => '?').join(',');
+        const [rows] = await db.query(
+          `SELECT pac_id, pack_ID, ship_from, ship_to, destination_radius,
+                  product_ID, package_info, bill_to, return_label,
+                  additional_info, pickup_date_time, dropoff_date_time,
+                  tax_info, package_status
+           FROM packages
+           WHERE pack_ID IN (${ph})`,
+          allocatedPackages
+        );
+  
+        packageDetails = rows.map(r => ({
+          pac_id:      r.pac_id,
+          pack_ID:     r.pack_ID,
+          ship_from:   r.ship_from,
+          ship_to:     r.ship_to,
+          destination_radius: r.destination_radius,
+          // parse JSON columns into JS objects/arrays
+          product_ID:  (() => {
+            try { return JSON.parse(r.product_ID); }
+            catch { return []; }
+          })(),
+          package_info: r.package_info,
+          bill_to:      r.bill_to,
+          return_label: r.return_label,
+          additional_info: (() => {
+            try { return JSON.parse(r.additional_info); }
+            catch { return {}; }
+          })(),
+          pickup_date_time: r.pickup_date_time,
+          dropoff_date_time:r.dropoff_date_time,
+          tax_info:    (() => {
+            try { return JSON.parse(r.tax_info); }
+            catch { return {}; }
+          })(),
+          package_status: r.package_status
+        }));
+      }
+  
+      // 4) load vehicle details
+      let vehicleDetails = [];
+      if (allocatedVehicles.length) {
+        const ph = allocatedVehicles.map(() => '?').join(',');
+        const [rows] = await db.query(
+          `SELECT * FROM master_resources WHERE vehicle_ID IN (${ph})`,
+          allocatedVehicles
+        );
+        vehicleDetails = rows;
+      }
+  
+      // 5) respond
+      return res.status(200).json({
+        message: 'Order retrieved successfully.',
+        order,
+        allocated_packages_details: packageDetails,
+        allocated_vehicles: vehicleDetails
+      });
     }
-});
+    catch (err) {
+      logger.error('Error fetching order by ID:', err);
+      return res.status(500).json({ message: 'Server error.', error: err.message });
+    }
+  });
+  
 
 
 router.put('/edit-order', jwtAuth.verifyToken, async (req, res) => {

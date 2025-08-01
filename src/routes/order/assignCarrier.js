@@ -492,7 +492,7 @@ router.post('/assign-carrier', jwtAuth.verifyToken, async (req, res) => {
                 selectedCarrier.carrier_ID,
                 dockID,
                 dockID ? 'allocated' : 'Pending',
-                carrier_bill
+                JSON.stringify(carrier_bill)
             ]);
 
             await db.query(`UPDATE orders SET order_status = ? WHERE order_ID = ?`, ['carrier assignment', order_ID]);
@@ -631,7 +631,7 @@ router.post('/finalize-carrier-assignment', jwtAuth.verifyToken, async (req, res
             carrier_ID,
             dockID,
             dockID ? 'allocated' : 'Pending',
-            carrier_bill
+            JSON.stringify(carrier_bill)
         ]);
 
         await db.query(`UPDATE orders SET order_status = ? WHERE order_ID = ?`, ['carrier assignment', order_ID]);
@@ -805,7 +805,7 @@ router.post('/carrier-assignment/confirm', jwtAuth.verifyToken, async (req, res)
                 device_ID,
                 confirmed_time,
                 order_ID,
-                carrier_bill,
+                JSON.stringify(carrier_bill),
                 carrier_ID
             ]
         );
@@ -1079,6 +1079,10 @@ router.put('/edit-assignment', jwtAuth.verifyToken, async (req, res) => {
         if (order_status) {
             updateFields.push("order_status = ?");
             values.push(order_status);
+        }
+        if (carrier_bill) {
+            updateFields.push("carrier_bill = ?");
+            values.push(JSON.stringify(carrier_bill));
         }
 
         if (updateFields.length === 0) {

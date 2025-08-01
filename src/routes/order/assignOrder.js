@@ -40,7 +40,7 @@ router.post('/assign-order', jwtAuth.verifyToken, async (req, res) => {
         await db.query(
             `INSERT INTO assigning_orders (assign_ID, order_ID, assigned_vehicle_data, self_transport, pod, pod_doc, self_bill)
              VALUES (?, ?, ?, ?, ?, ?, ?)`,
-            [assign_ID, order_ID, JSON.stringify(assigned_vehicle_data), self_transport, JSON.stringify(pod), pod_doc, self_bill]
+            [assign_ID, order_ID, JSON.stringify(assigned_vehicle_data), self_transport, JSON.stringify(pod), pod_doc, JSON.stringify(self_bill)]
         );
 
         await db.query(
@@ -225,7 +225,7 @@ router.put('/update-assigned-order', jwtAuth.verifyToken, async (req, res) => {
         }
         if (self_bill) {
             updateFields.push("self_bill = ?");
-            values.push(self_bill);
+            values.push(JSON.stringify(self_bill));
         }
 
         if (updateFields.length === 0) {

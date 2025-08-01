@@ -29,7 +29,7 @@ const generateAssignID = async () => {
 
 router.post('/assign-order', jwtAuth.verifyToken, async (req, res) => {
     try {
-        const { order_ID, assigned_vehicle_data, self_transport, pod, pod_doc, self_bill } = req.body;
+        const { order_ID, assigned_vehicle_data, self_transport, pod, pod_doc } = req.body;
 
         if (!order_ID) {
             return res.status(400).json({ message: "order_ID is required." });
@@ -38,10 +38,10 @@ router.post('/assign-order', jwtAuth.verifyToken, async (req, res) => {
         const assign_ID = await generateAssignID();
 
         await db.query(
-            `INSERT INTO assigning_orders (assign_ID, order_ID, assigned_vehicle_data, self_transport, pod, pod_doc, self_bill)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`,
-            [assign_ID, order_ID, JSON.stringify(assigned_vehicle_data), self_transport, JSON.stringify(pod), pod_doc, JSON.stringify(self_bill)]
-        );
+            `INSERT INTO assigning_orders (assign_ID, order_ID, assigned_vehicle_data, self_transport, pod, pod_doc)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+            [assign_ID, order_ID, JSON.stringify(assigned_vehicle_data), self_transport, JSON.stringify(pod), pod_doc]
+        );  
 
         await db.query(
             `UPDATE orders SET order_status = ? WHERE order_ID = ?`,
@@ -172,7 +172,7 @@ router.get('/assigned-order', jwtAuth.verifyToken, async (req, res) => {
 
         const query = `
             SELECT 
-                ao.assigning_id, ao.assign_ID, ao.order_ID, ao.assigned_vehicle_data, ao.self_transport, ao.pod, ao.pod_doc, ao.self_bill,
+                ao.assigning_id, ao.assign_ID, ao.order_ID, ao.assigned_vehicle_data, ao.self_transport, ao.pod, ao.pod_doc,
                 o.scenario_label, o.total_cost, o.allocations, o.allocated_packages,
                 o.unallocated_packages, o.allocated_vehicles, o.created_at, o.updated_at, o.order_status, o.order_docs
             FROM assigning_orders ao
@@ -194,7 +194,7 @@ router.get('/assigned-order', jwtAuth.verifyToken, async (req, res) => {
 router.put('/update-assigned-order', jwtAuth.verifyToken, async (req, res) => {
     try {
         const { assigning_id } = req.query;
-        const { order_ID, assigned_vehicle_data, self_transport, pod, pod_doc, self_bill } = req.body;
+        const { order_ID, assigned_vehicle_data, self_transport, pod, pod_doc } = req.body;
 
         if (!assigning_id) {
             return res.status(400).json({ message: "assigning_id is required in query." });
@@ -222,10 +222,6 @@ router.put('/update-assigned-order', jwtAuth.verifyToken, async (req, res) => {
         if (pod_doc) {
             updateFields.push("pod_doc = ?");
             values.push(pod_doc);
-        }
-        if (self_bill) {
-            updateFields.push("self_bill = ?");
-            values.push(JSON.stringify(self_bill));
         }
 
         if (updateFields.length === 0) {

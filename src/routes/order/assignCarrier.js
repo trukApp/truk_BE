@@ -409,7 +409,7 @@ async function findAvailableDockForCarrier(carrier_ID, pickupLocID) {
 
 router.post('/assign-carrier', jwtAuth.verifyToken, async (req, res) => {
     try {
-        const { order_ID, assigned_time, carrier_bill } = req.body;
+        const { order_ID, assigned_time } = req.body;
 
         if (!order_ID) {
             return res.status(400).json({ message: 'order_ID is required.' });
@@ -480,8 +480,8 @@ router.post('/assign-carrier', jwtAuth.verifyToken, async (req, res) => {
 
             await db.query(`
                 INSERT INTO carrier_assignments 
-                (cas_ID, order_ID, req_sent_to, assigned_time, assignment_status, assignment_cost, confirmed_to, dock_allocated, dock_allocation_status, carrier_bill)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (cas_ID, order_ID, req_sent_to, assigned_time, assignment_status, assignment_cost, confirmed_to, dock_allocated, dock_allocation_status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             `, [
                 cas_ID,
                 order_ID,
@@ -491,8 +491,7 @@ router.post('/assign-carrier', jwtAuth.verifyToken, async (req, res) => {
                 JSON.stringify(assignment_cost),
                 selectedCarrier.carrier_ID,
                 dockID,
-                dockID ? 'allocated' : 'Pending',
-                JSON.stringify(carrier_bill)
+                dockID ? 'allocated' : 'Pending'
             ]);
 
             await db.query(`UPDATE orders SET order_status = ? WHERE order_ID = ?`, ['carrier assignment', order_ID]);
@@ -549,7 +548,7 @@ router.post('/assign-carrier', jwtAuth.verifyToken, async (req, res) => {
 
 router.post('/finalize-carrier-assignment', jwtAuth.verifyToken, async (req, res) => {
     try {
-        const { order_ID, carrier_ID, assigned_time, carrier_bill } = req.body;
+        const { order_ID, carrier_ID, assigned_time } = req.body;
 
         if (!order_ID || !carrier_ID || !assigned_time) {
             return res.status(400).json({ message: 'order_ID, carrier_ID, and assigned_time are required.' });
@@ -619,8 +618,8 @@ router.post('/finalize-carrier-assignment', jwtAuth.verifyToken, async (req, res
 
         await db.query(`
             INSERT INTO carrier_assignments 
-            (cas_ID, order_ID, req_sent_to, assigned_time, assignment_status, assignment_cost, confirmed_to, dock_allocated, dock_allocation_status, carrier_bill)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (cas_ID, order_ID, req_sent_to, assigned_time, assignment_status, assignment_cost, confirmed_to, dock_allocated, dock_allocation_status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `, [
             cas_ID,
             order_ID,
@@ -630,8 +629,7 @@ router.post('/finalize-carrier-assignment', jwtAuth.verifyToken, async (req, res
             JSON.stringify(assignment_cost),
             carrier_ID,
             dockID,
-            dockID ? 'allocated' : 'Pending',
-            JSON.stringify(carrier_bill)
+            dockID ? 'allocated' : 'Pending'
         ]);
 
         await db.query(`UPDATE orders SET order_status = ? WHERE order_ID = ?`, ['carrier assignment', order_ID]);
@@ -769,8 +767,7 @@ router.post('/carrier-assignment/confirm', jwtAuth.verifyToken, async (req, res)
             vehicle_num,
             driver_data,
             device_ID,
-            confirmed_time,
-            carrier_bill
+            confirmed_time
         } = req.body;
 
         if (!carrier_ID || !order_ID) {
@@ -795,8 +792,7 @@ router.post('/carrier-assignment/confirm', jwtAuth.verifyToken, async (req, res)
                 device_ID = ?,
                 confirmed_time = ?,
                 assignment_status = 'carrier confirmed',
-                dock_allocation_status = 'Pending',
-                carrier_bill = ?
+                dock_allocation_status = 'Pending'
              WHERE order_ID = ? AND JSON_CONTAINS(req_sent_to, JSON_QUOTE(?), '$')`,
             [
                 carrier_ID,
@@ -805,7 +801,6 @@ router.post('/carrier-assignment/confirm', jwtAuth.verifyToken, async (req, res)
                 device_ID,
                 confirmed_time,
                 order_ID,
-                JSON.stringify(carrier_bill),
                 carrier_ID
             ]
         );
@@ -1029,8 +1024,7 @@ router.put('/edit-assignment', jwtAuth.verifyToken, async (req, res) => {
             total_cost,
             assigned_time,
             confirmed_time,
-            order_status,
-            carrier_bill
+            order_status
         } = req.body;
 
         if (!ca_id) {
@@ -1080,11 +1074,6 @@ router.put('/edit-assignment', jwtAuth.verifyToken, async (req, res) => {
             updateFields.push("order_status = ?");
             values.push(order_status);
         }
-        if (carrier_bill) {
-            updateFields.push("carrier_bill = ?");
-            values.push(JSON.stringify(carrier_bill));
-        }
-
         if (updateFields.length === 0) {
             return res.status(400).json({ message: "No fields provided for update." });
         }

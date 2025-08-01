@@ -149,7 +149,8 @@ router.post('/confirm-order', jwtAuth.verifyToken, async (req, res) => {
             unallocated_packages,
             created_at,
             updated_at,
-            order_docs
+            order_docs,
+            bill_of_lading
         } = req.body;
 
         if (!scenario_label || total_cost == null) {
@@ -232,8 +233,8 @@ router.post('/confirm-order', jwtAuth.verifyToken, async (req, res) => {
               INSERT INTO orders
                 (order_ID, scenario_label, total_cost, allocations, total_weight, total_distance, start_loc_ID, end_loc_ID,
                  allocated_packages, unallocated_packages, allocated_vehicles, package_dest_radius,
-                 created_at, updated_at, order_docs, order_status)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 created_at, updated_at, order_docs, order_status, bill_of_lading)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `, [
                 newOrderID,
                 scenario_label,
@@ -250,7 +251,8 @@ router.post('/confirm-order', jwtAuth.verifyToken, async (req, res) => {
                 created_at || new Date().toISOString(),
                 updated_at || new Date().toISOString(),
                 JSON.stringify(order_docs || []),
-                "assignment pending"
+                "assignment pending",
+                JSON.stringify(bill_of_lading)
             ]);
 
             if (alloc.packages?.length) {
@@ -611,7 +613,8 @@ router.put('/edit-order', jwtAuth.verifyToken, async (req, res) => {
             order_status,
             allocated_packages,
             allocated_vehicles,
-            order_docs
+            order_docs,
+            bill_of_lading
         } = req.body;
 
         if (!order_ID) {
@@ -644,6 +647,11 @@ router.put('/edit-order', jwtAuth.verifyToken, async (req, res) => {
         if (order_docs) {
             updateFields.push('order_docs = ?');
             values.push(JSON.stringify(order_docs));
+        }
+
+        if (bill_of_lading) {
+            updateFields.push('bill_of_lading = ?');
+            values.push(JSON.stringify(bill_of_lading));
         }
 
         // Always update the timestamp

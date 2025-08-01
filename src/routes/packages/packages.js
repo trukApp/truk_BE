@@ -162,83 +162,186 @@ router.get('/all-packages', jwtAuth.verifyToken, async (req, res) => {
 });
 
 
+// router.get('/get-package', jwtAuth.verifyToken, async (req, res) => {
+//     try {
+//         const { pack_ID } = req.query; 
+
+//         if (!pack_ID) {
+//             return res.status(400).json({ message: 'pack_ID is required in the query.' });
+//         }
+
+//         const [packages] = await db.query(
+//             `SELECT 
+//                 p.*,
+//                 sf.loc_desc AS ship_from_desc, sf.longitude AS ship_from_long, sf.latitude AS ship_from_lat,
+//                 st.loc_desc AS ship_to_desc, st.longitude AS ship_to_long, st.latitude AS ship_to_lat,
+//                 b.loc_desc AS bill_to_desc, b.longitude AS bill_to_long, b.latitude AS bill_to_lat,
+//                 mpi.packaging_type_name, mpi.dimensions_uom, mpi.pack_length, mpi.pack_width, mpi.pack_height, mpi.pack_volume, mpi.pack_volume_uom, mpi.handling_unit_type
+//             FROM packages p
+//             LEFT JOIN master_locations sf ON p.ship_from = sf.loc_ID
+//             LEFT JOIN master_locations st ON p.ship_to = st.loc_ID
+//             LEFT JOIN master_locations b ON p.bill_to = b.loc_ID
+//             LEFT JOIN master_package_info mpi ON p.package_info = mpi.pac_ID
+//             WHERE p.pack_ID = ?`,
+//             [pack_ID]
+//         );
+
+//         if (packages.length === 0) {
+//             return res.status(404).json({ message: 'Package not found.' });
+//         }
+
+//         let packageData = packages[0];
+
+//         try { packageData.additional_info = JSON.parse(packageData.additional_info || '{}'); } catch (error) { packageData.additional_info = {}; }
+//         try { packageData.tax_info = JSON.parse(packageData.tax_info || '{}'); } catch (error) { packageData.tax_info = {}; }
+
+//         let productList = [];
+//         try {
+//             if (typeof packageData.product_ID === "string") {
+//                 productList = JSON.parse(packageData.product_ID);
+//             } else if (Array.isArray(packageData.product_ID)) {
+//                 productList = packageData.product_ID;
+//             }
+//         } catch (error) {
+//             productList = [];
+//         }
+
+//         const productIDs = productList.map(p => p.prod_ID).filter(id => id);
+
+//         if (productIDs.length > 0) {
+//             const [products] = await db.query(
+//                 `SELECT 
+//                     product_ID, product_name, product_desc, basic_uom, weight, weight_uom, volume, volume_uom
+//                  FROM master_products WHERE product_ID IN (?)`,
+//                 [productIDs]
+//             );
+
+
+//             const productMap = {};
+//             products.forEach(p => productMap[String(p.product_ID)] = p);
+
+//             packageData.products = productList.map(prod => ({
+//                 prod_ID: prod.prod_ID,
+//                 quantity: prod.quantity,
+//                 details: productMap[String(prod.prod_ID)] || null
+//             })).filter(p => p.details !== null);
+//         } else {
+//             packageData.products = [];
+//         }
+
+//         res.status(200).json({
+//             message: 'Package retrieved successfully',
+//             package: packageData
+//         });
+
+//     } catch (error) {
+//         logger.error('Error retrieving package:', error);
+//         res.status(500).json({ message: 'An error occurred while retrieving the package.', error: error.message });
+//     }
+// });
+
 router.get('/get-package', jwtAuth.verifyToken, async (req, res) => {
     try {
-        const { pack_ID } = req.query;
-
-        if (!pack_ID) {
-            return res.status(400).json({ message: 'pack_ID is required in the query.' });
+      const { pack_ID } = req.query;
+      if (!pack_ID) {
+        return res.status(400).json({ message: 'pack_ID is required in the query.' });
+      }
+  
+      // 1) fetch package + joined lookups
+      const [rows] = await db.query(
+        `SELECT 
+           p.*,
+           sf.loc_desc AS ship_from_desc, sf.longitude AS ship_from_long, sf.latitude AS ship_from_lat,
+           st.loc_desc AS ship_to_desc,   st.longitude AS ship_to_long,   st.latitude AS ship_to_lat,
+           b.loc_desc  AS bill_to_desc,  b.longitude  AS bill_to_long,  b.latitude  AS bill_to_lat,
+           mpi.packaging_type_name, mpi.dimensions_uom, mpi.pack_length, mpi.pack_width,
+           mpi.pack_height, mpi.pack_volume, mpi.pack_volume_uom, mpi.handling_unit_type
+         FROM packages p
+         LEFT JOIN master_locations sf ON p.ship_from = sf.loc_ID
+         LEFT JOIN master_locations st ON p.ship_to   = st.loc_ID
+         LEFT JOIN master_locations b  ON p.bill_to   = b.loc_ID
+         LEFT JOIN master_package_info mpi ON p.package_info = mpi.pac_ID
+         WHERE p.pack_ID = ?`,
+        [pack_ID]
+      );
+  
+      if (!rows.length) {
+        return res.status(404).json({ message: 'Package not found.' });
+      }
+      const pkg = rows[0];
+  
+      // 2) JSON‐parse a few fields
+      try { pkg.additional_info = JSON.parse(pkg.additional_info || '{}'); } catch { pkg.additional_info = {}; }
+      try { pkg.tax_info       = JSON.parse(pkg.tax_info       || '{}'); } catch { pkg.tax_info       = {}; }
+  
+      // 3) parse product list
+      let productList = [];
+      try {
+        if (typeof pkg.product_ID === 'string') {
+          productList = JSON.parse(pkg.product_ID);
+        } else if (Array.isArray(pkg.product_ID)) {
+          productList = pkg.product_ID;
         }
-
-        const [packages] = await db.query(
-            `SELECT 
-                p.*,
-                sf.loc_desc AS ship_from_desc, sf.longitude AS ship_from_long, sf.latitude AS ship_from_lat,
-                st.loc_desc AS ship_to_desc, st.longitude AS ship_to_long, st.latitude AS ship_to_lat,
-                b.loc_desc AS bill_to_desc, b.longitude AS bill_to_long, b.latitude AS bill_to_lat,
-                mpi.packaging_type_name, mpi.dimensions_uom, mpi.pack_length, mpi.pack_width, mpi.pack_height, mpi.pack_volume, mpi.pack_volume_uom, mpi.handling_unit_type
-            FROM packages p
-            LEFT JOIN master_locations sf ON p.ship_from = sf.loc_ID
-            LEFT JOIN master_locations st ON p.ship_to = st.loc_ID
-            LEFT JOIN master_locations b ON p.bill_to = b.loc_ID
-            LEFT JOIN master_package_info mpi ON p.package_info = mpi.pac_ID
-            WHERE p.pack_ID = ?`,
-            [pack_ID]
+      } catch {
+        productList = [];
+      }
+  
+      // 4) fetch product details
+      const productIDs = productList.map(p => p.prod_ID).filter(Boolean);
+      let weightMap = {};
+      if (productIDs.length) {
+        const [prods] = await db.query(
+          `SELECT product_ID, product_name, product_desc, basic_uom, weight, weight_uom, volume, volume_uom
+           FROM master_products
+           WHERE product_ID IN (?)`,
+          [productIDs]
         );
-
-        if (packages.length === 0) {
-            return res.status(404).json({ message: 'Package not found.' });
-        }
-
-        let packageData = packages[0];
-
-        try { packageData.additional_info = JSON.parse(packageData.additional_info || '{}'); } catch (error) { packageData.additional_info = {}; }
-        try { packageData.tax_info = JSON.parse(packageData.tax_info || '{}'); } catch (error) { packageData.tax_info = {}; }
-
-        let productList = [];
-        try {
-            if (typeof packageData.product_ID === "string") {
-                productList = JSON.parse(packageData.product_ID);
-            } else if (Array.isArray(packageData.product_ID)) {
-                productList = packageData.product_ID;
-            }
-        } catch (error) {
-            productList = [];
-        }
-
-        const productIDs = productList.map(p => p.prod_ID).filter(id => id);
-
-        if (productIDs.length > 0) {
-            const [products] = await db.query(
-                `SELECT 
-                    product_ID, product_name, product_desc, basic_uom, weight, weight_uom, volume, volume_uom
-                 FROM master_products WHERE product_ID IN (?)`,
-                [productIDs]
-            );
-
-
-            const productMap = {};
-            products.forEach(p => productMap[String(p.product_ID)] = p);
-
-            packageData.products = productList.map(prod => ({
-                prod_ID: prod.prod_ID,
-                quantity: prod.quantity,
-                details: productMap[String(prod.prod_ID)] || null
-            })).filter(p => p.details !== null);
-        } else {
-            packageData.products = [];
-        }
-
-        res.status(200).json({
-            message: 'Package retrieved successfully',
-            package: packageData
+        prods.forEach(p => {
+          weightMap[p.product_ID] = {
+            weight:    parseFloat(p.weight) || 0,
+            weight_uom:p.weight_uom || 'kg'
+          };
         });
-
-    } catch (error) {
-        logger.error('Error retrieving package:', error);
-        res.status(500).json({ message: 'An error occurred while retrieving the package.', error: error.message });
+      }
+  
+      // 5) assemble products array + compute total package weight
+      let totalWeight = 0;
+      const detailedProducts = productList.map(({ prod_ID, quantity }) => {
+        const winfo = weightMap[prod_ID] || { weight: 0, weight_uom: 'kg' };
+        totalWeight += winfo.weight * quantity;
+        return {
+          prod_ID,
+          quantity,
+          details: {
+            weight:     winfo.weight,
+            weight_uom: winfo.weight_uom
+            // … you can include more product fields if desired
+          }
+        };
+      });
+  
+      // 6) attach to the output object
+      const responsePackage = {
+        ...pkg,
+        products:       detailedProducts,
+        package_weight: +totalWeight.toFixed(2),
+        weight_uom:     detailedProducts[0]?.details.weight_uom || 'kg'
+      };
+  
+      // 7) respond
+      return res.status(200).json({
+        message: 'Package retrieved successfully',
+        package: responsePackage
+      });
     }
-});
+    catch (err) {
+      logger.error('Error retrieving package:', err);
+      return res.status(500).json({
+        message: 'An error occurred while retrieving the package.',
+        error: err.message
+      });
+    }
+  });
 
 
 router.put('/edit-package', jwtAuth.verifyToken, async (req, res) => {

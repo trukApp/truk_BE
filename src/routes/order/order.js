@@ -1903,7 +1903,6 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
         }
       };
     });
-    
 
     return res.status(200).json({
       message: enriched.length ? 'Best Combinational Scenario' : 'No suitable vehicles found',

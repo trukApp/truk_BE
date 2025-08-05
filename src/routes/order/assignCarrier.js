@@ -212,14 +212,25 @@ async function findAvailableDockForCarrier(carrier_ID, pickupLocID) {
 //         }
 
 //         const [orders] = await db.query(`
-//             SELECT total_weight, total_distance FROM orders WHERE order_ID = ?
+//             SELECT total_weight, total_distance, allocated_packages FROM orders WHERE order_ID = ?
 //         `, [order_ID]);
 
 //         if (!orders.length) {
 //             return res.status(404).json({ message: 'Order not found.' });
 //         }
 
-//         const { total_weight, total_distance } = orders[0];
+//         const { total_weight, total_distance, allocated_packages } = orders[0];
+
+//         let pickupLocID = null;
+//         try {
+//             const packages = typeof allocated_packages === 'string' ? JSON.parse(allocated_packages) : allocated_packages;
+//             if (!Array.isArray(packages) || !packages.length) throw new Error();
+
+//             const [pkgRow] = await db.query(`SELECT ship_from FROM packages WHERE pack_ID = ?`, [packages[0]]);
+//             if (pkgRow.length) pickupLocID = pkgRow[0].ship_from;
+//         } catch {
+//             return res.status(400).json({ message: 'Could not determine pickup location from allocated packages.' });
+//         }
 
 //         if (validCarriers.length === 1) {
 //             const selectedCarrier = validCarriers[0];
@@ -229,7 +240,7 @@ async function findAvailableDockForCarrier(carrier_ID, pickupLocID) {
 //                 pricing = typeof selectedCarrier.pricing === 'string'
 //                     ? JSON.parse(selectedCarrier.pricing)
 //                     : selectedCarrier.pricing;
-//             } catch (err) {
+//             } catch {
 //                 return res.status(400).json({ message: 'Invalid pricing JSON format in selected carrier.' });
 //             }
 
@@ -250,26 +261,27 @@ async function findAvailableDockForCarrier(carrier_ID, pickupLocID) {
 //             }
 
 //             assignment_cost.cost = calculatedCost.toFixed(2);
-
 //             const cas_ID = await generateCasID();
+
+//             const dockID = await findAvailableDockForCarrier(selectedCarrier.carrier_ID, pickupLocID);
 
 //             await db.query(`
 //                 INSERT INTO carrier_assignments 
-//                 (cas_ID, order_ID, req_sent_to, assigned_time, assignment_status, assignment_cost)
-//                 VALUES (?, ?, ?, ?, ?, ?)
+//                 (cas_ID, order_ID, req_sent_to, assigned_time, assignment_status, assignment_cost, confirmed_to, dock_allocated, dock_allocation_status)
+//                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 //             `, [
 //                 cas_ID,
 //                 order_ID,
 //                 JSON.stringify([selectedCarrier.carrier_ID]),
 //                 assigned_time,
 //                 'Pending',
-//                 JSON.stringify(assignment_cost)
+//                 JSON.stringify(assignment_cost),
+//                 selectedCarrier.carrier_ID,
+//                 dockID,
+//                 dockID ? 'allocated' : 'Pending'
 //             ]);
 
-//             await db.query(
-//                 `UPDATE orders SET order_status = ? WHERE order_ID = ?`,
-//                 ['carrier assignment', order_ID]
-//             );
+//             await db.query(`UPDATE orders SET order_status = ? WHERE order_ID = ?`, ['carrier assignment', order_ID]);
 
 //             sendAssignmentMail(selectedCarrier.carrier_ID, order_ID);
 
@@ -277,7 +289,9 @@ async function findAvailableDockForCarrier(carrier_ID, pickupLocID) {
 //                 message: 'Carrier assignment initialized successfully.',
 //                 cas_ID,
 //                 req_sent_to: [selectedCarrier.carrier_ID],
-//                 assignment_cost
+//                 assignment_cost,
+//                 dock_allocated: dockID || null,
+//                 dock_allocation_status: dockID ? 'allocated' : 'Pending'
 //             });
 //         }
 
@@ -302,7 +316,7 @@ async function findAvailableDockForCarrier(carrier_ID, pickupLocID) {
 //                     cost_criteria_considered: pricing.cost_criteria_per,
 //                     rate: `${parseFloat(pricing.cost).toFixed(2)} per ${pricing.cost_criteria_per}`
 //                 });
-//             } catch (err) {
+//             } catch {
 //                 continue;
 //             }
 //         }
@@ -317,6 +331,183 @@ async function findAvailableDockForCarrier(carrier_ID, pickupLocID) {
 //         res.status(500).json({ message: "Internal Server Error", error: error.message });
 //     }
 // });
+
+router.post('/assign-carrier',jwtAuth.verifyToken,async (req, res) => {
+      try {
+        const { order_ID, assigned_time } = req.body;
+        if (!order_ID || !assigned_time) {
+          return res.status(400).json({ message: 'order_ID and assigned_time are required.' });
+        }
+  
+        // 1) pick only carriers with a valid contract *and* at least one PRO available
+        const [validCarriers] = await db.query(`
+          SELECT carrier_ID, pricing, carrier_pro_numbers
+          FROM carriers
+          WHERE contract = 1
+            AND DATE(contract_valid_upto) >= CURDATE()
+        `);
+  
+        if (!validCarriers.length) {
+          return res.status(400).json({ message: 'No valid contracted carriers found.' });
+        }
+  
+        // 2) fetch order totals
+        const [orders] = await db.query(`
+          SELECT total_weight, total_distance, allocated_packages
+          FROM orders
+          WHERE order_ID = ?
+        `, [order_ID]);
+        if (!orders.length) {
+          return res.status(404).json({ message: 'Order not found.' });
+        }
+        const { total_weight, total_distance, allocated_packages } = orders[0];
+  
+        // 3) determine pickup location
+        let pickupLocID = null;
+        try {
+          const pkgs = typeof allocated_packages === 'string'
+            ? JSON.parse(allocated_packages)
+            : allocated_packages;
+          if (!pkgs.length) throw new Error();
+          const [[{ ship_from }]] = await db.query(
+            `SELECT ship_from FROM packages WHERE pack_ID = ?`,
+            [pkgs[0]]
+          );
+          pickupLocID = ship_from;
+        } catch {
+          return res.status(400).json({ message: 'Could not derive pickup location.' });
+        }
+  
+        // 4) if only one carrier is valid, auto‐assign
+        if (validCarriers.length === 1) {
+          const carrier = validCarriers[0];
+          // parse pricing
+          let pricing;
+          try {
+            pricing = typeof carrier.pricing === 'string'
+              ? JSON.parse(carrier.pricing)
+              : carrier.pricing;
+          } catch {
+            return res.status(400).json({ message: 'Carrier has invalid pricing JSON.' });
+          }
+  
+          // parse & pop one PRO number
+          let proList;
+          try {
+            proList = typeof carrier.carrier_pro_numbers === 'string'
+              ? JSON.parse(carrier.carrier_pro_numbers)
+              : carrier.carrier_pro_numbers;
+          } catch {
+            return res.status(500).json({ message: 'Malformed carrier_pro_numbers.' });
+          }
+          if (!Array.isArray(proList) || !proList.length) {
+            return res.status(400).json({
+              message: `Carrier ${carrier.carrier_ID} has no PRO numbers left.`
+            });
+          }
+          const assignedPro = proList.shift();
+  
+          // recalc cost
+          let cost = 0;
+          if (pricing.cost_criteria_per === 'ton') {
+            cost = (parseFloat(pricing.cost) || 0) * (parseFloat(total_weight) / 1000);
+          } else {
+            cost = (parseFloat(pricing.cost) || 0) * parseFloat(total_distance);
+          }
+          const assignment_cost = {
+            cost_criteria_considered: pricing.cost_criteria_per,
+            total_weight: pricing.cost_criteria_per === 'ton' ? total_weight : null,
+            total_distance: pricing.cost_criteria_per === 'km' ? total_distance : null,
+            cost: cost.toFixed(2),
+          };
+  
+          // generate IDs & find dock
+          const cas_ID = await generateCasID();
+          const dockID = await findAvailableDockForCarrier(carrier.carrier_ID, pickupLocID);
+  
+          // 5) UPDATE carrier_pro_numbers in carriers table
+          await db.query(
+            `UPDATE carriers
+             SET carrier_pro_numbers = ?
+             WHERE carrier_ID = ?`,
+            [ JSON.stringify(proList), carrier.carrier_ID ]
+          );
+  
+          // 6) INSERT assignment
+          await db.query(`
+            INSERT INTO carrier_assignments
+              (cas_ID, order_ID, req_sent_to, assigned_time,
+               assignment_status, assignment_cost, confirmed_to,
+               dock_allocated, dock_allocation_status, assigned_pro_number)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `, [
+            cas_ID,
+            order_ID,
+            JSON.stringify([carrier.carrier_ID]),
+            assigned_time,
+            'Pending',
+            JSON.stringify(assignment_cost),
+            carrier.carrier_ID,
+            dockID,
+            dockID ? 'allocated' : 'Pending',
+            assignedPro
+          ]);
+  
+          // 7) update order status
+          await db.query(
+            `UPDATE orders SET order_status = ? WHERE order_ID = ?`,
+            ['carrier assignment', order_ID]
+          );
+  
+          // 8) notify
+          sendAssignmentMail(carrier.carrier_ID, order_ID);
+  
+          return res.status(201).json({
+            message: 'Carrier assigned successfully.',
+            cas_ID,
+            carrier_ID: carrier.carrier_ID,
+            assigned_pro_number: assignedPro,
+            assignment_cost,
+            dock_allocated: dockID || null,
+            dock_allocation_status: dockID ? 'allocated' : 'Pending'
+          });
+        }
+  
+        // 9) if multiple carriers, return options (no PRO yet)
+        const options = validCarriers.map(carrier => {
+          let pricing;
+          try {
+            pricing = typeof carrier.pricing === 'string'
+              ? JSON.parse(carrier.pricing)
+              : carrier.pricing;
+          } catch {
+            return null;
+          }
+          let cost = 0;
+          if (pricing.cost_criteria_per === 'ton') {
+            cost = (parseFloat(pricing.cost) || 0) * (parseFloat(total_weight) / 1000);
+          } else {
+            cost = (parseFloat(pricing.cost) || 0) * parseFloat(total_distance);
+          }
+          return {
+            carrier_ID: carrier.carrier_ID,
+            cost: cost.toFixed(2),
+            cost_criteria_considered: pricing.cost_criteria_per,
+            rate: `${parseFloat(pricing.cost).toFixed(2)} per ${pricing.cost_criteria_per}`
+          };
+        }).filter(o => o !== null);
+  
+        return res.status(200).json({
+          message: 'Multiple valid carriers found; select one to finalize.',
+          carrier_options: options
+        });
+      }
+      catch (err) {
+        logger.error('Error in /assign-carrier:', err);
+        return res.status(500).json({ message: 'Internal Server Error', error: err.message });
+      }
+    }
+  );
 
 // router.post('/finalize-carrier-assignment', jwtAuth.verifyToken, async (req, res) => {
 //     try {
@@ -338,21 +529,21 @@ async function findAvailableDockForCarrier(carrier_ID, pickupLocID) {
 //         const selectedCarrier = carrierRows[0];
 
 //         const [orderRows] = await db.query(`
-//             SELECT total_weight, total_distance FROM orders WHERE order_ID = ?
+//             SELECT total_weight, total_distance, allocated_packages FROM orders WHERE order_ID = ?
 //         `, [order_ID]);
 
 //         if (!orderRows.length) {
 //             return res.status(404).json({ message: 'Order not found.' });
 //         }
 
-//         const { total_weight, total_distance } = orderRows[0];
+//         const { total_weight, total_distance, allocated_packages } = orderRows[0];
 
 //         let pricing = {};
 //         try {
 //             pricing = typeof selectedCarrier.pricing === 'string'
 //                 ? JSON.parse(selectedCarrier.pricing)
 //                 : selectedCarrier.pricing;
-//         } catch (err) {
+//         } catch {
 //             return res.status(400).json({ message: 'Invalid pricing JSON format for carrier.' });
 //         }
 
@@ -373,20 +564,35 @@ async function findAvailableDockForCarrier(carrier_ID, pickupLocID) {
 //         }
 
 //         assignment_cost.cost = calculatedCost.toFixed(2);
-
 //         const cas_ID = await generateCasID();
+
+//         let pickupLocID = null;
+//         try {
+//             const pkgs = typeof allocated_packages === 'string' ? JSON.parse(allocated_packages) : allocated_packages;
+//             if (!Array.isArray(pkgs) || !pkgs.length) throw new Error();
+
+//             const [packRow] = await db.query(`SELECT ship_from FROM packages WHERE pack_ID = ?`, [pkgs[0]]);
+//             if (packRow.length) pickupLocID = packRow[0].ship_from;
+//         } catch {
+//             return res.status(400).json({ message: 'Invalid allocated_packages format or missing data.' });
+//         }
+
+//         const dockID = await findAvailableDockForCarrier(carrier_ID, pickupLocID);
 
 //         await db.query(`
 //             INSERT INTO carrier_assignments 
-//             (cas_ID, order_ID, req_sent_to, assigned_time, assignment_status, assignment_cost)
-//             VALUES (?, ?, ?, ?, ?, ?)
+//             (cas_ID, order_ID, req_sent_to, assigned_time, assignment_status, assignment_cost, confirmed_to, dock_allocated, dock_allocation_status)
+//             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 //         `, [
 //             cas_ID,
 //             order_ID,
 //             JSON.stringify([carrier_ID]),
 //             assigned_time,
 //             'Pending',
-//             JSON.stringify(assignment_cost)
+//             JSON.stringify(assignment_cost),
+//             carrier_ID,
+//             dockID,
+//             dockID ? 'allocated' : 'Pending'
 //         ]);
 
 //         await db.query(`UPDATE orders SET order_status = ? WHERE order_ID = ?`, ['carrier assignment', order_ID]);
@@ -397,7 +603,9 @@ async function findAvailableDockForCarrier(carrier_ID, pickupLocID) {
 //             message: 'Carrier assignment sent to selected carrier successfully.',
 //             cas_ID,
 //             carrier_ID,
-//             assignment_cost
+//             assignment_cost,
+//             dock_allocated: dockID || null,
+//             dock_allocation_status: dockID ? 'allocated' : 'Pending'
 //         });
 
 //     } catch (error) {
@@ -407,250 +615,149 @@ async function findAvailableDockForCarrier(carrier_ID, pickupLocID) {
 // });
 
 
-router.post('/assign-carrier', jwtAuth.verifyToken, async (req, res) => {
-    try {
-        const { order_ID, assigned_time } = req.body;
-
-        if (!order_ID) {
-            return res.status(400).json({ message: 'order_ID is required.' });
-        }
-
-        const [validCarriers] = await db.query(`
-            SELECT carrier_ID, pricing FROM carriers
-            WHERE contract = 1 AND DATE(contract_valid_upto) >= CURDATE()
-        `);
-
-        if (!validCarriers.length) {
-            return res.status(400).json({ message: 'No valid contracted carriers found.' });
-        }
-
-        const [orders] = await db.query(`
-            SELECT total_weight, total_distance, allocated_packages FROM orders WHERE order_ID = ?
-        `, [order_ID]);
-
-        if (!orders.length) {
-            return res.status(404).json({ message: 'Order not found.' });
-        }
-
-        const { total_weight, total_distance, allocated_packages } = orders[0];
-
-        let pickupLocID = null;
-        try {
-            const packages = typeof allocated_packages === 'string' ? JSON.parse(allocated_packages) : allocated_packages;
-            if (!Array.isArray(packages) || !packages.length) throw new Error();
-
-            const [pkgRow] = await db.query(`SELECT ship_from FROM packages WHERE pack_ID = ?`, [packages[0]]);
-            if (pkgRow.length) pickupLocID = pkgRow[0].ship_from;
-        } catch {
-            return res.status(400).json({ message: 'Could not determine pickup location from allocated packages.' });
-        }
-
-        if (validCarriers.length === 1) {
-            const selectedCarrier = validCarriers[0];
-
-            let pricing = {};
-            try {
-                pricing = typeof selectedCarrier.pricing === 'string'
-                    ? JSON.parse(selectedCarrier.pricing)
-                    : selectedCarrier.pricing;
-            } catch {
-                return res.status(400).json({ message: 'Invalid pricing JSON format in selected carrier.' });
-            }
-
-            let calculatedCost = 0;
-            const assignment_cost = {
-                cost_criteria_considered: pricing.cost_criteria_per || '',
-                total_weight: null,
-                total_distance: null,
-                cost: 0
-            };
-
-            if (pricing.cost_criteria_per === 'ton') {
-                assignment_cost.total_weight = total_weight;
-                calculatedCost = (parseFloat(pricing.cost) || 0) * (parseFloat(total_weight) / 1000);
-            } else if (pricing.cost_criteria_per === 'km') {
-                assignment_cost.total_distance = total_distance;
-                calculatedCost = (parseFloat(pricing.cost) || 0) * parseFloat(total_distance);
-            }
-
-            assignment_cost.cost = calculatedCost.toFixed(2);
-            const cas_ID = await generateCasID();
-
-            const dockID = await findAvailableDockForCarrier(selectedCarrier.carrier_ID, pickupLocID);
-
-            await db.query(`
-                INSERT INTO carrier_assignments 
-                (cas_ID, order_ID, req_sent_to, assigned_time, assignment_status, assignment_cost, confirmed_to, dock_allocated, dock_allocation_status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            `, [
-                cas_ID,
-                order_ID,
-                JSON.stringify([selectedCarrier.carrier_ID]),
-                assigned_time,
-                'Pending',
-                JSON.stringify(assignment_cost),
-                selectedCarrier.carrier_ID,
-                dockID,
-                dockID ? 'allocated' : 'Pending'
-            ]);
-
-            await db.query(`UPDATE orders SET order_status = ? WHERE order_ID = ?`, ['carrier assignment', order_ID]);
-
-            sendAssignmentMail(selectedCarrier.carrier_ID, order_ID);
-
-            return res.status(201).json({
-                message: 'Carrier assignment initialized successfully.',
-                cas_ID,
-                req_sent_to: [selectedCarrier.carrier_ID],
-                assignment_cost,
-                dock_allocated: dockID || null,
-                dock_allocation_status: dockID ? 'allocated' : 'Pending'
-            });
-        }
-
-        const options = [];
-
-        for (const carrier of validCarriers) {
-            try {
-                const pricing = typeof carrier.pricing === 'string'
-                    ? JSON.parse(carrier.pricing)
-                    : carrier.pricing;
-
-                let cost = 0;
-                if (pricing.cost_criteria_per === 'ton') {
-                    cost = (parseFloat(pricing.cost) || 0) * (parseFloat(total_weight) / 1000);
-                } else if (pricing.cost_criteria_per === 'km') {
-                    cost = (parseFloat(pricing.cost) || 0) * parseFloat(total_distance);
-                }
-
-                options.push({
-                    carrier_ID: carrier.carrier_ID,
-                    cost: cost.toFixed(2),
-                    cost_criteria_considered: pricing.cost_criteria_per,
-                    rate: `${parseFloat(pricing.cost).toFixed(2)} per ${pricing.cost_criteria_per}`
-                });
-            } catch {
-                continue;
-            }
-        }
-
-        return res.status(200).json({
-            message: 'Multiple valid contracted carriers found. Choose one for assignment.',
-            carrier_options: options
-        });
-
-    } catch (error) {
-        logger.error("Error assigning carrier:", error);
-        res.status(500).json({ message: "Internal Server Error", error: error.message });
-    }
-});
-
-
-router.post('/finalize-carrier-assignment', jwtAuth.verifyToken, async (req, res) => {
-    try {
-        const { order_ID, carrier_ID, assigned_time } = req.body;
-
+router.post('/finalize-carrier-assignment',jwtAuth.verifyToken,async (req, res) => {
+      try {
+        const { order_ID, carrier_ID, assigned_time, carrier_bill } = req.body;
         if (!order_ID || !carrier_ID || !assigned_time) {
-            return res.status(400).json({ message: 'order_ID, carrier_ID, and assigned_time are required.' });
+          return res.status(400).json({
+            message: 'order_ID, carrier_ID and assigned_time are required.'
+          });
         }
-
+  
+        // a) fetch carrier (incl. PRO list)
         const [carrierRows] = await db.query(`
-            SELECT carrier_ID, pricing FROM carriers 
-            WHERE carrier_ID = ? AND contract = 1 AND DATE(contract_valid_upto) >= CURDATE()
+          SELECT pricing, carrier_pro_numbers
+          FROM carriers
+          WHERE carrier_ID = ?
+            AND contract = 1
+            AND DATE(contract_valid_upto) >= CURDATE()
         `, [carrier_ID]);
-
         if (!carrierRows.length) {
-            return res.status(400).json({ message: 'Invalid or expired contracted carrier.' });
+          return res.status(400).json({ message: 'Invalid or expired carrier.' });
         }
-
-        const selectedCarrier = carrierRows[0];
-
+        let proList = carrierRows[0].carrier_pro_numbers;
+        // ensure JS array
+        if (typeof proList === 'string') {
+          try { proList = JSON.parse(proList); }
+          catch { return res.status(500).json({ message: 'Malformed PRO numbers.' }); }
+        }
+        if (!Array.isArray(proList) || proList.length === 0) {
+          return res.status(400).json({
+            message: `Carrier ${carrier_ID} has no PRO numbers left.`
+          });
+        }
+        // b) pop off one PRO
+        const assignedPro = proList.shift();
+  
+        // c) recalc cost
+        let pricing = carrierRows[0].pricing;
+        if (typeof pricing === 'string') {
+          try { pricing = JSON.parse(pricing); }
+          catch { return res.status(400).json({ message: 'Invalid pricing JSON.' }); }
+        }
+  
         const [orderRows] = await db.query(`
-            SELECT total_weight, total_distance, allocated_packages FROM orders WHERE order_ID = ?
+          SELECT total_weight, total_distance, allocated_packages
+          FROM orders
+          WHERE order_ID = ?
         `, [order_ID]);
-
         if (!orderRows.length) {
-            return res.status(404).json({ message: 'Order not found.' });
+          return res.status(404).json({ message: 'Order not found.' });
         }
-
         const { total_weight, total_distance, allocated_packages } = orderRows[0];
-
-        let pricing = {};
-        try {
-            pricing = typeof selectedCarrier.pricing === 'string'
-                ? JSON.parse(selectedCarrier.pricing)
-                : selectedCarrier.pricing;
-        } catch {
-            return res.status(400).json({ message: 'Invalid pricing JSON format for carrier.' });
-        }
-
-        let calculatedCost = 0;
+  
+        let cost = 0;
         const assignment_cost = {
-            cost_criteria_considered: pricing.cost_criteria_per || '',
-            total_weight: null,
-            total_distance: null,
-            cost: 0
+          cost_criteria_considered: pricing.cost_criteria_per,
+          total_weight: null,
+          total_distance: null,
+          cost: 0
         };
-
         if (pricing.cost_criteria_per === 'ton') {
-            assignment_cost.total_weight = total_weight;
-            calculatedCost = (parseFloat(pricing.cost) || 0) * (parseFloat(total_weight) / 1000);
-        } else if (pricing.cost_criteria_per === 'km') {
-            assignment_cost.total_distance = total_distance;
-            calculatedCost = (parseFloat(pricing.cost) || 0) * parseFloat(total_distance);
+          assignment_cost.total_weight = total_weight;
+          cost = (parseFloat(pricing.cost) || 0) * (parseFloat(total_weight) / 1000);
+        } else { // assume km
+          assignment_cost.total_distance = total_distance;
+          cost = (parseFloat(pricing.cost) || 0) * parseFloat(total_distance);
         }
-
-        assignment_cost.cost = calculatedCost.toFixed(2);
-        const cas_ID = await generateCasID();
-
-        let pickupLocID = null;
-        try {
-            const pkgs = typeof allocated_packages === 'string' ? JSON.parse(allocated_packages) : allocated_packages;
-            if (!Array.isArray(pkgs) || !pkgs.length) throw new Error();
-
-            const [packRow] = await db.query(`SELECT ship_from FROM packages WHERE pack_ID = ?`, [pkgs[0]]);
-            if (packRow.length) pickupLocID = packRow[0].ship_from;
-        } catch {
-            return res.status(400).json({ message: 'Invalid allocated_packages format or missing data.' });
-        }
-
-        const dockID = await findAvailableDockForCarrier(carrier_ID, pickupLocID);
-
+        assignment_cost.cost = cost.toFixed(2);
+  
+        // d) write back remaining PRO list
         await db.query(`
-            INSERT INTO carrier_assignments 
-            (cas_ID, order_ID, req_sent_to, assigned_time, assignment_status, assignment_cost, confirmed_to, dock_allocated, dock_allocation_status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          UPDATE carriers
+          SET carrier_pro_numbers = ?
+          WHERE carrier_ID = ?
+        `, [ JSON.stringify(proList), carrier_ID ]);
+  
+        // e) derive pickupLocID from the first allocated package
+        let pickupLocID = null;
+        let allocatedPackages;
+        try {
+          allocatedPackages = typeof allocated_packages === 'string'
+            ? JSON.parse(allocated_packages)
+            : allocated_packages;
+          if (!Array.isArray(allocatedPackages) || !allocatedPackages.length) {
+            throw new Error();
+          }
+          const [pkgRows] = await db.query(
+            `SELECT ship_from FROM packages WHERE pack_ID = ?`,
+            [allocatedPackages[0]]
+          );
+          if (!pkgRows.length) throw new Error();
+          pickupLocID = pkgRows[0].ship_from;
+        } catch {
+          return res.status(400).json({ message: 'Could not determine pickup location.' });
+        }
+  
+        // f) insert into carrier_assignments
+        const cas_ID = await generateCasID();
+        const dockID = await findAvailableDockForCarrier(carrier_ID, pickupLocID);
+  
+        await db.query(`
+          INSERT INTO carrier_assignments
+            (cas_ID, order_ID, req_sent_to, assigned_time,
+             assignment_status, assignment_cost, confirmed_to,
+             dock_allocated, dock_allocation_status, carrier_bill,
+             assigned_pro_number)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `, [
-            cas_ID,
-            order_ID,
-            JSON.stringify([carrier_ID]),
-            assigned_time,
-            'Pending',
-            JSON.stringify(assignment_cost),
-            carrier_ID,
-            dockID,
-            dockID ? 'allocated' : 'Pending'
+          cas_ID,
+          order_ID,
+          JSON.stringify([carrier_ID]),
+          assigned_time,
+          'Pending',
+          JSON.stringify(assignment_cost),
+          carrier_ID,
+          dockID,
+          dockID ? 'allocated' : 'Pending',
+          JSON.stringify(carrier_bill || []),
+          assignedPro
         ]);
-
-        await db.query(`UPDATE orders SET order_status = ? WHERE order_ID = ?`, ['carrier assignment', order_ID]);
-
+  
+        await db.query(
+          `UPDATE orders SET order_status = ? WHERE order_ID = ?`,
+          ['carrier assignment', order_ID]
+        );
+  
         sendAssignmentMail(carrier_ID, order_ID);
-
+  
         return res.status(201).json({
-            message: 'Carrier assignment sent to selected carrier successfully.',
-            cas_ID,
-            carrier_ID,
-            assignment_cost,
-            dock_allocated: dockID || null,
-            dock_allocation_status: dockID ? 'allocated' : 'Pending'
+          message: 'Carrier assignment finalized.',
+          cas_ID,
+          carrier_ID,
+          assigned_pro_number: assignedPro,
+          assignment_cost,
+          dock_allocated: dockID || null,
+          dock_allocation_status: dockID ? 'allocated' : 'Pending'
         });
-
-    } catch (error) {
-        logger.error("Error finalizing carrier assignment:", error);
-        return res.status(500).json({ message: 'Internal Server Error', error: error.message });
+      }
+      catch (err) {
+        logger.error('Error in /finalize-carrier-assignment:', err);
+        return res.status(500).json({ message: 'Internal Server Error', error: err.message });
+      }
     }
-});
-
+  );
+  
 
 router.get('/carrier-assignments', jwtAuth.verifyToken, async (req, res) => {
     try {

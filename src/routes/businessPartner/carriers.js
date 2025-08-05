@@ -60,6 +60,7 @@ router.post('/create-carriers', jwtAuth.verifyToken, async (req, res) => {
         contract,
         contract_valid_upto,
         pricing,
+        carrier_pro_numbers,
       } = carrier;
 
       const phone = carrier_correspondence?.phone || null;
@@ -78,8 +79,9 @@ router.post('/create-carriers', jwtAuth.verifyToken, async (req, res) => {
           contract,
           contract_valid_upto,
           pricing,
+          carrier_pro_numbers,
           carrier_password
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
         [
           carrier_ID,
@@ -93,6 +95,7 @@ router.post('/create-carriers', jwtAuth.verifyToken, async (req, res) => {
           contract,
           contract_valid_upto,
           JSON.stringify(pricing || {}),
+          JSON.stringify(carrier_pro_numbers),
           phone
         ]
       );
@@ -375,7 +378,8 @@ router.put('/edit-carrier', jwtAuth.verifyToken, async (req, res) => {
         carrier_lanes,
         contract,
         contract_valid_upto,
-        pricing
+        pricing,
+        carrier_pro_numbers
     } = req.body;
 
     if (!cr_id) {
@@ -425,6 +429,10 @@ router.put('/edit-carrier', jwtAuth.verifyToken, async (req, res) => {
         if (pricing) {
             updateFields.push('pricing = ?');
             values.push(JSON.stringify(pricing));
+        }
+        if (carrier_pro_numbers) {
+            updateFields.push('carrier_pro_numbers = ?');
+            values.push(JSON.stringify(carrier_pro_numbers));
         }
 
         if (updateFields.length === 0) {

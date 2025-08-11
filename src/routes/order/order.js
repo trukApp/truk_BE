@@ -1911,7 +1911,6 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
       unallocatedPackages: unallocated
     });
 
-    
   } catch (err) {
     logger.error('Error creating order:', err);
     return res.status(500).json({ error: err.message });

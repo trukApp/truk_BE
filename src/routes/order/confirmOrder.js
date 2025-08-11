@@ -465,144 +465,145 @@ router.get('/all-orders', jwtAuth.verifyToken, async (req, res) => {
 //   });
 
 
-router.get('/order-by-id',jwtAuth.verifyToken,async (req, res) => {
-        try {
-            const { order_ID } = req.query;
-            if (!order_ID) {
-                return res.status(400).json({ message: 'Missing required query parameter: order_ID' });
-            }
+router.get('/order-by-id', jwtAuth.verifyToken, async (req, res) => {
+    try {
+        const { order_ID } = req.query;
+        if (!order_ID) {
+            return res.status(400).json({ message: 'Missing required query parameter: order_ID' });
+        }
 
-            // 1) fetch the order
-            const [orderRows] = await db.query(
-                `SELECT * FROM orders WHERE order_ID = ?`,
-                [order_ID]
-            );
-            if (!orderRows.length) {
-                return res.status(404).json({ message: 'Order not found.' });
-            }
-            const order = orderRows[0];
+        // 1) fetch the order
+        const [orderRows] = await db.query(
+            `SELECT * FROM orders WHERE order_ID = ?`,
+            [order_ID]
+        );
+        if (!orderRows.length) {
+            return res.status(404).json({ message: 'Order not found.' });
+        }
+        const order = orderRows[0];
 
-            // 2) parse the allocated package and vehicle arrays
-            const safeParseList = val => {
-                if (!val) return [];
-                if (Array.isArray(val)) return val;
-                try { return JSON.parse(val); }
-                catch { return String(val).split(',').map(s => s.trim()); }
-            };
-            const allocatedPackages = safeParseList(order.allocated_packages);
-            const allocatedVehicles = safeParseList(order.allocated_vehicles);
+        // 2) parse the allocated package and vehicle arrays
+        const safeParseList = val => {
+            if (!val) return [];
+            if (Array.isArray(val)) return val;
+            try { return JSON.parse(val); }
+            catch { return String(val).split(',').map(s => s.trim()); }
+        };
+        const allocatedPackages = safeParseList(order.allocated_packages);
+        const allocatedVehicles = safeParseList(order.allocated_vehicles);
 
-            // 3) load package details (with bill_to, product_ID, etc.)
-            let packageDetails = [];
-            if (allocatedPackages.length) {
-                const ph = allocatedPackages.map(() => '?').join(',');
-                const [rows] = await db.query(
-                    `SELECT 
+        // 3) load package details (with bill_to, product_ID, etc.)
+        let packageDetails = [];
+        if (allocatedPackages.length) {
+            const ph = allocatedPackages.map(() => '?').join(',');
+            const [rows] = await db.query(
+                `SELECT 
                p.pac_id, p.pack_ID, p.ship_from, p.ship_to, p.destination_radius,
                p.product_ID, p.package_info, p.bill_to, p.return_label,
                p.additional_info, p.pickup_date_time, p.dropoff_date_time,
                p.tax_info, p.package_status
              FROM packages p
              WHERE p.pack_ID IN (${ph})`,
-                    allocatedPackages
-                );
+                allocatedPackages
+            );
 
-                // parse JSON columns & extract a uniform `product_lines` array
-                packageDetails = rows.map(r => {
-                    let product_lines = [];
-                    if (typeof r.product_ID === 'string') {
-                        try { product_lines = JSON.parse(r.product_ID); }
-                        catch { product_lines = []; }
-                    } else if (Array.isArray(r.product_ID)) {
-                        product_lines = r.product_ID;
-                    }
+            // parse JSON columns & extract a uniform `product_lines` array
+            packageDetails = rows.map(r => {
+                let product_lines = [];
+                if (typeof r.product_ID === 'string') {
+                    try { product_lines = JSON.parse(r.product_ID); }
+                    catch { product_lines = []; }
+                } else if (Array.isArray(r.product_ID)) {
+                    product_lines = r.product_ID;
+                }
 
-                    return {
-                        pac_id: r.pac_id,
-                        pack_ID: r.pack_ID,
-                        ship_from: r.ship_from,
-                        ship_to: r.ship_to,
-                        destination_radius: r.destination_radius,
-                        product_lines,                      // [{ prod_ID, quantity, package_info }, …]
-                        package_info: r.package_info,
-                        bill_to: r.bill_to,
-                        return_label: r.return_label,
-                        additional_info: (() => { try { return JSON.parse(r.additional_info) } catch { return {} } })(),
-                        pickup_date_time: r.pickup_date_time,
-                        dropoff_date_time: r.dropoff_date_time,
-                        tax_info: (() => { try { return JSON.parse(r.tax_info) } catch { return {} } })(),
-                        package_status: r.package_status
-                    };
-                });
-            }
-
-            // 4) fetch all involved master_products to get weight & uom
-            const allProdIDs = [
-                ...new Set(
-                    packageDetails
-                        .flatMap(pd => pd.product_lines.map(pl => pl.prod_ID))
-                        .filter(id => id)
-                )
-            ];
-
-            let weightMap = {};
-            if (allProdIDs.length) {
-                const [prodRows] = await db.query(
-                    `SELECT product_ID, weight, weight_uom 
-             FROM master_products 
-             WHERE product_ID IN (?)`,
-                    [allProdIDs]
-                );
-                weightMap = prodRows.reduce((m, pr) => {
-                    m[pr.product_ID] = {
-                        weight: parseFloat(pr.weight) || 0,
-                        weight_uom: pr.weight_uom
-                    };
-                    return m;
-                }, {});
-            }
-
-            // 5) compute per-package weights in a separate array
-            const packagesAndWeights = packageDetails.map(pd => {
-                const package_weight = pd.product_lines.reduce((sum, pl) => {
-                    const info = weightMap[pl.prod_ID] || { weight: 0 };
-                    return sum + info.weight * (pl.quantity || 0);
-                }, 0);
-                const uom = pd.product_lines.length
-                    ? (weightMap[pd.product_lines[0].prod_ID]?.weight_uom || null)
-                    : null;
                 return {
-                    pack_ID: pd.pack_ID,
-                    package_weight: +package_weight.toFixed(2),
-                    weight_uom: uom
+                    pac_id: r.pac_id,
+                    pack_ID: r.pack_ID,
+                    ship_from: r.ship_from,
+                    ship_to: r.ship_to,
+                    destination_radius: r.destination_radius,
+                    product_lines,                      // [{ prod_ID, quantity, package_info }, …]
+                    package_info: r.package_info,
+                    bill_to: r.bill_to,
+                    return_label: r.return_label,
+                    additional_info: (() => { try { return JSON.parse(r.additional_info) } catch { return {} } })(),
+                    pickup_date_time: r.pickup_date_time,
+                    dropoff_date_time: r.dropoff_date_time,
+                    tax_info: (() => { try { return JSON.parse(r.tax_info) } catch { return {} } })(),
+                    package_status: r.package_status
                 };
             });
-
-            // 6) load vehicle details
-            let vehicleDetails = [];
-            if (allocatedVehicles.length) {
-                const ph = allocatedVehicles.map(() => '?').join(',');
-                const [rows] = await db.query(
-                    `SELECT * FROM master_resources WHERE vehicle_ID IN (${ph})`,
-                    allocatedVehicles
-                );
-                vehicleDetails = rows;
-            }
-
-            // 7) respond
-            return res.status(200).json({
-                message: 'Order retrieved successfully.',
-                order,
-                allocated_packages_details: packageDetails,
-                packages_and_weights: packagesAndWeights,
-                allocated_vehicles: vehicleDetails
-            });
         }
-        catch (err) {
-            logger.error('Error fetching order by ID:', err);
-            return res.status(500).json({ message: 'Server error.', error: err.message });
+
+        // 4) fetch all involved master_products to get weight & uom
+        const allProdIDs = [
+            ...new Set(
+                packageDetails
+                    .flatMap(pd => pd.product_lines.map(pl => pl.prod_ID))
+                    .filter(id => id)
+            )
+        ];
+
+        let weightMap = {};
+        if (allProdIDs.length) {
+            const [prodRows] = await db.query(
+                `SELECT product_ID, weight, weight_uom 
+             FROM master_products 
+             WHERE product_ID IN (?)`,
+                [allProdIDs]
+            );
+            weightMap = prodRows.reduce((m, pr) => {
+                m[pr.product_ID] = {
+                    weight: parseFloat(pr.weight) || 0,
+                    weight_uom: pr.weight_uom
+                };
+                return m;
+            }, {});
         }
+
+        // 5) compute per-package weights in a separate array
+        const packagesAndWeights = packageDetails.map(pd => {
+            const package_weight = pd.product_lines.reduce((sum, pl) => {
+                const info = weightMap[pl.prod_ID] || { weight: 0 };
+                return sum + info.weight * (pl.quantity || 0);
+            }, 0);
+            const uom = pd.product_lines.length
+                ? (weightMap[pd.product_lines[0].prod_ID]?.weight_uom || null)
+                : null;
+            return {
+                pack_ID: pd.pack_ID,
+                package_weight: +package_weight.toFixed(2),
+                weight_uom: uom
+            };
+        });
+
+        // 6) load vehicle details
+        let vehicleDetails = [];
+        if (allocatedVehicles.length) {
+            const ph = allocatedVehicles.map(() => '?').join(',');
+            const [rows] = await db.query(
+                `SELECT * FROM master_resources WHERE vehicle_ID IN (${ph})`,
+                allocatedVehicles
+            );
+            vehicleDetails = rows;
+        }
+
+
+        // 7) respond
+        return res.status(200).json({
+            message: 'Order retrieved successfully.',
+            order,
+            allocated_packages_details: packageDetails,
+            packages_and_weights: packagesAndWeights,
+            allocated_vehicles: vehicleDetails
+        });
     }
+    catch (err) {
+        logger.error('Error fetching order by ID:', err);
+        return res.status(500).json({ message: 'Server error.', error: err.message });
+    }
+}
 );
 
 

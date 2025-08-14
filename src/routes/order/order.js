@@ -937,57 +937,90 @@ function placeOneBox(box, zHeights, stackingMap, gridRes, placements, W, L, H) {
 }
 
 
-function computeBoxPlacements(allocation, vehicleDims) {
+function computeBoxPlacements({ packageInfoDetails, vehicleDimensions, loadArrangement }) {
   const placements = [];
-  const gridRes = 0.05;
+  const stopPackagesMap = new Map();
 
-  const W = vehicleDims.interiorWidthM;
-  const L = vehicleDims.interiorLengthM;
-  const H = vehicleDims.interiorHeightM;
+  // 1. Map pkg_ID to its stop number
+  loadArrangement.forEach(({ stop, packages }) => {
+    packages.forEach(pkgID => {
+      if (!stopPackagesMap.has(pkgID)) stopPackagesMap.set(pkgID, stop);
+    });
+  });
 
-  const gridWidth = Math.floor(W / gridRes);
-  const gridLength = Math.floor(L / gridRes);
+  // 2. Flatten packages into individual boxes
+  const allBoxes = [];
+  for (const pkg of packageInfoDetails) {
+    const stop = stopPackagesMap.get(pkg.pkg_ID) || 1;
+    for (const line of pkg.lines || []) {
+      const { lengthM, widthM, heightM } = line.packagingDimensions;
+      const quantity = line.quantity || 1;
+      const stackingFactor = parseInt(line.package_info?.stacking_factor || "0");
 
-  // 2D grid tracking max Z at each (x, y)
-  const zHeights = Array.from({ length: gridLength }, () =>
-    Array(gridWidth).fill(0)
-  );
+      for (let i = 0; i < quantity; i++) {
+        allBoxes.push({
+          pkg_ID: pkg.pkg_ID,
+          prod_ID: line.prod_ID,
+          dimensions: { length: lengthM, width: widthM, height: heightM },
+          stackingFactor,
+          stop
+        });
+      }
+    }
+  }
 
-  // Track stacking factor remaining at each (x, y)
-  const stackingMap = Array.from({ length: gridLength }, () =>
-    Array.from({ length: gridWidth }, () => [])
-  );
+  // 3. Sort: FILO = last stop loads first
+  allBoxes.sort((a, b) => b.stop - a.stop);
 
-  const packagesByID = Object.fromEntries(allocation.packageInfoDetails.map(p => [p.pkg_ID, p]));
+  // 4. Vehicle usable dimensions
+  const { interiorWidthM, interiorLengthM, interiorHeightM } = vehicleDimensions;
+  const gridStep = 0.05;
 
-  // FILO order: highest stop first
-  const sortedStops = [...allocation.loadArrangement].sort((a, b) => b.stop - a.stop);
+  // 5. Grid tracks stack state at each x,y
+  const grid = {}; // { 'x,y': { topZ, stack: [] } }
 
-  for (const stop of sortedStops) {
-    for (const pkgID of stop.packages) {
-      const pkg = packagesByID[pkgID];
-      if (!pkg) continue;
+  // 6. Place each box
+  for (const box of allBoxes) {
+    const { length, width, height } = box.dimensions;
+    let placed = false;
 
-      for (const line of pkg.lines) {
-        const dims = line.packagingDimensions;
-        const stackingFactor = parseInt(line.package_info?.stacking_factor ?? 0);
-        const quantity = line.quantity;
+    // Deterministic grid traversal: y outer loop → x inner loop
+    for (let y = 0; y + length <= interiorLengthM; y += gridStep) {
+      for (let x = 0; x + width <= interiorWidthM; x += gridStep) {
+        const key = `${x.toFixed(2)},${y.toFixed(2)}`;
+        const cell = grid[key] || { topZ: 0, stack: [] };
 
-        for (let i = 0; i < quantity; i++) {
-          const placed = placeOneBox({
-            width: dims.widthM,
-            length: dims.lengthM,
-            height: dims.heightM,
-            stackingFactor,
-            prod_ID: line.prod_ID,
-            pkg_ID: pkgID
-          }, zHeights, stackingMap, gridRes, placements, W, L, H);
+        const maxLayers = box.stackingFactor + 1;
+        const canStack = cell.stack.length < maxLayers;
+        const canFitHeight = cell.topZ + height <= interiorHeightM;
 
-          if (!placed) {
-            console.warn(`❌ Could not place box from ${pkgID}`);
-          }
+        if (canStack && canFitHeight) {
+          // ✅ Place the box
+          placements.push({
+            pkg_ID: box.pkg_ID,
+            prod_ID: box.prod_ID,
+            position: {
+              x: parseFloat(x.toFixed(2)),
+              y: parseFloat(y.toFixed(2)),
+              z: parseFloat(cell.topZ.toFixed(2))
+            },
+            dimensions: { length, width, height },
+            stop: box.stop
+          });
+
+          // Update stack state
+          cell.stack.push(box);
+          cell.topZ += height;
+          grid[key] = cell;
+          placed = true;
+          break;
         }
       }
+      if (placed) break;
+    }
+
+    if (!placed) {
+      console.log(`❌ Could not place box from ${box.pkg_ID}`);
     }
   }
 
@@ -1172,13 +1205,11 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
         interiorHeightM: heightM
       };
 
-      const boxPlacements = computeBoxPlacements(
-        {
-          packageInfoDetails,
-          loadArrangement: a.loadArrangement
-        },
-        vehicleDims
-      );
+      const boxPlacements = computeBoxPlacements({
+        packageInfoDetails,
+        vehicleDimensions: vehicleDims,
+        loadArrangement: a.loadArrangement
+      });
 
 
 

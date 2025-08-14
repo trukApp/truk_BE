@@ -759,79 +759,79 @@ function parseDimension(str = '') {
 
 function computeBoxPlacements(pkgIDs, pkgInfoMapForAlloc, vehicleDims, loadArrangement = [], productMap = {}) {
   const { interior_width: W, interior_length: L, interior_height: H } = vehicleDims;
-  let cursorX = 0, cursorY = 0, rowMaxY = 0;
-
   const placements = {};
-  const stackingMap = {}; // { prod_ID: stacking_factor }
-  const layerMap = {};    // { "x_y": [{prod_IDs, layerCount}] }
+  const stackingMap = {};
+  const gridMap = {}; // key: "x_y", value: array of { height, maxStack }
 
-  // build stacking map
-  for (const pkgID of pkgIDs) {
-    const boxes = pkgInfoMapForAlloc[pkgID]?.boxes || [];
-    for (const box of boxes) {
-      const prod_IDs = box.prod_IDs || [];  // assume prod_IDs is stored per box
-      for (const pid of prod_IDs) {
-        if (!(pid in stackingMap)) {
-          const sf = +productMap[pid]?.stacking_factor || 1;
-          stackingMap[pid] = sf;
-        }
-      }
-    }
-  }
-
-  // Sort by FILO: reverse stop order
+  // Stop → FILO sort
   const stopMap = {};
   loadArrangement.forEach(entry => {
     entry.packages.forEach(pkgID => stopMap[pkgID] = entry.stop);
   });
   pkgIDs.sort((a, b) => (stopMap[b] || 0) - (stopMap[a] || 0)); // FILO
 
-  for (const pkg_ID of pkgIDs) {
-    const boxes = (pkgInfoMapForAlloc[pkg_ID]?.boxes) || [];
+  // Build stackingFactor map
+  for (const pkgID of pkgIDs) {
+    const boxes = pkgInfoMapForAlloc[pkgID]?.boxes || [];
+    for (const box of boxes) {
+      const prod_IDs = box.prod_IDs || [];
+      for (const pid of prod_IDs) {
+        if (!(pid in stackingMap)) {
+          stackingMap[pid] = parseInt(productMap[pid]?.stacking_factor || 1);
+        }
+      }
+    }
+  }
+
+  let cursorX = 0, cursorY = 0, rowMaxY = 0;
+
+  for (const pkgID of pkgIDs) {
+    const boxes = pkgInfoMapForAlloc[pkgID]?.boxes || [];
+
     for (const box of boxes) {
       const [boxW, boxL, boxH] = box.dimensions;
       const prod_IDs = box.prod_IDs || [];
 
-      // Fit horizontally (advance rows)
       if (cursorX + boxW > L) {
         cursorX = 0;
         cursorY += rowMaxY;
         rowMaxY = 0;
       }
       if (cursorY + boxL > W) {
-        console.warn(`No more floor space for ${pkg_ID}`);
+        console.warn(`No more floor space for package ${pkgID}`);
         break;
       }
 
-      // const gridKey = `${Math.floor(cursorX)}_${Math.floor(cursorY)}`;
-      // snap to box dimensions to avoid floating point chaos
       const gridX = Math.floor(cursorX / boxW);
       const gridY = Math.floor(cursorY / boxL);
       const gridKey = `${gridX}_${gridY}`;
-      const currentLayer = (layerMap[gridKey]?.length || 0);
 
-      // Determine min stacking factor from products
-      let minSF = Infinity;
-      for (const pid of prod_IDs) {
-        const sf = stackingMap[pid] ?? 1;
-        minSF = Math.min(minSF, sf);
-      }
+      const currentStack = (gridMap[gridKey]?.length || 0);
+      const minStackFactor = prod_IDs.reduce((min, pid) => {
+        return Math.min(min, stackingMap[pid] ?? 1);
+      }, Infinity);
 
-      if (currentLayer >= minSF) {
-        console.warn(`Cannot stack ${pkg_ID} at (${cursorX},${cursorY}) - stacking limit reached`);
+      if (currentStack >= minStackFactor) {
+        console.warn(`Stacking factor exceeded at ${gridKey} for ${pkgID}`);
         cursorX += boxW;
         continue;
       }
 
-      const posZ = boxH / 2 + (boxH * currentLayer);
-      const pos = [cursorX + boxW / 2, cursorY + boxL / 2, posZ];
+      const zOffset = currentStack * boxH;
+      const pos = [
+        cursorX + boxW / 2,
+        cursorY + boxL / 2,
+        zOffset + boxH / 2
+      ];
 
-      placements[pkg_ID] = placements[pkg_ID] || { boxes: [] };
-      placements[pkg_ID].boxes.push({ dimensions: [boxW, boxL, boxH], position: pos });
+      placements[pkgID] = placements[pkgID] || { boxes: [] };
+      placements[pkgID].boxes.push({ dimensions: [boxW, boxL, boxH], position: pos });
 
-      // Update layerMap
-      layerMap[gridKey] = layerMap[gridKey] || [];
-      layerMap[gridKey].push({ prod_IDs, stackingUsed: 1 });
+      gridMap[gridKey] = gridMap[gridKey] || [];
+      gridMap[gridKey].push({
+        height: boxH,
+        maxStack: minStackFactor
+      });
 
       cursorX += boxW;
       rowMaxY = Math.max(rowMaxY, boxL);

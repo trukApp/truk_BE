@@ -549,6 +549,7 @@ function computeBoxPlacements(pkgIDs, pkgInfoMapForAlloc, vehicleDims) {
         placements[pkg_ID].boxes.push({
           dimensions: [boxW, boxL, boxH],
           position: pos,
+          prod_ID
           // prod_ID: prod_ID
         });
 
@@ -810,6 +811,7 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
       const vehicleDims = { interior_width: widthM, interior_length: lengthM, interior_height: heightM };
       // const boxPlacements = computeBoxPlacements(a.packages, pkgInfoMapForAlloc, vehicleDims);
       const computedPlacements = computeBoxPlacements(a.packages, pkgInfoMapForAlloc, vehicleDims);
+      Object.assign(boxPlacements, computedPlacements);
 
 
       const actualOccupiedVolume = a.packages.reduce((sum, pkgID) => {

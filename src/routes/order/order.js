@@ -719,14 +719,67 @@ function parseDimension(str='') {
  * pkgInfoMapForAlloc: { pkg_ID: { boxes:[{dimensions:[L,W,H]}...] } }
  * vehicleDims: { interior_width, interior_length, interior_height }
  */
-function computeBoxPlacements(pkgIDs, pkgInfoMapForAlloc, vehicleDims, loadArrangement = []) {
+// function computeBoxPlacements(pkgIDs, pkgInfoMapForAlloc, vehicleDims, loadArrangement = []) {
 
-  const { interior_width: W, interior_length: L } = vehicleDims;
-  let cursorX = 0, cursorY = 0, rowMaxY = 0;
-  const placements = {};
+//   const { interior_width: W, interior_length: L } = vehicleDims;
+//   let cursorX = 0, cursorY = 0, rowMaxY = 0;
+//   const placements = {};
 
   
-  // 🆕 Sort pkgIDs by FILO order using stop number
+//   // 🆕 Sort pkgIDs by FILO order using stop number
+//   const stopMap = {};
+//   loadArrangement.forEach(entry => {
+//     entry.packages.forEach(pkgID => stopMap[pkgID] = entry.stop);
+//   });
+//   pkgIDs.sort((a, b) => (stopMap[b] || 0) - (stopMap[a] || 0)); // FILO
+
+//   for (const pkg_ID of pkgIDs) {
+//     const boxes = (pkgInfoMapForAlloc[pkg_ID]?.boxes) || [];
+//     for (const b of boxes) {
+//       const [boxW, boxL, boxH] = b.dimensions;
+//       if (cursorX + boxW > L) {
+//         cursorX = 0;
+//         cursorY += rowMaxY;
+//         rowMaxY = 0;
+//       }
+//       if (cursorY + boxL > W) {
+//         console.warn(`No more floor space for ${pkg_ID}`);
+//         break;
+//       }
+//       const pos = [cursorX + boxW/2, cursorY + boxL/2, boxH/2];
+//       placements[pkg_ID] = placements[pkg_ID] || { boxes: [] };
+//       placements[pkg_ID].boxes.push({ dimensions: [boxW,boxL,boxH], position: pos });
+//       cursorX += boxW;
+//       rowMaxY = Math.max(rowMaxY, boxL);
+//     }
+//   }
+//   return placements;
+// }
+
+
+function computeBoxPlacements(pkgIDs, pkgInfoMapForAlloc, vehicleDims, loadArrangement = [], productMap = {}) {
+  const { interior_width: W, interior_length: L, interior_height: H } = vehicleDims;
+  let cursorX = 0, cursorY = 0, rowMaxY = 0;
+
+  const placements = {};
+  const stackingMap = {}; // { prod_ID: stacking_factor }
+  const layerMap = {};    // { "x_y": [{prod_IDs, layerCount}] }
+
+  // build stacking map
+  for (const pkgID of pkgIDs) {
+    const boxes = pkgInfoMapForAlloc[pkgID]?.boxes || [];
+    for (const box of boxes) {
+      const prod_IDs = box.prod_IDs || [];  // assume prod_IDs is stored per box
+      for (const pid of prod_IDs) {
+        if (!(pid in stackingMap)) {
+          const sf = +productMap[pid]?.stacking_factor || 1;
+          stackingMap[pid] = sf;
+        }
+      }
+    }
+  }
+
+  // Sort by FILO: reverse stop order
   const stopMap = {};
   loadArrangement.forEach(entry => {
     entry.packages.forEach(pkgID => stopMap[pkgID] = entry.stop);
@@ -735,8 +788,11 @@ function computeBoxPlacements(pkgIDs, pkgInfoMapForAlloc, vehicleDims, loadArran
 
   for (const pkg_ID of pkgIDs) {
     const boxes = (pkgInfoMapForAlloc[pkg_ID]?.boxes) || [];
-    for (const b of boxes) {
-      const [boxW, boxL, boxH] = b.dimensions;
+    for (const box of boxes) {
+      const [boxW, boxL, boxH] = box.dimensions;
+      const prod_IDs = box.prod_IDs || [];
+
+      // Fit horizontally (advance rows)
       if (cursorX + boxW > L) {
         cursorX = 0;
         cursorY += rowMaxY;
@@ -746,15 +802,41 @@ function computeBoxPlacements(pkgIDs, pkgInfoMapForAlloc, vehicleDims, loadArran
         console.warn(`No more floor space for ${pkg_ID}`);
         break;
       }
-      const pos = [cursorX + boxW/2, cursorY + boxL/2, boxH/2];
+
+      const gridKey = `${Math.floor(cursorX)}_${Math.floor(cursorY)}`;
+      const currentLayer = (layerMap[gridKey]?.length || 0);
+
+      // Determine min stacking factor from products
+      let minSF = Infinity;
+      for (const pid of prod_IDs) {
+        const sf = stackingMap[pid] ?? 1;
+        minSF = Math.min(minSF, sf);
+      }
+
+      if (currentLayer >= minSF) {
+        console.warn(`Cannot stack ${pkg_ID} at (${cursorX},${cursorY}) - stacking limit reached`);
+        cursorX += boxW;
+        continue;
+      }
+
+      const posZ = boxH / 2 + (boxH * currentLayer);
+      const pos = [cursorX + boxW/2, cursorY + boxL/2, posZ];
+
       placements[pkg_ID] = placements[pkg_ID] || { boxes: [] };
-      placements[pkg_ID].boxes.push({ dimensions: [boxW,boxL,boxH], position: pos });
+      placements[pkg_ID].boxes.push({ dimensions: [boxW, boxL, boxH], position: pos });
+
+      // Update layerMap
+      layerMap[gridKey] = layerMap[gridKey] || [];
+      layerMap[gridKey].push({ prod_IDs, stackingUsed: 1 });
+
       cursorX += boxW;
       rowMaxY = Math.max(rowMaxY, boxL);
     }
   }
+
   return placements;
 }
+
 
 /* -------------------------- ROUTES --------------------------- */
 router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
@@ -922,7 +1004,7 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
           const L = parseDimension(`${info.pack_length} ${info.dimensions_uom}`);
           const W = parseDimension(`${info.pack_width}  ${info.dimensions_uom}`);
           const H = parseDimension(`${info.pack_height} ${info.dimensions_uom}`);
-          for (let i=0; i<line.quantity; i++) boxes.push({ dimensions: [L,W,H] });
+          for (let i=0; i<line.quantity; i++) boxes.push({ dimensions: [L,W,H],  prod_IDs: [line.prod_ID] });
         });
         pkgInfoMapForAlloc[pkgID] = { boxes };
       });

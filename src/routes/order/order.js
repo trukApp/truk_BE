@@ -511,56 +511,157 @@ function parseDimension(str = '') {
 
 
 
+// function computeBoxPlacements(pkgIDs, pkgInfoMapForAlloc, vehicleDims) {
+//   const { interior_width: W, interior_length: L } = vehicleDims;
+//   let cursorX = 0, cursorY = 0, rowMaxY = 0;
+//   const placements = {};
+
+//   for (const pkg_ID of pkgIDs) {
+//     const lines = pkgInfoMapForAlloc[pkg_ID]?.lines;
+//     if (!Array.isArray(lines)) continue;
+
+//     placements[pkg_ID] = { boxes: [] };
+
+//     for (const line of lines) {
+//       const { quantity, packagingDimensions, prod_ID } = line;
+//       const { widthM: boxW, lengthM: boxL, heightM: boxH } = packagingDimensions;
+
+//       for (let q = 0; q < quantity; q++) {
+//         if (cursorX + boxW > L) {
+//           cursorX = 0;
+//           cursorY += rowMaxY;
+//           rowMaxY = 0;
+//         }
+
+//         if (cursorY + boxL > W) {
+//           cursorX = 0;
+//           cursorY += rowMaxY;
+//           rowMaxY = 0;
+
+//           if (cursorY + boxL > W) {
+//             console.warn(`Box ${q + 1}/${quantity} of ${pkg_ID} is too wide even after new row.`);
+//             continue;
+//           }
+//         }
+
+//         const pos = [cursorX + boxW / 2, cursorY + boxL / 2, boxH / 2];
+
+//         placements[pkg_ID].boxes.push({
+//           dimensions: [boxW, boxL, boxH],
+//           position: pos,
+//           prod_ID
+//           // prod_ID: prod_ID
+//         });
+
+//         cursorX += boxW;
+//         rowMaxY = Math.max(rowMaxY, boxL);
+//       }
+//     }
+//   }
+
+//   return placements;
+// }
+
 function computeBoxPlacements(pkgIDs, pkgInfoMapForAlloc, vehicleDims) {
-  const { interior_width: W, interior_length: L } = vehicleDims;
-  let cursorX = 0, cursorY = 0, rowMaxY = 0;
+  const { interior_width: W, interior_length: L, interior_height: H } = vehicleDims;
+
   const placements = {};
+  const stackingMap = new Map();  // Key: x|y, Value: current stack height
+
+  function toFixed3(n) {
+    return Math.round(n * 1000) / 1000;
+  }
+
+  // Helper to round X, Y to form a grid key
+  function gridKey(x, y) {
+    return `${toFixed3(x)}|${toFixed3(y)}`;
+  }
+
+  // Flatten and collect all boxes with stop info
+  const allBoxes = [];
 
   for (const pkg_ID of pkgIDs) {
     const lines = pkgInfoMapForAlloc[pkg_ID]?.lines;
     if (!Array.isArray(lines)) continue;
 
-    placements[pkg_ID] = { boxes: [] };
-
     for (const line of lines) {
-      const { quantity, packagingDimensions, prod_ID } = line;
+      const { quantity, packagingDimensions, prod_ID, stop_number, stacking_factor } = line;
       const { widthM: boxW, lengthM: boxL, heightM: boxH } = packagingDimensions;
 
-      for (let q = 0; q < quantity; q++) {
-        if (cursorX + boxW > L) {
-          cursorX = 0;
-          cursorY += rowMaxY;
-          rowMaxY = 0;
-        }
-
-        if (cursorY + boxL > W) {
-          cursorX = 0;
-          cursorY += rowMaxY;
-          rowMaxY = 0;
-
-          if (cursorY + boxL > W) {
-            console.warn(`Box ${q + 1}/${quantity} of ${pkg_ID} is too wide even after new row.`);
-            continue;
-          }
-        }
-
-        const pos = [cursorX + boxW / 2, cursorY + boxL / 2, boxH / 2];
-
-        placements[pkg_ID].boxes.push({
-          dimensions: [boxW, boxL, boxH],
-          position: pos,
-          prod_ID
-          // prod_ID: prod_ID
+      for (let i = 0; i < quantity; i++) {
+        allBoxes.push({
+          pkg_ID,
+          prod_ID,
+          stop_number,
+          stacking_factor,
+          dimensions: [boxW, boxL, boxH]
         });
-
-        cursorX += boxW;
-        rowMaxY = Math.max(rowMaxY, boxL);
       }
     }
   }
 
+  // Sort by stop_number DESC → last stop first
+  allBoxes.sort((a, b) => b.stop_number - a.stop_number);
+
+  // Grid cursor
+  let cursorX = 0, cursorY = 0;
+  let rowMaxL = 0;
+
+  for (const box of allBoxes) {
+    const { pkg_ID, prod_ID, stop_number, stacking_factor, dimensions } = box;
+    const [boxW, boxL, boxH] = dimensions;
+
+    // Check if new row needed
+    if (cursorX + boxW > L) {
+      cursorX = 0;
+      cursorY += rowMaxL;
+      rowMaxL = 0;
+    }
+
+    // Check if row exceeds truck width
+    if (cursorY + boxL > W) {
+      console.warn(`Box ${prod_ID} of ${pkg_ID} can't be placed - exceeds truck width.`);
+      continue;
+    }
+
+    // Determine current stack height at (cursorX, cursorY)
+    const gx = toFixed3(cursorX);
+    const gy = toFixed3(cursorY);
+    const key = gridKey(gx, gy);
+    const currentStackH = stackingMap.get(key) || 0;
+
+    const maxStackH = boxH * stacking_factor;
+
+    if (currentStackH + boxH > maxStackH || currentStackH + boxH > H) {
+      console.warn(`Cannot stack box ${prod_ID} beyond stacking_factor or truck height.`);
+      continue;
+    }
+
+    // Place the box
+    const pos = [
+      gx + boxW / 2,
+      gy + boxL / 2,
+      toFixed3(currentStackH + boxH / 2)
+    ];
+
+    // Initialize placements[pkg_ID] if not present
+    if (!placements[pkg_ID]) placements[pkg_ID] = { boxes: [] };
+
+    placements[pkg_ID].boxes.push({
+      dimensions: [boxW, boxL, boxH],
+      position: pos,
+      prod_ID
+    });
+
+    // Update stackingMap and row height
+    stackingMap.set(key, currentStackH + boxH);
+    cursorX += boxW;
+    rowMaxL = Math.max(rowMaxL, boxL);
+  }
+
   return placements;
 }
+
 
 
 /* -------------------------- ROUTES --------------------------- */

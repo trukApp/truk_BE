@@ -870,36 +870,98 @@ function tryPlaceBox(box, zHeights, stackingMap, vehicleDims, placements) {
   return false;
 }
 
+function placeOneBox(box, zHeights, stackingMap, gridRes, placements, W, L, H) {
+  const gw = Math.floor(W / gridRes);
+  const gl = Math.floor(L / gridRes);
+
+  const bW = Math.ceil(box.width / gridRes);
+  const bL = Math.ceil(box.length / gridRes);
+  const bH = box.height;
+
+  for (let y = 0; y <= gl - bL; y++) {
+    for (let x = 0; x <= gw - bW; x++) {
+      let canPlace = true;
+      let maxZ = 0;
+
+      for (let dy = 0; dy < bL; dy++) {
+        for (let dx = 0; dx < bW; dx++) {
+          const gx = x + dx, gy = y + dy;
+          const z = zHeights[gy][gx];
+          if (z + bH > H) { canPlace = false; break; }
+
+          const topStack = stackingMap[gy][gx];
+          const last = topStack.length > 0 ? topStack[topStack.length - 1] : null;
+          if (last && last.remainingStack <= 0) {
+            canPlace = false; break;
+          }
+
+          if (z > maxZ) maxZ = z;
+        }
+        if (!canPlace) break;
+      }
+
+      if (canPlace) {
+        for (let dy = 0; dy < bL; dy++) {
+          for (let dx = 0; dx < bW; dx++) {
+            const gx = x + dx, gy = y + dy;
+            zHeights[gy][gx] += bH;
+            stackingMap[gy][gx].push({
+              pkg_ID: box.pkg_ID,
+              prod_ID: box.prod_ID,
+              remainingStack: box.stackingFactor - 1
+            });
+          }
+        }
+
+        placements.push({
+          pkg_ID: box.pkg_ID,
+          prod_ID: box.prod_ID,
+          dimensions: {
+            length: box.length,
+            width: box.width,
+            height: box.height
+          },
+          position: {
+            x: parseFloat((x * gridRes).toFixed(3)),
+            y: parseFloat((y * gridRes).toFixed(3)),
+            z: parseFloat(maxZ.toFixed(3))
+          }
+        });
+
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
 
 function computeBoxPlacements(allocation, vehicleDims) {
   const placements = [];
-  const { interiorWidthM, interiorLengthM, interiorHeightM } = vehicleDims;
-  const gridResolution = 0.05; // 5 cm grid
+  const gridRes = 0.05;
 
-  const gridWidth = Math.floor(interiorWidthM / gridResolution);
-  const gridLength = Math.floor(interiorLengthM / gridResolution);
-  const gridHeight = Math.floor(interiorHeightM / gridResolution);
+  const W = vehicleDims.interiorWidthM;
+  const L = vehicleDims.interiorLengthM;
+  const H = vehicleDims.interiorHeightM;
 
-  // 3D occupancy grid: [x][y][z]
-  const grid = Array.from({ length: gridWidth }, () =>
-    Array.from({ length: gridLength }, () =>
-      Array(gridHeight).fill(false)
-    )
-  );
+  const gridWidth = Math.floor(W / gridRes);
+  const gridLength = Math.floor(L / gridRes);
 
-  // Track top Z height per (x,y) for stacking factor
-  const topZStackMap = Array.from({ length: gridWidth }, () =>
-    Array(gridLength).fill(0)
-  );
-
-  // Reverse stop order (FILO)
-  const sortedStops = [...allocation.loadArrangement].sort((a, b) => b.stop - a.stop);
-  const packagesByID = Object.fromEntries(allocation.packageInfoDetails.map(pkg => [pkg.pkg_ID, pkg]));
-
+  // 2D grid tracking max Z at each (x, y)
   const zHeights = Array.from({ length: gridLength }, () =>
     Array(gridWidth).fill(0)
   );
-  const stackingMap = {};
+
+  // Track stacking factor remaining at each (x, y)
+  const stackingMap = Array.from({ length: gridLength }, () =>
+    Array.from({ length: gridWidth }, () => [])
+  );
+
+  const packagesByID = Object.fromEntries(allocation.packageInfoDetails.map(p => [p.pkg_ID, p]));
+
+  // FILO order: highest stop first
+  const sortedStops = [...allocation.loadArrangement].sort((a, b) => b.stop - a.stop);
 
   for (const stop of sortedStops) {
     for (const pkgID of stop.packages) {
@@ -907,27 +969,22 @@ function computeBoxPlacements(allocation, vehicleDims) {
       if (!pkg) continue;
 
       for (const line of pkg.lines) {
-        const {
-          lengthM, widthM, heightM
-        } = line.packagingDimensions;
-        const stackingFactor = parseInt(line.package_info.stacking_factor ?? 0);
+        const dims = line.packagingDimensions;
+        const stackingFactor = parseInt(line.package_info?.stacking_factor ?? 0);
         const quantity = line.quantity;
 
         for (let i = 0; i < quantity; i++) {
-          const box = {
-            length: lengthM,
-            width: widthM,
-            height: heightM,
-            stacking_factor: stackingFactor,
-            pkg_ID: pkgID,
-            prod_ID: line.prod_ID
-          };
-
-          const placed = tryPlaceBox(box, zHeights, stackingMap, vehicleDims, placements);
-
+          const placed = placeOneBox({
+            width: dims.widthM,
+            length: dims.lengthM,
+            height: dims.heightM,
+            stackingFactor,
+            prod_ID: line.prod_ID,
+            pkg_ID: pkgID
+          }, zHeights, stackingMap, gridRes, placements, W, L, H);
 
           if (!placed) {
-            console.log(`❌ Could not place box from ${pkgID}`);
+            console.warn(`❌ Could not place box from ${pkgID}`);
           }
         }
       }

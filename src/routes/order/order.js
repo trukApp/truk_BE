@@ -719,10 +719,19 @@ function parseDimension(str='') {
  * pkgInfoMapForAlloc: { pkg_ID: { boxes:[{dimensions:[L,W,H]}...] } }
  * vehicleDims: { interior_width, interior_length, interior_height }
  */
-function computeBoxPlacements(pkgIDs, pkgInfoMapForAlloc, vehicleDims) {
+function computeBoxPlacements(pkgIDs, pkgInfoMapForAlloc, vehicleDims, loadArrangement = []) {
+
   const { interior_width: W, interior_length: L } = vehicleDims;
   let cursorX = 0, cursorY = 0, rowMaxY = 0;
   const placements = {};
+
+  
+  // 🆕 Sort pkgIDs by FILO order using stop number
+  const stopMap = {};
+  loadArrangement.forEach(entry => {
+    entry.packages.forEach(pkgID => stopMap[pkgID] = entry.stop);
+  });
+  pkgIDs.sort((a, b) => (stopMap[b] || 0) - (stopMap[a] || 0)); // FILO
 
   for (const pkg_ID of pkgIDs) {
     const boxes = (pkgInfoMapForAlloc[pkg_ID]?.boxes) || [];
@@ -919,7 +928,7 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
       });
 
       const vehicleDims = { interior_width: widthM, interior_length: lengthM, interior_height: heightM };
-      const boxPlacements = computeBoxPlacements(a.packages, pkgInfoMapForAlloc, vehicleDims);
+      const boxPlacements = computeBoxPlacements(a.packages, pkgInfoMapForAlloc, vehicleDims, a.loadArrangement);
 
       return {
         ...a,

@@ -772,7 +772,7 @@ function computeBoxPlacements({
     });
   });
 
-  // Flatten packages into boxes with dimensions and stop
+  // Flatten boxes with stop mapping
   const allBoxes = [];
   for (const pkg of packageInfoDetails) {
     const stop = stopPackagesMap.get(pkg.pkg_ID) || 1;
@@ -780,33 +780,49 @@ function computeBoxPlacements({
     for (const line of pkg.lines || []) {
       const { lengthM, widthM, heightM } = line.packagingDimensions;
       const quantity = line.quantity || 1;
-      const stackingFactor = parseInt(line.package_info?.stacking_factor || "0");
 
       for (let i = 0; i < quantity; i++) {
         allBoxes.push({
           pkg_ID: pkg.pkg_ID,
           prod_ID: line.prod_ID,
           stop,
-          stackingFactor,
           dimensions: { length: lengthM, width: widthM, height: heightM }
         });
       }
     }
   }
 
-  // Sort boxes by FILO (last stop first)
+  // FILO (higher stop first)
   allBoxes.sort((a, b) => b.stop - a.stop);
 
   const {
     interiorWidthM,
     interiorLengthM,
-    interiorHeightM
   } = vehicleDimensions;
 
-  const gridSize = 0.05; // meters
-  const stackingGap = 0.01;
+  const gridSize = 0.05;
+  const occupiedGrid = new Set();
 
-  const stackMap = {}; // key: "x,y", value: { stack: [], topZ }
+  function fits(x, y, boxW, boxL) {
+    for (let i = 0; i < boxW; i += gridSize) {
+      for (let j = 0; j < boxL; j += gridSize) {
+        const gx = Math.floor((x + i) / gridSize);
+        const gy = Math.floor((y + j) / gridSize);
+        if (occupiedGrid.has(`${gx},${gy}`)) return false;
+      }
+    }
+    return true;
+  }
+
+  function occupy(x, y, boxW, boxL) {
+    for (let i = 0; i < boxW; i += gridSize) {
+      for (let j = 0; j < boxL; j += gridSize) {
+        const gx = Math.floor((x + i) / gridSize);
+        const gy = Math.floor((y + j) / gridSize);
+        occupiedGrid.add(`${gx},${gy}`);
+      }
+    }
+  }
 
   for (const box of allBoxes) {
     const { length, width, height } = box.dimensions;
@@ -814,30 +830,19 @@ function computeBoxPlacements({
 
     for (let y = 0; y + length <= interiorLengthM; y += gridSize) {
       for (let x = 0; x + width <= interiorWidthM; x += gridSize) {
-        const key = `${x.toFixed(2)},${y.toFixed(2)}`;
-        const cell = stackMap[key] || { stack: [], topZ: 0 };
-
-        // stackingFactor = how many layers allowed on that cell (e.g. 0 = no stacking)
-        if (
-          cell.stack.length <= box.stackingFactor &&
-          cell.topZ + height <= interiorHeightM
-        ) {
+        if (fits(x, y, width, length)) {
           placements.push({
             pkg_ID: box.pkg_ID,
             prod_ID: box.prod_ID,
+            stop: box.stop,
             position: {
-              x: parseFloat(x.toFixed(2)),
-              y: parseFloat(y.toFixed(2)),
-              z: parseFloat(cell.topZ.toFixed(2))
+              x: parseFloat((x + width / 2).toFixed(2)),
+              y: parseFloat((y + length / 2).toFixed(2)),
+              z: 0
             },
-            dimensions: { length, width, height },
-            stop: box.stop
+            dimensions: { length, width, height }
           });
-
-          // update the stacking state for this grid cell
-          cell.stack.push(box);
-          cell.topZ += height + stackingGap;
-          stackMap[key] = cell;
+          occupy(x, y, width, length);
           placed = true;
           break;
         }
@@ -846,7 +851,7 @@ function computeBoxPlacements({
     }
 
     if (!placed) {
-      console.log(`❌ Could not place box from ${box.pkg_ID}`);
+      console.warn(`❌ Could not place box from ${box.pkg_ID}`);
     }
   }
 

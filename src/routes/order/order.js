@@ -715,128 +715,211 @@ function parseDimension(str = '') {
   const val = parseFloat(m[1]);
   return /cm/i.test(str) ? val / 100 : val;
 }
-/**
- * pkgInfoMapForAlloc: { pkg_ID: { boxes:[{dimensions:[L,W,H]}...] } }
- * vehicleDims: { interior_width, interior_length, interior_height }
- */
-// function computeBoxPlacements(pkgIDs, pkgInfoMapForAlloc, vehicleDims, loadArrangement = []) {
-
-//   const { interior_width: W, interior_length: L } = vehicleDims;
-//   let cursorX = 0, cursorY = 0, rowMaxY = 0;
-//   const placements = {};
 
 
-//   // 🆕 Sort pkgIDs by FILO order using stop number
-//   const stopMap = {};
-//   loadArrangement.forEach(entry => {
-//     entry.packages.forEach(pkgID => stopMap[pkgID] = entry.stop);
-//   });
-//   pkgIDs.sort((a, b) => (stopMap[b] || 0) - (stopMap[a] || 0)); // FILO
 
-//   for (const pkg_ID of pkgIDs) {
-//     const boxes = (pkgInfoMapForAlloc[pkg_ID]?.boxes) || [];
-//     for (const b of boxes) {
-//       const [boxW, boxL, boxH] = b.dimensions;
-//       if (cursorX + boxW > L) {
-//         cursorX = 0;
-//         cursorY += rowMaxY;
-//         rowMaxY = 0;
-//       }
-//       if (cursorY + boxL > W) {
-//         console.warn(`No more floor space for ${pkg_ID}`);
-//         break;
-//       }
-//       const pos = [cursorX + boxW/2, cursorY + boxL/2, boxH/2];
-//       placements[pkg_ID] = placements[pkg_ID] || { boxes: [] };
-//       placements[pkg_ID].boxes.push({ dimensions: [boxW,boxL,boxH], position: pos });
-//       cursorX += boxW;
-//       rowMaxY = Math.max(rowMaxY, boxL);
-//     }
-//   }
-//   return placements;
-// }
+  // function computeBoxPlacements(packages, truckDimensions) {
+  //   const placements = [];
 
+  //   const truckLength = truckDimensions.interiorLengthM;
+  //   const truckWidth = truckDimensions.interiorWidthM;
+  //   const truckHeight = truckDimensions.interiorHeightM;
 
-function computeBoxPlacements(packages, truckDimensions) {
-  const placements = [];
+  //   const gridUnit = 0.1; // 10cm grid granularity
+  //   const gridCols = Math.floor(truckLength / gridUnit);
+  //   const gridRows = Math.floor(truckWidth / gridUnit);
 
-  const truckLength = truckDimensions.interiorLengthM;
-  const truckWidth = truckDimensions.interiorWidthM;
-  const truckHeight = truckDimensions.interiorHeightM;
+  //   // Track used height and stacking count at each (x,z) cell
+  //   const heightMap = Array.from({ length: gridCols }, () =>
+  //     Array.from({ length: gridRows }, () => ({ height: 0, stackCount: 0 }))
+  //   );
 
-  const gridUnit = 0.1; // 10cm grid granularity
-  const gridCols = Math.floor(truckLength / gridUnit);
-  const gridRows = Math.floor(truckWidth / gridUnit);
+  //   // Sort by stop in FILO (last stop first)
+  //   packages.sort((a, b) => b.stop - a.stop);
 
-  // Track used height and stacking count at each (x,z) cell
-  const heightMap = Array.from({ length: gridCols }, () =>
-    Array.from({ length: gridRows }, () => ({ height: 0, stackCount: 0 }))
-  );
+  //   for (const pkg of packages) {
+  //     const [boxLength, boxHeight, boxWidth] = pkg.dimensions;
+  //     const stackLimit = pkg.stacking_factor || 0;
 
-  // Sort by stop in FILO (last stop first)
-  packages.sort((a, b) => b.stop - a.stop);
+  //     const gridBoxL = Math.ceil(boxLength / gridUnit);
+  //     const gridBoxW = Math.ceil(boxWidth / gridUnit);
 
-  for (const pkg of packages) {
-    const [boxLength, boxHeight, boxWidth] = pkg.dimensions;
-    const stackLimit = pkg.stacking_factor || 0;
+  //     let placed = false;
 
-    const gridBoxL = Math.ceil(boxLength / gridUnit);
-    const gridBoxW = Math.ceil(boxWidth / gridUnit);
+  //     for (let x = 0; x <= gridCols - gridBoxL; x++) {
+  //       for (let z = 0; z <= gridRows - gridBoxW; z++) {
+  //         let canPlace = true;
+  //         let maxHeight = 0;
+  //         let maxStack = 0;
 
-    let placed = false;
+  //         for (let i = 0; i < gridBoxL && canPlace; i++) {
+  //           for (let j = 0; j < gridBoxW && canPlace; j++) {
+  //             const cell = heightMap[x + i][z + j];
+  //             if (cell.height + boxHeight > truckHeight) canPlace = false;
+  //             if (cell.stackCount >= stackLimit + 1) canPlace = false;
+  //             maxHeight = Math.max(maxHeight, cell.height);
+  //             maxStack = Math.max(maxStack, cell.stackCount);
+  //           }
+  //         }
 
-    for (let x = 0; x <= gridCols - gridBoxL; x++) {
-      for (let z = 0; z <= gridRows - gridBoxW; z++) {
-        let canPlace = true;
-        let maxHeight = 0;
-        let maxStack = 0;
+  //         if (canPlace) {
+  //           // Mark cells as used
+  //           for (let i = 0; i < gridBoxL; i++) {
+  //             for (let j = 0; j < gridBoxW; j++) {
+  //               const cell = heightMap[x + i][z + j];
+  //               cell.height = maxHeight + boxHeight;
+  //               cell.stackCount = maxStack + 1;
+  //             }
+  //           }
 
-        for (let i = 0; i < gridBoxL && canPlace; i++) {
-          for (let j = 0; j < gridBoxW && canPlace; j++) {
-            const cell = heightMap[x + i][z + j];
-            if (cell.height + boxHeight > truckHeight) canPlace = false;
-            if (cell.stackCount >= stackLimit + 1) canPlace = false;
-            maxHeight = Math.max(maxHeight, cell.height);
-            maxStack = Math.max(maxStack, cell.stackCount);
+  //           // Save placement
+  //           placements.push({
+  //             pkg_ID: pkg.pkg_ID,
+  //             color: pkg.color || '#ccc',
+  //             position: [
+  //               x * gridUnit,       // X (length)
+  //               maxHeight,          // Y (height)
+  //               z * gridUnit        // Z (width)
+  //             ],
+  //             dimensions: [boxLength, boxHeight, boxWidth]
+  //           });
+
+  //           placed = true;
+  //           break;
+  //         }
+  //       }
+  //       if (placed) break;
+  //     }
+
+  //     if (!placed) {
+  //       console.warn(`Box from ${pkg.pkg_ID} could not be placed.`);
+  //     }
+  //   }
+
+  //   return placements;
+  // }
+
+  function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimensions) {
+    const placements = [];
+  
+    const truckLength = vehicleDimensions.interiorLengthM;
+    const truckWidth = vehicleDimensions.interiorWidthM;
+    const truckHeight = vehicleDimensions.interiorHeightM;
+  
+    const gridUnit = 0.1; // 10cm resolution
+    const gridCols = Math.floor(truckLength / gridUnit);
+    const gridRows = Math.floor(truckWidth / gridUnit);
+  
+    // Track used height and stacking count at each (x,z) cell
+    const heightMap = Array.from({ length: gridCols }, () =>
+      Array.from({ length: gridRows }, () => ({ height: 0, stackCount: 0 }))
+    );
+  
+    // Assign colors per pkg_ID
+    const pkgColorMap = {};
+    const colorPalette = [
+      "#10b981", "#3b82f6", "#f59e0b", "#ef4444",
+      "#8b5cf6", "#ec4899", "#14b8a6", "#f43f5e",
+      "#0ea5e9", "#6366f1", "#22c55e"
+    ];
+    let colorIndex = 0;
+    function getColor(pkg_ID) {
+      if (!pkgColorMap[pkg_ID]) {
+        pkgColorMap[pkg_ID] = colorPalette[colorIndex % colorPalette.length];
+        colorIndex++;
+      }
+      return pkgColorMap[pkg_ID];
+    }
+  
+    // Flatten boxes in FILO stop order
+    const allBoxes = [];
+    for (let i = loadArrangement.length - 1; i >= 0; i--) {
+      const { stop, packages } = loadArrangement[i];
+      for (const pkg_ID of packages) {
+        const pkg = packageInfoDetails.find(p => p.pkg_ID === pkg_ID);
+        if (!pkg) continue;
+  
+        for (const line of pkg.lines) {
+          const { packagingDimensions: dims, quantity } = line;
+          const sf = +line.package_info?.stacking_factor || 0;
+  
+          for (let q = 0; q < quantity; q++) {
+            allBoxes.push({
+              pkg_ID,
+              stop,
+              color: getColor(pkg_ID),
+              length: dims.lengthM,
+              width: dims.widthM,
+              height: dims.heightM,
+              stacking_factor: sf
+            });
           }
-        }
-
-        if (canPlace) {
-          // Mark cells as used
-          for (let i = 0; i < gridBoxL; i++) {
-            for (let j = 0; j < gridBoxW; j++) {
-              const cell = heightMap[x + i][z + j];
-              cell.height = maxHeight + boxHeight;
-              cell.stackCount = maxStack + 1;
-            }
-          }
-
-          // Save placement
-          placements.push({
-            pkg_ID: pkg.pkg_ID,
-            color: pkg.color || '#ccc',
-            position: [
-              x * gridUnit,       // X (length)
-              maxHeight,          // Y (height)
-              z * gridUnit        // Z (width)
-            ],
-            dimensions: [boxLength, boxHeight, boxWidth]
-          });
-
-          placed = true;
-          break;
         }
       }
-      if (placed) break;
     }
-
-    if (!placed) {
-      console.warn(`Box from ${pkg.pkg_ID} could not be placed.`);
+  
+    // Placement logic
+    let truckX = 0, truckY = 0, truckZ = 0;
+    let rowHeight = 0;
+  
+    for (const box of allBoxes) {
+      const { length, width, height, stacking_factor } = box;
+  
+      const gridBoxL = Math.ceil(length / gridUnit);
+      const gridBoxW = Math.ceil(width / gridUnit);
+  
+      let placed = false;
+  
+      for (let x = 0; x <= gridCols - gridBoxL && !placed; x++) {
+        for (let z = 0; z <= gridRows - gridBoxW && !placed; z++) {
+          let canPlace = true;
+          let maxHeight = 0;
+          let maxStack = 0;
+  
+          for (let i = 0; i < gridBoxL && canPlace; i++) {
+            for (let j = 0; j < gridBoxW && canPlace; j++) {
+              const cell = heightMap[x + i][z + j];
+              if (cell.height + height > truckHeight) canPlace = false;
+              if (cell.stackCount >= stacking_factor + 1) canPlace = false;
+              maxHeight = Math.max(maxHeight, cell.height);
+              maxStack = Math.max(maxStack, cell.stackCount);
+            }
+          }
+  
+          if (canPlace) {
+            for (let i = 0; i < gridBoxL; i++) {
+              for (let j = 0; j < gridBoxW; j++) {
+                const cell = heightMap[x + i][z + j];
+                cell.height = maxHeight + height;
+                cell.stackCount = maxStack + 1;
+              }
+            }
+  
+            placements.push({
+              pkg_ID: box.pkg_ID,
+              color: box.color,
+              position: [
+                x * gridUnit,
+                maxHeight,
+                z * gridUnit
+              ],
+              dimensions: [length, height, width]
+            });
+  
+            placed = true;
+          }
+        }
+      }
+  
+      if (!placed) {
+        console.warn(`Box from ${box.pkg_ID} at stop ${box.stop} could not be placed`);
+      }
     }
+  
+    return placements;
   }
+  
 
-  return placements;
-}
 
 
 function generatePackageBlocks(boxPlacements) {
@@ -1052,7 +1135,16 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
 
       // const boxPlacements = computeBoxPlacements(boxesToPlace, vehicleDims);
 
-      const rawPlacements = computeBoxPlacements(boxesToPlace, vehicleDims);
+      const packagesByStop = {};
+      boxesToPlace.forEach(box => {
+        const stop = box.stop;
+        if (!packagesByStop[stop]) packagesByStop[stop] = [];
+        packagesByStop[stop].push(box);
+      });
+      // const rawPlacements = computeBoxPlacements(boxesToPlace, vehicleDims);
+      const rawPlacements = computeBoxPlacements(a.loadArrangement, packageInfoDetails, vehicleDims);
+
+      
       const boxPlacements = generatePackageBlocks(rawPlacements);
 
 

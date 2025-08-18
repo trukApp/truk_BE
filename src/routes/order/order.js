@@ -839,6 +839,31 @@ function computeBoxPlacements(packages, truckDimensions) {
 }
 
 
+function generatePackageBlocks(boxPlacements) {
+  const colorPalette = [
+    "#10b981", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6",
+    "#14b8a6", "#f43f5e", "#0ea5e9", "#6366f1", "#22c55e"
+  ];
+  const colorMap = {};
+  let colorIndex = 0;
+  const blocks = [];
+
+  boxPlacements.forEach(box => {
+    const { pkg_ID } = box;
+    if (!colorMap[pkg_ID]) {
+      colorMap[pkg_ID] = colorPalette[colorIndex % colorPalette.length];
+      colorIndex++;
+    }
+    blocks.push({
+      ...box,
+      color: colorMap[pkg_ID]
+    });
+  });
+
+  return blocks;
+}
+
+
 
 /* -------------------------- ROUTES --------------------------- */
 router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
@@ -999,7 +1024,7 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
         const pkgRecord = packagesData.find(p => p.pack_ID === pkgID);
         const stop = a.loadArrangement.find(x => x.packages.includes(pkgID))?.stop || 1;
         const stackFactor = productStackFactor;
-      
+
         (pkgRecord?.products || []).forEach(line => {
           const prod = productMap[line.prod_ID];
           const pacIds = resolvePacIdsFromProduct(prod);
@@ -1018,15 +1043,19 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
           }
         });
       });
-      
+
       const vehicleDims = {
         interiorWidthM: widthM,
         interiorLengthM: lengthM,
         interiorHeightM: heightM
       };
-      
-      const boxPlacements = computeBoxPlacements(boxesToPlace, vehicleDims);
-      
+
+      // const boxPlacements = computeBoxPlacements(boxesToPlace, vehicleDims);
+
+      const rawPlacements = computeBoxPlacements(boxesToPlace, vehicleDims);
+      const boxPlacements = generatePackageBlocks(rawPlacements);
+
+
 
 
 

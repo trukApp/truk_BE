@@ -757,92 +757,72 @@ function parseDimension(str = '') {
 // }
 
 
-function computeBoxPlacements({
-  packageInfoDetails,
-  vehicleDimensions,
-  loadArrangement
-}) {
+function computeBoxPlacements(packages, truckDimensions) {
   const placements = [];
-  const stopPackagesMap = new Map();
 
-  // Map stop numbers to packages
-  loadArrangement.forEach(({ stop, packages }) => {
-    packages.forEach(pkgID => {
-      stopPackagesMap.set(pkgID, stop);
-    });
-  });
+  const truckLength = truckDimensions.interiorLengthM;
+  const truckWidth = truckDimensions.interiorWidthM;
+  const truckHeight = truckDimensions.interiorHeightM;
 
-  // Flatten boxes with stop mapping
-  const allBoxes = [];
-  for (const pkg of packageInfoDetails) {
-    const stop = stopPackagesMap.get(pkg.pkg_ID) || 1;
+  const gridUnit = 0.1; // 10cm grid granularity
+  const gridCols = Math.floor(truckLength / gridUnit);
+  const gridRows = Math.floor(truckWidth / gridUnit);
 
-    for (const line of pkg.lines || []) {
-      const { lengthM, widthM, heightM } = line.packagingDimensions;
-      const quantity = line.quantity || 1;
+  // Track used height and stacking count at each (x,z) cell
+  const heightMap = Array.from({ length: gridCols }, () =>
+    Array.from({ length: gridRows }, () => ({ height: 0, stackCount: 0 }))
+  );
 
-      for (let i = 0; i < quantity; i++) {
-        allBoxes.push({
-          pkg_ID: pkg.pkg_ID,
-          prod_ID: line.prod_ID,
-          stop,
-          dimensions: { length: lengthM, width: widthM, height: heightM }
-        });
-      }
-    }
-  }
+  // Sort by stop in FILO (last stop first)
+  packages.sort((a, b) => b.stop - a.stop);
 
-  // FILO (higher stop first)
-  allBoxes.sort((a, b) => b.stop - a.stop);
+  for (const pkg of packages) {
+    const [boxLength, boxHeight, boxWidth] = pkg.dimensions;
+    const stackLimit = pkg.stacking_factor || 0;
 
-  const {
-    interiorWidthM,
-    interiorLengthM,
-  } = vehicleDimensions;
+    const gridBoxL = Math.ceil(boxLength / gridUnit);
+    const gridBoxW = Math.ceil(boxWidth / gridUnit);
 
-  const gridSize = 0.05;
-  const occupiedGrid = new Set();
-
-  function fits(x, y, boxW, boxL) {
-    for (let i = 0; i < boxW; i += gridSize) {
-      for (let j = 0; j < boxL; j += gridSize) {
-        const gx = Math.floor((x + i) / gridSize);
-        const gy = Math.floor((y + j) / gridSize);
-        if (occupiedGrid.has(`${gx},${gy}`)) return false;
-      }
-    }
-    return true;
-  }
-
-  function occupy(x, y, boxW, boxL) {
-    for (let i = 0; i < boxW; i += gridSize) {
-      for (let j = 0; j < boxL; j += gridSize) {
-        const gx = Math.floor((x + i) / gridSize);
-        const gy = Math.floor((y + j) / gridSize);
-        occupiedGrid.add(`${gx},${gy}`);
-      }
-    }
-  }
-
-  for (const box of allBoxes) {
-    const { length, width, height } = box.dimensions;
     let placed = false;
 
-    for (let y = 0; y + length <= interiorLengthM; y += gridSize) {
-      for (let x = 0; x + width <= interiorWidthM; x += gridSize) {
-        if (fits(x, y, width, length)) {
+    for (let x = 0; x <= gridCols - gridBoxL; x++) {
+      for (let z = 0; z <= gridRows - gridBoxW; z++) {
+        let canPlace = true;
+        let maxHeight = 0;
+        let maxStack = 0;
+
+        for (let i = 0; i < gridBoxL && canPlace; i++) {
+          for (let j = 0; j < gridBoxW && canPlace; j++) {
+            const cell = heightMap[x + i][z + j];
+            if (cell.height + boxHeight > truckHeight) canPlace = false;
+            if (cell.stackCount >= stackLimit + 1) canPlace = false;
+            maxHeight = Math.max(maxHeight, cell.height);
+            maxStack = Math.max(maxStack, cell.stackCount);
+          }
+        }
+
+        if (canPlace) {
+          // Mark cells as used
+          for (let i = 0; i < gridBoxL; i++) {
+            for (let j = 0; j < gridBoxW; j++) {
+              const cell = heightMap[x + i][z + j];
+              cell.height = maxHeight + boxHeight;
+              cell.stackCount = maxStack + 1;
+            }
+          }
+
+          // Save placement
           placements.push({
-            pkg_ID: box.pkg_ID,
-            prod_ID: box.prod_ID,
-            stop: box.stop,
-            position: {
-              x: parseFloat((x + width / 2).toFixed(2)),
-              y: parseFloat((y + length / 2).toFixed(2)),
-              z: 0
-            },
-            dimensions: { length, width, height }
+            pkg_ID: pkg.pkg_ID,
+            color: pkg.color || '#ccc',
+            position: [
+              x * gridUnit,       // X (length)
+              maxHeight,          // Y (height)
+              z * gridUnit        // Z (width)
+            ],
+            dimensions: [boxLength, boxHeight, boxWidth]
           });
-          occupy(x, y, width, length);
+
           placed = true;
           break;
         }
@@ -851,7 +831,7 @@ function computeBoxPlacements({
     }
 
     if (!placed) {
-      console.warn(`❌ Could not place box from ${box.pkg_ID}`);
+      console.warn(`Box from ${pkg.pkg_ID} could not be placed.`);
     }
   }
 
@@ -1013,11 +993,13 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
       });
 
 
-      // build boxes array for 3D placement
-      const pkgInfoMapForAlloc = {};
+      const boxesToPlace = [];
+
       a.packages.forEach(pkgID => {
         const pkgRecord = packagesData.find(p => p.pack_ID === pkgID);
-        const boxes = [];
+        const stop = a.loadArrangement.find(x => x.packages.includes(pkgID))?.stop || 1;
+        const stackFactor = productStackFactor;
+      
         (pkgRecord?.products || []).forEach(line => {
           const prod = productMap[line.prod_ID];
           const pacIds = resolvePacIdsFromProduct(prod);
@@ -1026,23 +1008,25 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
           const L = parseDimension(`${info.pack_length} ${info.dimensions_uom}`);
           const W = parseDimension(`${info.pack_width}  ${info.dimensions_uom}`);
           const H = parseDimension(`${info.pack_height} ${info.dimensions_uom}`);
-          for (let i = 0; i < line.quantity; i++) boxes.push({ dimensions: [L, W, H], prod_IDs: [line.prod_ID] });
+          for (let i = 0; i < line.quantity; i++) {
+            boxesToPlace.push({
+              pkg_ID: pkgID,
+              dimensions: [L, H, W],
+              stacking_factor: stackFactor,
+              stop
+            });
+          }
         });
-        pkgInfoMapForAlloc[pkgID] = { boxes };
       });
-
-      // const vehicleDims = { interior_width: widthM, interior_length: lengthM, interior_height: heightM };
+      
       const vehicleDims = {
         interiorWidthM: widthM,
         interiorLengthM: lengthM,
         interiorHeightM: heightM
       };
-
-      const boxPlacements = computeBoxPlacements({
-        packageInfoDetails,
-        vehicleDimensions: vehicleDims,
-        loadArrangement: a.loadArrangement
-      });
+      
+      const boxPlacements = computeBoxPlacements(boxesToPlace, vehicleDims);
+      
 
 
 

@@ -803,15 +803,14 @@ function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimens
   const placements = [];
 
   const truckLength = vehicleDimensions.interiorLengthM;
-  const truckWidth = vehicleDimensions.interiorWidthM;
+  const truckWidth  = vehicleDimensions.interiorWidthM;
   const truckHeight = vehicleDimensions.interiorHeightM;
 
   const gridUnit = 0.1; // 10 cm
   const gridCols = Math.max(0, Math.floor(truckLength / gridUnit));
-  const gridRows = Math.max(0, Math.floor(truckWidth / gridUnit));
+  const gridRows = Math.max(0, Math.floor(truckWidth  / gridUnit));
 
-  // Track per (x,z) cell: used height, how many boxes stacked, and the MIN
-  // allowed total layers (weakest box governs). Start with Infinity.
+  // Per (x,z) cell: used height, stack count, and max allowed total layers.
   const heightMap = Array.from({ length: gridCols }, () =>
     Array.from({ length: gridRows }, () => ({
       height: 0,
@@ -820,47 +819,100 @@ function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimens
     }))
   );
 
-  // Stable color per pkg
+  // Stable color per package id
   const pkgColorMap = {};
-  const palette = [
-    "#10b981", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6",
-    "#ec4899", "#14b8a6", "#f43f5e", "#0ea5e9", "#6366f1", "#22c55e"
-  ];
+  const palette = ["#10b981","#3b82f6","#f59e0b","#ef4444","#8b5cf6","#ec4899","#14b8a6","#f43f5e","#0ea5e9","#6366f1","#22c55e"];
   let cIdx = 0;
-  const getColor = id => (pkgColorMap[id] ??= palette[cIdx++ % palette.length]);
+  const colorOf = id => (pkgColorMap[id] ??= palette[cIdx++ % palette.length]);
 
-  // Flatten boxes in strict FILO: last stop first
+  // Flatten boxes in FILO: last stop first
   const allBoxes = [];
   for (let i = loadArrangement.length - 1; i >= 0; i--) {
     const { stop, packages } = loadArrangement[i];
     for (const pkg_ID of packages) {
       const pkg = packageInfoDetails.find(p => p.pkg_ID === pkg_ID);
       if (!pkg) continue;
-
-      for (const line of pkg.lines) {
+      for (const line of pkg.lines || []) {
         if (!line?.packagingDimensions) continue;
         const { lengthM, widthM, heightM } = line.packagingDimensions;
-        const sf = Number(line.stacking_factor ?? 0);          // from master_products
-        const allowedLayersForThisBox = Math.max(1, sf + 1);   // SF rule
-
-        for (let q = 0; q < Number(line.quantity || 0); q++) {
+        const sf = Number(line.stacking_factor ?? 0);   // from master_products
+        const allowedLayers = Math.max(1, sf + 1);      // SF=0 -> 1 layer total
+        const qty = Number(line.quantity || 0);
+        for (let q = 0; q < qty; q++) {
           allBoxes.push({
             pkg_ID,
             stop,
-            color: getColor(pkg_ID),
+            color: colorOf(pkg_ID),
             length: lengthM,
-            width: widthM,
+            width:  widthM,
             height: heightM,
-            allowedLayers: allowedLayersForThisBox
+            allowedLayers
           });
         }
       }
     }
   }
 
+  // If *every* box has allowedLayers===1, we globally forbid any Y>0 placement.
+  const GLOBAL_NO_STACK = allBoxes.length > 0 && allBoxes.every(b => b.allowedLayers <= 1);
   const EPS = 1e-9;
 
-  // Try to place each box
+  // ----- helpers -----
+  function canPlaceAt(x0, z0, L, W, H, boxAllowedLayers) {
+    const needCols = Math.ceil(L / gridUnit);
+    const needRows = Math.ceil(W / gridUnit);
+
+    let baseMin = Infinity, baseMax = -Infinity;
+
+    for (let dx = 0; dx < needCols; dx++) {
+      for (let dz = 0; dz < needRows; dz++) {
+        const cell = heightMap[x0 + dx][z0 + dz];
+
+        // If global no-stack, all cells must still be floor.
+        if (GLOBAL_NO_STACK && (cell.height > EPS || cell.stackCount > 0)) return false;
+
+        baseMin = Math.min(baseMin, cell.height);
+        baseMax = Math.max(baseMax, cell.height);
+
+        const wouldStack = cell.stackCount + 1;
+        const cellAllowed = cell.maxAllowedLayers;
+        if (wouldStack > Math.min(cellAllowed, boxAllowedLayers)) return false; // stacking limit
+        if (cell.height + H > truckHeight + EPS) return false;                  // exceeds roof
+      }
+    }
+
+    // Keep each footprint flat
+    if (Math.abs(baseMax - baseMin) > EPS) return false;
+
+    // When globally no-stack, we also insist the base is at floor level
+    if (GLOBAL_NO_STACK && baseMax > EPS) return false;
+
+    return { base: baseMax, needCols, needRows };
+  }
+
+  function placeAt(x0, z0, L, W, H, base, boxAllowedLayers, pkg_ID, color) {
+    const needCols = Math.ceil(L / gridUnit);
+    const needRows = Math.ceil(W / gridUnit);
+    const newHeight = base + H;
+
+    for (let dx = 0; dx < needCols; dx++) {
+      for (let dz = 0; dz < needRows; dz++) {
+        const cell = heightMap[x0 + dx][z0 + dz];
+        cell.height = newHeight;
+        cell.stackCount += 1;
+        cell.maxAllowedLayers = Math.min(cell.maxAllowedLayers, boxAllowedLayers);
+      }
+    }
+
+    placements.push({
+      pkg_ID,
+      color,
+      position: [x0 * gridUnit, base, z0 * gridUnit], // [X(length), Y(height), Z(width)]
+      dimensions: [L, H, W]
+    });
+  }
+
+  // ----- placement loop -----
   for (const box of allBoxes) {
     const L = box.length, W = box.width, H = box.height;
 
@@ -869,70 +921,31 @@ function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimens
 
     let placed = false;
 
-    // Row-major scan over the floor: fill full truck, not just a corner
+    // 1) Preferred strategy: END-TO-END (rear -> front). X desc, Z asc.
     for (let z = 0; z <= gridRows - needRows && !placed; z++) {
-      for (let x = 0; x <= gridCols - needCols && !placed; x++) {
+      for (let x = (gridCols - needCols); x >= 0 && !placed; x--) {
+        const ok = canPlaceAt(x, z, L, W, H, box.allowedLayers);
+        if (ok) {
+          placeAt(x, z, L, W, H, ok.base, box.allowedLayers, box.pkg_ID, box.color);
+          placed = true;
+        }
+      }
+    }
 
-        // Check flatness, stack limits and height at candidate region
-        let baseMin = Infinity, baseMax = -Infinity;
-        let canPlace = true;
-
-        for (let dx = 0; dx < needCols && canPlace; dx++) {
-          for (let dz = 0; dz < needRows && canPlace; dz++) {
-            const cell = heightMap[x + dx][z + dz];
-
-            baseMin = Math.min(baseMin, cell.height);
-            baseMax = Math.max(baseMax, cell.height);
-
-            // Respect the weakest (minimum) stacking capacity already in this cell
-            const cellAllowed = cell.maxAllowedLayers;
-
-            // If we drop this box here, stackCount would become +1
-            const wouldStack = cell.stackCount + 1;
-
-            if (wouldStack > Math.min(cellAllowed, box.allowedLayers)) {
-              canPlace = false;                    // stacking limit would be exceeded
-              break;
-            }
-            if (cell.height + H > truckHeight + EPS) {
-              canPlace = false;                    // over truck roof
-              break;
-            }
+    // 2) Fallback: old corner scan (front-left origin). X asc, Z asc.
+    if (!placed) {
+      for (let z = 0; z <= gridRows - needRows && !placed; z++) {
+        for (let x = 0; x <= gridCols - needCols && !placed; x++) {
+          const ok = canPlaceAt(x, z, L, W, H, box.allowedLayers);
+          if (ok) {
+            placeAt(x, z, L, W, H, ok.base, box.allowedLayers, box.pkg_ID, box.color);
+            placed = true;
           }
         }
-
-        // Keep layer flat: do not bridge different base heights in one footprint
-        if (canPlace && Math.abs(baseMax - baseMin) > EPS) {
-          canPlace = false;
-        }
-
-        if (!canPlace) continue;
-
-        // Place the box: update all covered cells consistently
-        const newHeight = baseMax + H;
-        for (let dx = 0; dx < needCols; dx++) {
-          for (let dz = 0; dz < needRows; dz++) {
-            const cell = heightMap[x + dx][z + dz];
-            cell.height = newHeight;
-            cell.stackCount += 1;
-            // The total allowed layers for this column cannot exceed the weakest box
-            cell.maxAllowedLayers = Math.min(cell.maxAllowedLayers, box.allowedLayers);
-          }
-        }
-
-        placements.push({
-          pkg_ID: box.pkg_ID,
-          color: box.color,
-          position: [x * gridUnit, baseMax, z * gridUnit], // [X(length), Y(height), Z(width)]
-          dimensions: [L, H, W]                            // keep exact output format
-        });
-
-        placed = true;
       }
     }
 
     if (!placed) {
-      // Couldn’t place this item — we keep going (same behavior as before)
       console.warn(`Box from ${box.pkg_ID} (stop ${box.stop}) could not be placed.`);
     }
   }

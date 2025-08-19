@@ -924,104 +924,179 @@ function parseDimension(str = '') {
       return false;
     }
   }
-  
-  
 
-
-  function computeBoxPlacements(boxes, truckDimensions, productMap) {
-    if (!Array.isArray(boxes)) {
-      console.error("🚫 boxes is not an array");
-      return [];
-    }
+  function canPlace(grid, x, y, z, l, w, h, stackingFactor) {
+    const lx = Math.floor(x);
+    const ly = Math.floor(y);
+    const lz = Math.floor(z);
+    const lxEnd = Math.floor(x + l);
+    const lyEnd = Math.floor(y + w);
+    const lzEnd = Math.floor(z + h);
   
-    if (!truckDimensions || !truckDimensions.interiorWidthM || !truckDimensions.interiorLengthM || !truckDimensions.interiorHeightM) {
-      throw new Error("🚫 truckDimensions is missing required properties.");
-    }
+    // Check bounds
+    if (
+      lxEnd > grid.length ||
+      lyEnd > grid[0].length ||
+      lzEnd > grid[0][0].length
+    ) return false;
   
-    const placements = [];
-    const stackingMap = {}; // { 'x,y': currentStackHeight }
-  
-    const truckWidth = truckDimensions.interiorWidthM;
-    const truckLength = truckDimensions.interiorLengthM;
-    const truckHeight = truckDimensions.interiorHeightM;
-  
-    const gridStep = 0.1; // step size in meters
-    const maxX = Math.floor(truckWidth / gridStep);
-    const maxY = Math.floor(truckLength / gridStep);
-  
-    // 2D floor map for base placement
-    const baseGrid = Array.from({ length: maxX }, () => Array(maxY).fill(0));
-  
-    // Group boxes by stop (FILO logic: last stop loads first)
-    const stopMap = {};
-    for (const box of boxes) {
-      if (!stopMap[box.stop]) stopMap[box.stop] = [];
-      stopMap[box.stop].push(box);
-    }
-  
-    const sortedStops = Object.keys(stopMap).sort((a, b) => b - a); // FILO
-    for (const stop of sortedStops) {
-      const boxesAtStop = stopMap[stop];
-  
-      for (const box of boxesAtStop) {
-        const {
-          pkg_ID,
-          dimensions: [length, height, width],
-          color,
-        } = box;
-  
-        const prodID = box.prod_ID;
-        const stackingFactor = productMap?.[prodID]?.stacking_factor ?? 0;
-  
-        console.log(`📦 Attempting placement for: ${pkg_ID} | Stop: ${stop} | SF: ${stackingFactor}`);
-  
-        let placed = false;
-  
-        for (let x = 0; x < maxX; x++) {
-          for (let y = 0; y < maxY; y++) {
-            const actualX = x * gridStep;
-            const actualY = y * gridStep;
-  
-            const fitsX = actualX + width <= truckWidth;
-            const fitsY = actualY + length <= truckLength;
-  
-            if (!fitsX || !fitsY) continue;
-  
-            // Stacking key
-            const cellKey = `${x},${y}`;
-            const currentStackHeight = stackingMap[cellKey] || 0;
-            const remainingHeight = truckHeight - currentStackHeight;
-  
-            // Check stacking allowance
-            if (remainingHeight < height || (stackingFactor > 0 && currentStackHeight >= (height * stackingFactor))) {
-              continue;
-            }
-  
-            // Place the box
-            placements.push({
-              pkg_ID,
-              color,
-              position: [actualX, currentStackHeight, actualY],
-              dimensions: [length, height, width],
-            });
-  
-            // Update stacking
-            stackingMap[cellKey] = currentStackHeight + height;
-  
-            console.log(`✅ Placed: ${pkg_ID} at (${actualX}, ${currentStackHeight}, ${actualY}) with height ${height}`);
-            placed = true;
-            break;
-          }
-          if (placed) break;
-        }
-  
-        if (!placed) {
-          console.warn(`⚠️ Could not place box: ${pkg_ID}`);
+    // Check occupancy
+    for (let i = lx; i < lxEnd; i++) {
+      for (let j = ly; j < lyEnd; j++) {
+        for (let k = lz; k < lzEnd; k++) {
+          if (grid[i][j][k] !== null) return false;
         }
       }
     }
   
+    // Stacking rule: if z > 0, ensure below layers are fully filled
+    if (lz > 0) {
+      for (let i = lx; i < lxEnd; i++) {
+        for (let j = ly; j < lyEnd; j++) {
+          if (grid[i][j][lz - 1] === null) return false;
+        }
+      }
+    }
+  
+    return true;
+  }
+  
+  function placeInGrid(grid, x, y, z, l, w, h, value) {
+    const lx = Math.floor(x);
+    const ly = Math.floor(y);
+    const lz = Math.floor(z);
+    const lxEnd = Math.floor(x + l);
+    const lyEnd = Math.floor(y + w);
+    const lzEnd = Math.floor(z + h);
+  
+    for (let i = lx; i < lxEnd; i++) {
+      for (let j = ly; j < lyEnd; j++) {
+        for (let k = lz; k < lzEnd; k++) {
+          grid[i][j][k] = value;
+        }
+      }
+    }
+  }
+  
+  function computeBoxPlacements(boxes, vehicleDims, productMap) {
+    const unit = 0.1; // 10cm unit
+    const truckLength = vehicleDims.interiorLengthM;
+    const truckWidth = vehicleDims.interiorWidthM;
+    const truckHeight = vehicleDims.interiorHeightM;
+  
+    const gridX = Math.floor(truckLength / unit);
+    const gridY = Math.floor(truckWidth / unit);
+    const gridZ = Math.floor(truckHeight / unit);
+  
+    const grid = Array.from({ length: gridX }, () =>
+      Array.from({ length: gridY }, () => Array(gridZ).fill(false))
+    );
+  
+    const stackingMap = Array.from({ length: gridX }, () =>
+      Array(gridY).fill(0)
+    );
+  
+    const placements = [];
+    const couldNotPlace = [];
+  
+    for (const box of boxes) {
+      const {
+        pkg_ID,
+        color,
+        dimensions: [length, height, width],
+        product_ID,
+      } = box;
+  
+      const stacking_factor = parseInt(productMap[product_ID]?.stacking_factor ?? 0);
+  
+      const sizeX = Math.ceil(length / unit);
+      const sizeY = Math.ceil(width / unit);
+      const sizeZ = Math.ceil(height / unit);
+  
+      let placed = false;
+  
+      for (let z = 0; z <= gridZ - sizeZ; z++) {
+        if (stacking_factor === 0 && z > 0) break;
+  
+        for (let x = 0; x <= gridX - sizeX; x++) {
+          for (let y = 0; y <= gridY - sizeY; y++) {
+            if (
+              canPlaceBox(grid, x, y, z, sizeX, sizeY, sizeZ, stackingMap, stacking_factor)
+            ) {
+              markGrid(grid, x, y, z, sizeX, sizeY, sizeZ);
+              updateStackingMap(stackingMap, x, y, sizeX, sizeY);
+  
+              placements.push({
+                pkg_ID,
+                color,
+                position: [
+                  +(x * unit).toFixed(2),
+                  +(y * unit).toFixed(2),
+                  +(z * unit).toFixed(2),
+                ],
+                dimensions: [length, height, width],
+              });
+  
+              placed = true;
+              break;
+            }
+          }
+          if (placed) break;
+        }
+        if (placed) break;
+      }
+  
+      if (!placed) {
+        couldNotPlace.push(pkg_ID);
+      }
+    }
+  
+    console.log(`[✔] Placed ${placements.length} boxes`);
+    if (couldNotPlace.length) {
+      console.warn(`[✖] Could NOT place: ${couldNotPlace.join(', ')}`);
+    }
+  
     return placements;
+  }
+  
+  function canPlaceBox(grid, x, y, z, sizeX, sizeY, sizeZ, stackingMap, stacking_factor) {
+    for (let i = 0; i < sizeX; i++) {
+      for (let j = 0; j < sizeY; j++) {
+        for (let k = 0; k < sizeZ; k++) {
+          if (grid[x + i]?.[y + j]?.[z + k]) return false;
+        }
+  
+        // Stacking factor check
+        if (stackingMap[x + i][y + j] >= stacking_factor) return false;
+  
+        // Support check: if not at z = 0, must be fully supported from below
+        if (z > 0) {
+          for (let k = 0; k < sizeZ; k++) {
+            if (!grid[x + i]?.[y + j]?.[z - 1]) return false;
+          }
+        }
+      }
+    }
+  
+    return true;
+  }
+  
+  function markGrid(grid, x, y, z, sizeX, sizeY, sizeZ) {
+    for (let i = 0; i < sizeX; i++) {
+      for (let j = 0; j < sizeY; j++) {
+        for (let k = 0; k < sizeZ; k++) {
+          grid[x + i][y + j][z + k] = true;
+        }
+      }
+    }
+  }
+  
+  function updateStackingMap(stackingMap, x, y, sizeX, sizeY) {
+    for (let i = 0; i < sizeX; i++) {
+      for (let j = 0; j < sizeY; j++) {
+        stackingMap[x + i][y + j]++;
+      }
+    }
   }
   
   
@@ -1298,13 +1373,11 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
       // const rawPlacements = computeBoxPlacements(boxesToPlace, vehicleDims);
       
       // const rawPlacements = computeBoxPlacements(a, vehicleDims, packageInfoDetails);
-      const rawPlacements = computeBoxPlacements(boxesToPlace, vehicleDims, productMap);
-
-
-
-
+      const placedBoxes = computeBoxPlacements(boxesToPlace, vehicleDims, productMap);
+      const boxPlacements = generatePackageBlocks(placedBoxes);
       
-      const boxPlacements = generatePackageBlocks(rawPlacements);
+      
+
 
 
 

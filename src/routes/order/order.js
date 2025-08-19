@@ -929,89 +929,101 @@ function parseDimension(str = '') {
 
 
   function computeBoxPlacements(boxes, truckDimensions, productMap) {
+    if (!Array.isArray(boxes)) {
+      console.error("🚫 boxes is not an array");
+      return [];
+    }
+  
+    if (!truckDimensions || !truckDimensions.interiorWidthM || !truckDimensions.interiorLengthM || !truckDimensions.interiorHeightM) {
+      throw new Error("🚫 truckDimensions is missing required properties.");
+    }
+  
     const placements = [];
-    const placedBoxes = new Set();
+    const stackingMap = {}; // { 'x,y': currentStackHeight }
   
-    const width = truckDimensions.interiorWidthM;
-    const length = truckDimensions.interiorLengthM;
-    const height = truckDimensions.interiorHeightM;
+    const truckWidth = truckDimensions.interiorWidthM;
+    const truckLength = truckDimensions.interiorLengthM;
+    const truckHeight = truckDimensions.interiorHeightM;
   
-    const grid = Array.from({ length: Math.floor(length * 100) }, () =>
-      Array(Math.floor(width * 100)).fill(0)
-    );
+    const gridStep = 0.1; // step size in meters
+    const maxX = Math.floor(truckWidth / gridStep);
+    const maxY = Math.floor(truckLength / gridStep);
   
-    const stackingMap = new Map(); // (x, y) => current stack height
+    // 2D floor map for base placement
+    const baseGrid = Array.from({ length: maxX }, () => Array(maxY).fill(0));
   
-    let currentZ = 0;
-    let stopSortedBoxes = [...boxes].sort((a, b) => b.stop - a.stop); // FILO
+    // Group boxes by stop (FILO logic: last stop loads first)
+    const stopMap = {};
+    for (const box of boxes) {
+      if (!stopMap[box.stop]) stopMap[box.stop] = [];
+      stopMap[box.stop].push(box);
+    }
   
-    for (const box of stopSortedBoxes) {
-      const { pkg_ID, dimensions, stacking_factor = 0, stop } = box;
-      const [l, h, w] = dimensions.map(d => d * 100);
+    const sortedStops = Object.keys(stopMap).sort((a, b) => b - a); // FILO
+    for (const stop of sortedStops) {
+      const boxesAtStop = stopMap[stop];
   
-      let placed = false;
+      for (const box of boxesAtStop) {
+        const {
+          pkg_ID,
+          dimensions: [length, height, width],
+          color,
+        } = box;
   
-      for (let z = 0; z <= height * 100 - h; z += 1) {
-        for (let x = 0; x <= length * 100 - l; x += 1) {
-          for (let y = 0; y <= width * 100 - w; y += 1) {
+        const prodID = box.prod_ID;
+        const stackingFactor = productMap?.[prodID]?.stacking_factor ?? 0;
   
-            let canPlace = true;
-            let maxStackHeight = 0;
+        console.log(`📦 Attempting placement for: ${pkg_ID} | Stop: ${stop} | SF: ${stackingFactor}`);
   
-            // Check if space is free
-            for (let dx = 0; dx < l; dx++) {
-              for (let dy = 0; dy < w; dy++) {
-                if (grid[x + dx][y + dy] > 0) {
-                  canPlace = false;
-                  break;
-                }
-                const key = `${x + dx},${y + dy}`;
-                maxStackHeight = Math.max(maxStackHeight, stackingMap.get(key) || 0);
-              }
-              if (!canPlace) break;
+        let placed = false;
+  
+        for (let x = 0; x < maxX; x++) {
+          for (let y = 0; y < maxY; y++) {
+            const actualX = x * gridStep;
+            const actualY = y * gridStep;
+  
+            const fitsX = actualX + width <= truckWidth;
+            const fitsY = actualY + length <= truckLength;
+  
+            if (!fitsX || !fitsY) continue;
+  
+            // Stacking key
+            const cellKey = `${x},${y}`;
+            const currentStackHeight = stackingMap[cellKey] || 0;
+            const remainingHeight = truckHeight - currentStackHeight;
+  
+            // Check stacking allowance
+            if (remainingHeight < height || (stackingFactor > 0 && currentStackHeight >= (height * stackingFactor))) {
+              continue;
             }
   
-            // Stacking logic
-            if (maxStackHeight > stacking_factor) {
-              canPlace = false;
-            }
+            // Place the box
+            placements.push({
+              pkg_ID,
+              color,
+              position: [actualX, currentStackHeight, actualY],
+              dimensions: [length, height, width],
+            });
   
-            if (canPlace) {
-              // Place the box
-              for (let dx = 0; dx < l; dx++) {
-                for (let dy = 0; dy < w; dy++) {
-                  grid[x + dx][y + dy] = 1;
-                  const key = `${x + dx},${y + dy}`;
-                  stackingMap.set(key, (stackingMap.get(key) || 0) + 1);
-                }
-              }
+            // Update stacking
+            stackingMap[cellKey] = currentStackHeight + height;
   
-              const position = [x / 100, z / 100, y / 100];
-              placements.push({
-                pkg_ID,
-                color: `#${Math.floor(Math.random()*16777215).toString(16)}`,
-                position,
-                dimensions: [l / 100, h / 100, w / 100]
-              });
-  
-              console.log(`✅ Placed box ${pkg_ID} at ${JSON.stringify(position)} (Stop ${stop}, SF ${stacking_factor})`);
-              placedBoxes.add(pkg_ID);
-              placed = true;
-              break;
-            }
+            console.log(`✅ Placed: ${pkg_ID} at (${actualX}, ${currentStackHeight}, ${actualY}) with height ${height}`);
+            placed = true;
+            break;
           }
           if (placed) break;
         }
-        if (placed) break;
-      }
   
-      if (!placed) {
-        console.warn(`⚠️ Could not place box: ${pkg_ID} (Stop ${stop}, SF ${stacking_factor})`);
+        if (!placed) {
+          console.warn(`⚠️ Could not place box: ${pkg_ID}`);
+        }
       }
     }
   
     return placements;
   }
+  
   
   
   // Helpers

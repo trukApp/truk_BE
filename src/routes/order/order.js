@@ -1313,6 +1313,7 @@ function sampleRoutePoints(coords, intervalKm = 20) {
 function parseDistanceText(txt) {
   return parseFloat(txt.replace(/[^\d.]/g, '')) || 0;
 }
+
 async function getOptimizedRouteWithLoad(locations, shipmentLoads) {
   if (!Array.isArray(locations) || locations.length < 2) {
     throw new Error("Need at least origin and destination");
@@ -1776,18 +1777,20 @@ function parseDimension(str = '') {
   return /cm/i.test(str) ? val / 100 : val;
 }
 
-/** Color map per product across this allocation */
-function buildProductColorMap(packageInfoDetails) {
+/** Color map per (product, package) key */
+function buildColorMapByProdPkg(packageInfoDetails) {
   const palette = ["#10b981","#3b82f6","#f59e0b","#ef4444","#8b5cf6","#ec4899","#14b8a6","#f43f5e","#0ea5e9","#6366f1","#22c55e"];
-  const colorByProd = {};
+  const colorByKey = {};
   let i = 0;
   for (const p of packageInfoDetails) {
+    const pkg_ID = p.pkg_ID;
     for (const l of (p.lines || [])) {
       if (!l?.prod_ID) continue;
-      if (!colorByProd[l.prod_ID]) colorByProd[l.prod_ID] = palette[i++ % palette.length];
+      const key = `${l.prod_ID}|${pkg_ID}`;
+      if (!colorByKey[key]) colorByKey[key] = palette[i++ % palette.length];
     }
   }
-  return colorByProd;
+  return colorByKey;
 }
 
 /**
@@ -1799,7 +1802,6 @@ function buildProductColorMap(packageInfoDetails) {
  */
 function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimensions) {
   const placements = [];
-
   const r3 = n => Math.round(n * 1000) / 1000;
 
   const truckLength = vehicleDimensions.interiorLengthM;
@@ -1820,7 +1822,7 @@ function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimens
     }))
   );
 
-  const colorByProd = buildProductColorMap(packageInfoDetails);
+  const colorByProdPkg = buildColorMapByProdPkg(packageInfoDetails);
 
   // FILO groups: last stop first; within a stop, group contiguous by product
   const filoGroups = []; // [{stop, prod_ID, boxes:[{...}]}]
@@ -1840,7 +1842,8 @@ function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimens
           L: lengthM, W: widthM, H: heightM,
           sfCap: l.sfCap,                     // 1 or n>1
           allowedLayers: l.allowedLayers,
-          qty: Number(l.quantity || 0)
+          qty: Number(l.quantity || 0),
+          color: colorByProdPkg[`${l.prod_ID}|${pkg_ID}`] || "#999"
         });
         byProd.set(l.prod_ID, list);
       }
@@ -1855,7 +1858,7 @@ function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimens
             L: item.L, W: item.W, H: item.H,
             sfCap: item.sfCap,
             allowedLayers: item.allowedLayers,
-            color: colorByProd[prod_ID] || "#999"
+            color: item.color
           });
         }
       }
@@ -1876,16 +1879,15 @@ function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimens
         const cell = heightMap[x0 + dx][z0 + dz];
 
         // Enforce homogeneous stacks
-        
         if (cell.stackCount > 0 && cell.topProduct && cell.topProduct !== b.prod_ID) return false;
 
         baseMin = Math.min(baseMin, cell.height);
         baseMax = Math.max(baseMax, cell.height);
 
         const wouldStack = cell.stackCount + 1;
-        const cellAllowed = cell.maxAllowedLayers;
+        const cellAllowed = Math.min(cell.maxAllowedLayers, b.allowedLayers);
+        if (wouldStack > cellAllowed) return false;
 
-        if (wouldStack > Math.min(cellAllowed, b.allowedLayers)) return false;
         if (cell.height + b.H > truckHeight + EPS) return false;
       }
     }
@@ -1894,7 +1896,7 @@ function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimens
     if (Math.abs(baseMax - baseMin) > EPS) return false;
 
     // SF<=1 => must sit on floor
-    if (b.sfCap <= 1 && baseMax > EPS) return false;
+    if ((b.sfCap || 1) <= 1 && baseMax > EPS) return false;
 
     return { base: baseMax, needCols, needRows };
   }
@@ -1903,7 +1905,7 @@ function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimens
     const needCols = Math.ceil(b.L / gridUnit);
     const needRows = Math.ceil(b.W / gridUnit);
     const newHeight = base + b.H;
-  
+
     for (let dx = 0; dx < needCols; dx++) {
       for (let dz = 0; dz < needRows; dz++) {
         const cell = heightMap[x0 + dx][z0 + dz];
@@ -1913,17 +1915,15 @@ function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimens
         cell.topProduct = b.prod_ID;
       }
     }
-  
-    // ✅ round to 3 decimals and reference fields from `b`
+
     placements.push({
-      pkg_ID:  b.pkg_ID,
+      pkg_ID: b.pkg_ID,
       prod_ID: b.prod_ID,
-      color:   b.color,
-      position:   [r3(x0 * gridUnit), r3(base), r3(z0 * gridUnit)],
+      color: b.color,
+      position: [r3(x0 * gridUnit), r3(base), r3(z0 * gridUnit)],
       dimensions: [r3(b.L), r3(b.H), r3(b.W)]
     });
   }
-  
 
   // Lane filling: for each product group, rear→front (x desc), left→right (z asc)
   for (const group of filoGroups) {
@@ -1957,10 +1957,17 @@ function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimens
     }
   }
 
+  // Safety assert: if everything has sfCap<=1, nothing should be above y=0
+  const GLOBAL_NO_STACK =
+    packageInfoDetails.every(p => (p.lines || []).every(l => (l.sfCap || 1) <= 1));
+  if (GLOBAL_NO_STACK && placements.some(b => (b.position?.[1] || 0) > 1e-9)) {
+    throw new Error('Invariant violated: SF≤1 globally but a box was placed above the floor.');
+  }
+
   return placements;
 }
 
-/** FE already colors by product from placements; keep as passthrough */
+/** FE already colors by product+package from placements; keep as passthrough */
 function generatePackageBlocks(boxPlacements) {
   return boxPlacements.map(b => ({
     pkg_ID: b.pkg_ID,
@@ -1971,8 +1978,8 @@ function generatePackageBlocks(boxPlacements) {
   }));
 }
 
-/** Build per-product legend for FE, with totals by package and by stop */
-function buildProductLegend(loadArrangement, packageInfoDetails, colorByProd) {
+/** Build per-product legend for FE, with totals by package and by stop (+ per-package color) */
+function buildProductLegend(loadArrangement, packageInfoDetails, colorByProdPkg) {
   const byProd = {};
   for (const stopEntry of loadArrangement) {
     const stop = stopEntry.stop;
@@ -1983,14 +1990,16 @@ function buildProductLegend(loadArrangement, packageInfoDetails, colorByProd) {
         if (!l?.prod_ID) continue;
         const rec = (byProd[l.prod_ID] ||= {
           prod_ID: l.prod_ID,
-          color: colorByProd[l.prod_ID] || "#999",
+          color: "#999",
           totalQty: 0,
           byPackage: {},
           byStop: {}
         });
         const q = Number(l.quantity || 0);
         rec.totalQty += q;
-        rec.byPackage[pkg_ID] = (rec.byPackage[pkg_ID] || 0) + q;
+        const key = `${l.prod_ID}|${pkg_ID}`;
+        const prev = rec.byPackage[pkg_ID] || { qty: 0, color: colorByProdPkg[key] || "#999" };
+        rec.byPackage[pkg_ID] = { qty: prev.qty + q, color: prev.color };
         rec.byStop[stop] = (rec.byStop[stop] || 0) + q;
       }
     }
@@ -1999,10 +2008,8 @@ function buildProductLegend(loadArrangement, packageInfoDetails, colorByProd) {
     prod_ID: r.prod_ID,
     color: r.color,
     totalQty: r.totalQty,
-    byPackage: Object.entries(r.byPackage).map(([pack_ID, qty]) => ({ pack_ID, qty })),
-    byStop: Object.entries(r.byStop)
-      .map(([stop, qty]) => ({ stop: Number(stop), qty }))
-      .sort((a,b) => a.stop - b.stop)
+    byPackage: Object.entries(r.byPackage).map(([pack_ID, v]) => ({ pack_ID, qty: v.qty, color: v.color })),
+    byStop: Object.entries(r.byStop).map(([stop, qty]) => ({ stop: Number(stop), qty })).sort((a,b)=>a.stop-b.stop)
   }));
 }
 
@@ -2215,11 +2222,11 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
         interiorHeightM: heightM
       };
 
-      // 3D placements using FILO + per-product caps
-      const colorByProdLegend = buildProductColorMap(packageInfoDetails);
+      // 3D placements using FILO + per-(prod,pkg) caps & colors
+      const colorByProdPkg = buildColorMapByProdPkg(packageInfoDetails);
       const rawPlacements = computeBoxPlacements(a.loadArrangement, packageInfoDetails, vehicleDims);
       const boxPlacements = generatePackageBlocks(rawPlacements);
-      const productLegend = buildProductLegend(a.loadArrangement, packageInfoDetails, colorByProdLegend);
+      const productLegend = buildProductLegend(a.loadArrangement, packageInfoDetails, colorByProdPkg);
 
       return {
         ...a,
@@ -2228,15 +2235,14 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
         packageInfoDetails,
         occupiedPercent,
         packageDetails,
-        productLegend, // <— for FE legend (by product)
+        productLegend,
         truckCapacity: {
           rawM3: v.totalVolumeCapacity,
           oneLayerM3: v.oneLayerM3,
           usableM3: v.usableVol,
           maxLayersByHeight: v.maxLayersByHeight,
-          // FE badge hint: show the max allowed across lines
-          allowedLayers: Math.max(v.allowedLayers || 1, truckAllowedLayersFromLines),
-          // detailed per-line caps FE/3D should honor
+          // FE badge hint = **min** to avoid suggesting stacking when a line forbids it
+          allowedLayers: Math.min(v.allowedLayers || 1, truckAllowedLayersFromLines),
           perLineLayers
         }
       };

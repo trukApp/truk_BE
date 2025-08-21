@@ -1794,115 +1794,121 @@ function buildColorMapByProdPkg(packageInfoDetails) {
 }
 
 /**
- * End-to-end, single-layer placement (rear → front; lanes left → right).
- * - FILO by stop (last stop first, i.e. farthest drop sits closest to rear/door).
- * - NO stacking: y is always 0; any y>0 would be a bug.
- * - If a stop cannot fit in one lane along the length, open a new lane at next z.
- * - Boxes are expanded from packageInfoDetails (uses per-(prod,pkg) colors).
+ * End-to-end placement (front → rear), grouped by stop (FILO).
+ * - Put all boxes of the farthest stop deepest inside first.
+ * - Keep placing along the length (x) "one after one".
+ * - When the current row runs out of length, open a new row to the right (z).
+ * - Single layer (y=0). Stacking will be added later; scaffold via opts.maxLayers.
  */
 function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimensions, opts = {}) {
   const r3 = n => Math.round(n * 1000) / 1000;
 
-  const truckL = vehicleDimensions.interiorLengthM || 0; // x axis (front↔rear)
-  const truckW = vehicleDimensions.interiorWidthM  || 0; // z axis (left↔right)
-  // const truckH = vehicleDimensions.interiorHeightM || 0; // not used for single layer
+  const truckL = vehicleDimensions.interiorLengthM || 0; // x: front→rear
+  const truckW = vehicleDimensions.interiorWidthM  || 0; // z: left→right
+  // const truckH = vehicleDimensions.interiorHeightM || 0; // not used for this single-layer pass
 
-  const LANE_GUTTER_Z = opts.laneGutter ?? 0.02; // visual lane gap
-  const REAR_GUTTER_X = opts.rearGutter ?? 0.0;  // small rear gap if wanted
+  const ROW_GUTTER_Z = opts.laneGutter ?? 0.02;   // small visual gap between rows
+  const FRONT_GUTTER_X = opts.frontGutter ?? 0.0; // optional gap at front wall
+  const REAR_GUTTER_X  = opts.rearGutter  ?? 0.0; // optional gap at rear door
 
+  // Make a color lookup per (product|package)
   const colorByProdPkg = buildColorMapByProdPkg(packageInfoDetails);
 
-  // Expand a package record into concrete boxes
-  function expandBoxesForPackage(pkgRecord) {
+  // Helper: expand a package's lines into concrete boxes
+  function explodePackage(pkg) {
     const out = [];
-    for (const l of (pkgRecord.lines || [])) {
+    for (const l of (pkg.lines || [])) {
       if (!l?.packagingDimensions) continue;
       const L = +l.packagingDimensions.lengthM || 0;
       const W = +l.packagingDimensions.widthM  || 0;
       const H = +l.packagingDimensions.heightM || 0;
-      const q = Number(l.quantity || 0);
-      const key = `${l.prod_ID}|${pkgRecord.pkg_ID}`;
+      const qty = Number(l.quantity || 0);
+      const key = `${l.prod_ID}|${pkg.pkg_ID}`;
       const color = colorByProdPkg[key] || "#999";
-      for (let i = 0; i < q; i++) {
-        out.push({ pkg_ID: pkgRecord.pkg_ID, prod_ID: l.prod_ID, L, W, H, color });
+      for (let i = 0; i < qty; i++) {
+        out.push({
+          pkg_ID: pkg.pkg_ID,
+          prod_ID: l.prod_ID,
+          L, W, H,
+          color,
+          allowedLayers: l.allowedLayers || 1, // reserved for future stacking
+        });
       }
     }
     return out;
   }
 
-  // Map pkg_ID -> {pkg_ID, lines[]}
+  // Map pkg_ID -> { pkg_ID, lines[] }
   const pkgMap = new Map(packageInfoDetails.map(p => [p.pkg_ID, p]));
 
-  // Place by FILO stops (last stop first)
+  // FILO: last stop first (deepest inside)
   const stopsDesc = [...loadArrangement].sort((a, b) => b.stop - a.stop);
 
   const placements = [];
-  let zCursorGlobal = 0; // accumulated width consumed (left → right)
+
+  // Single-layer 2D “shelf”: x along length, z rows left→right
+  let zCursor = 0;       // where the current row starts (left→right)
+  let xCursor = FRONT_GUTTER_X; // how much of the current row is used (front→rear)
+  let rowMaxW = 0;       // max box width seen in the current row
+
+  // Try to start a new row, return false if no space left across width
+  function newRow(nextBoxW) {
+    const consumedZ = rowMaxW + ROW_GUTTER_Z;
+    zCursor += consumedZ;
+    xCursor = FRONT_GUTTER_X;
+    rowMaxW = 0;
+    // Not enough width left for another row
+    if (zCursor + nextBoxW > truckW + 1e-9) return false;
+    return true;
+  }
 
   for (const stopEntry of stopsDesc) {
-    // Collect and explode all boxes for the stop
+    // gather all boxes belonging to the stop
     const stopBoxes = [];
     for (const pkg_ID of (stopEntry.packages || [])) {
-      const pkgRec = pkgMap.get(pkg_ID);
-      if (pkgRec) stopBoxes.push(...expandBoxesForPackage(pkgRec));
+      const pkg = pkgMap.get(pkg_ID);
+      if (pkg) stopBoxes.push(...explodePackage(pkg));
     }
 
-    // Longest-first reduces tail fragmentation
+    // optional: longest-first to reduce tiny left-over gaps while still contiguous per stop
     stopBoxes.sort((a, b) => b.L - a.L);
 
-    // Use lanes to fill length end-to-end; when lane is full, open new lane to the right
-    let zCursorStop = zCursorGlobal;
-    let currentLane = { z: zCursorStop, usedLenFromRear: 0, laneWidth: 0 };
-
-    function closeAndOpenNewLaneForStop(nextBoxW) {
-      const consumedZ = currentLane.laneWidth + LANE_GUTTER_Z;
-      zCursorStop += consumedZ;
-      // Not enough width to start a new lane → skip placing more for this stop
-      if (zCursorStop + nextBoxW > truckW + 1e-9) return false;
-      currentLane = { z: zCursorStop, usedLenFromRear: 0, laneWidth: 0 };
-      return true;
-    }
-
     for (const box of stopBoxes) {
-      // If this lane can’t fit the box length-wise, open new lane for the same stop
-      const wouldUsed = currentLane.usedLenFromRear + box.L + REAR_GUTTER_X;
-      if (wouldUsed > truckL + 1e-9) {
-        if (!closeAndOpenNewLaneForStop(box.W)) {
+      // if this box doesn't fit in remaining length, move to the next row
+      if (xCursor + box.L + REAR_GUTTER_X > truckL + 1e-9) {
+        if (!newRow(box.W)) {
           console.warn(`Width exhausted while placing stop ${stopEntry.stop}; skipping remaining boxes.`);
-          break;
+          break; // no more rows in this layer; (future) stacking could start here
         }
       }
 
-      // Place at rear→front inside this lane (x measured from front wall)
-      const xFront = truckL - currentLane.usedLenFromRear - box.L - REAR_GUTTER_X;
+      // place the box: measured from FRONT wall (x) and left wall (z); single layer → y=0
+      const xFront = xCursor;
       const y = 0;
-      const z = currentLane.z;
+      const z = zCursor;
 
       placements.push({
         pkg_ID: box.pkg_ID,
         prod_ID: box.prod_ID,
         color: box.color,
         position: [r3(xFront), r3(y), r3(z)],
-        dimensions: [r3(box.L), r3(box.H), r3(box.W)],
+        dimensions: [r3(box.L), r3(box.H), r3(box.W)]
       });
 
-      // Update lane usage
-      currentLane.usedLenFromRear += box.L;
-      currentLane.laneWidth = Math.max(currentLane.laneWidth, box.W);
+      // advance the row
+      xCursor += box.L;
+      rowMaxW = Math.max(rowMaxW, box.W);
     }
-
-    // After finishing this stop, advance global z so the next stop starts to the right
-    const consumedZ = currentLane.laneWidth + LANE_GUTTER_Z;
-    zCursorGlobal = Math.min(truckW, zCursorStop + consumedZ);
   }
 
-  // Safety: single layer invariant
+  // Hard safety: no stacking in this pass
   if (placements.some(p => (p.position?.[1] || 0) > 0)) {
-    throw new Error('Invariant: single-layer packer produced y>0 (stacking).');
+    throw new Error('Invariant: single-layer packer produced y>0.');
   }
 
   return placements;
 }
+
 
 
 /** FE already colors by product+package from placements; keep as passthrough */
@@ -2162,7 +2168,19 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
 
       // 3D placements using FILO + per-(prod,pkg) caps & colors
       const colorByProdPkg = buildColorMapByProdPkg(packageInfoDetails);
-      const rawPlacements = computeBoxPlacements(a.loadArrangement, packageInfoDetails, vehicleDims);
+      const rawPlacements = computeBoxPlacements(
+        a.loadArrangement,
+        packageInfoDetails,
+        vehicleDims,
+        {
+          // reserved for the future “only stack when ground is full”:
+          maxLayers: Math.min(v.allowedLayers || 1, truckAllowedLayersFromLines || 1),
+          laneGutter: 0.02,   // visual row gap
+          frontGutter: 0.0,
+          rearGutter: 0.0,
+        }
+      );
+      
       const boxPlacements = generatePackageBlocks(rawPlacements);
       const productLegend = buildProductLegend(a.loadArrangement, packageInfoDetails, colorByProdPkg);
 

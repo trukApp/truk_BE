@@ -1794,178 +1794,116 @@ function buildColorMapByProdPkg(packageInfoDetails) {
 }
 
 /**
- * Product-centric FILO placement with hard SF rules:
- *  - SF <= 1 → must sit on floor and nothing mixed above it.
- *  - Stacks are homogeneous (same prod_ID) only.
- *  - Place end-to-end rear→front, across width left→right.
- *  - Origin = front-left floor (x: from front wall).
+ * End-to-end, single-layer placement (rear → front; lanes left → right).
+ * - FILO by stop (last stop first, i.e. farthest drop sits closest to rear/door).
+ * - NO stacking: y is always 0; any y>0 would be a bug.
+ * - If a stop cannot fit in one lane along the length, open a new lane at next z.
+ * - Boxes are expanded from packageInfoDetails (uses per-(prod,pkg) colors).
  */
-function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimensions) {
-  const placements = [];
+function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimensions, opts = {}) {
   const r3 = n => Math.round(n * 1000) / 1000;
 
-  const truckLength = vehicleDimensions.interiorLengthM;
-  const truckWidth  = vehicleDimensions.interiorWidthM;
-  const truckHeight = vehicleDimensions.interiorHeightM;
+  const truckL = vehicleDimensions.interiorLengthM || 0; // x axis (front↔rear)
+  const truckW = vehicleDimensions.interiorWidthM  || 0; // z axis (left↔right)
+  // const truckH = vehicleDimensions.interiorHeightM || 0; // not used for single layer
 
-  const gridUnit = 0.1; // 10 cm
-  const gridCols = Math.max(0, Math.floor(truckLength / gridUnit));
-  const gridRows = Math.max(0, Math.floor(truckWidth  / gridUnit));
-
-  // Per (x,z) cell
-  const heightMap = Array.from({ length: gridCols }, () =>
-    Array.from({ length: gridRows }, () => ({
-      height: 0,
-      stackCount: 0,
-      maxAllowedLayers: Infinity,
-      topProduct: null
-    }))
-  );
+  const LANE_GUTTER_Z = opts.laneGutter ?? 0.02; // visual lane gap
+  const REAR_GUTTER_X = opts.rearGutter ?? 0.0;  // small rear gap if wanted
 
   const colorByProdPkg = buildColorMapByProdPkg(packageInfoDetails);
 
-  // FILO groups: last stop first; within a stop, group contiguous by product
-  const filoGroups = []; // [{stop, prod_ID, boxes:[{...}]}]
-  for (let i = loadArrangement.length - 1; i >= 0; i--) {
-    const { stop, packages } = loadArrangement[i];
-    const byProd = new Map();
-    for (const pkg_ID of packages) {
-      const p = packageInfoDetails.find(x => x.pkg_ID === pkg_ID);
-      if (!p) continue;
-      for (const l of (p.lines || [])) {
-        if (!l?.packagingDimensions) continue;
-        const { lengthM, widthM, heightM } = l.packagingDimensions;
-        const list = byProd.get(l.prod_ID) || [];
-        list.push({
-          pkg_ID,
-          prod_ID: l.prod_ID,
-          L: lengthM, W: widthM, H: heightM,
-          sfCap: l.sfCap,                     // 1 or n>1
-          allowedLayers: l.allowedLayers,
-          qty: Number(l.quantity || 0),
-          color: colorByProdPkg[`${l.prod_ID}|${pkg_ID}`] || "#999"
-        });
-        byProd.set(l.prod_ID, list);
+  // Expand a package record into concrete boxes
+  function expandBoxesForPackage(pkgRecord) {
+    const out = [];
+    for (const l of (pkgRecord.lines || [])) {
+      if (!l?.packagingDimensions) continue;
+      const L = +l.packagingDimensions.lengthM || 0;
+      const W = +l.packagingDimensions.widthM  || 0;
+      const H = +l.packagingDimensions.heightM || 0;
+      const q = Number(l.quantity || 0);
+      const key = `${l.prod_ID}|${pkgRecord.pkg_ID}`;
+      const color = colorByProdPkg[key] || "#999";
+      for (let i = 0; i < q; i++) {
+        out.push({ pkg_ID: pkgRecord.pkg_ID, prod_ID: l.prod_ID, L, W, H, color });
       }
     }
-    for (const [prod_ID, arr] of byProd) {
-      const boxes = [];
-      for (const item of arr) {
-        for (let q = 0; q < item.qty; q++) {
-          boxes.push({
-            pkg_ID: item.pkg_ID,
-            prod_ID,
-            L: item.L, W: item.W, H: item.H,
-            sfCap: item.sfCap,
-            allowedLayers: item.allowedLayers,
-            color: item.color
-          });
-        }
-      }
-      if (boxes.length) filoGroups.push({ stop, prod_ID, boxes });
-    }
+    return out;
   }
 
-  const EPS = 1e-9;
+  // Map pkg_ID -> {pkg_ID, lines[]}
+  const pkgMap = new Map(packageInfoDetails.map(p => [p.pkg_ID, p]));
 
-  function canPlaceAt(x0, z0, b) {
-    const needCols = Math.ceil(b.L / gridUnit);
-    const needRows = Math.ceil(b.W / gridUnit);
+  // Place by FILO stops (last stop first)
+  const stopsDesc = [...loadArrangement].sort((a, b) => b.stop - a.stop);
 
-    let baseMin = Infinity, baseMax = -Infinity;
+  const placements = [];
+  let zCursorGlobal = 0; // accumulated width consumed (left → right)
 
-    for (let dx = 0; dx < needCols; dx++) {
-      for (let dz = 0; dz < needRows; dz++) {
-        const cell = heightMap[x0 + dx][z0 + dz];
-
-        // Enforce homogeneous stacks
-        if (cell.stackCount > 0 && cell.topProduct && cell.topProduct !== b.prod_ID) return false;
-
-        baseMin = Math.min(baseMin, cell.height);
-        baseMax = Math.max(baseMax, cell.height);
-
-        const wouldStack = cell.stackCount + 1;
-        const cellAllowed = Math.min(cell.maxAllowedLayers, b.allowedLayers);
-        if (wouldStack > cellAllowed) return false;
-
-        if (cell.height + b.H > truckHeight + EPS) return false;
-      }
+  for (const stopEntry of stopsDesc) {
+    // Collect and explode all boxes for the stop
+    const stopBoxes = [];
+    for (const pkg_ID of (stopEntry.packages || [])) {
+      const pkgRec = pkgMap.get(pkg_ID);
+      if (pkgRec) stopBoxes.push(...expandBoxesForPackage(pkgRec));
     }
 
-    // flat base footprint
-    if (Math.abs(baseMax - baseMin) > EPS) return false;
+    // Longest-first reduces tail fragmentation
+    stopBoxes.sort((a, b) => b.L - a.L);
 
-    // SF<=1 => must sit on floor
-    if ((b.sfCap || 1) <= 1 && baseMax > EPS) return false;
+    // Use lanes to fill length end-to-end; when lane is full, open new lane to the right
+    let zCursorStop = zCursorGlobal;
+    let currentLane = { z: zCursorStop, usedLenFromRear: 0, laneWidth: 0 };
 
-    return { base: baseMax, needCols, needRows };
-  }
-
-  function placeAt(x0, z0, b, base) {
-    const needCols = Math.ceil(b.L / gridUnit);
-    const needRows = Math.ceil(b.W / gridUnit);
-    const newHeight = base + b.H;
-
-    for (let dx = 0; dx < needCols; dx++) {
-      for (let dz = 0; dz < needRows; dz++) {
-        const cell = heightMap[x0 + dx][z0 + dz];
-        cell.height = newHeight;
-        cell.stackCount += 1;
-        cell.maxAllowedLayers = Math.min(cell.maxAllowedLayers, b.allowedLayers);
-        cell.topProduct = b.prod_ID;
-      }
+    function closeAndOpenNewLaneForStop(nextBoxW) {
+      const consumedZ = currentLane.laneWidth + LANE_GUTTER_Z;
+      zCursorStop += consumedZ;
+      // Not enough width to start a new lane → skip placing more for this stop
+      if (zCursorStop + nextBoxW > truckW + 1e-9) return false;
+      currentLane = { z: zCursorStop, usedLenFromRear: 0, laneWidth: 0 };
+      return true;
     }
 
-    placements.push({
-      pkg_ID: b.pkg_ID,
-      prod_ID: b.prod_ID,
-      color: b.color,
-      position: [r3(x0 * gridUnit), r3(base), r3(z0 * gridUnit)],
-      dimensions: [r3(b.L), r3(b.H), r3(b.W)]
-    });
-  }
-
-  // Lane filling: for each product group, rear→front (x desc), left→right (z asc)
-  for (const group of filoGroups) {
-    for (const box of group.boxes) {
-      const needCols = Math.ceil(box.L / gridUnit);
-      const needRows = Math.ceil(box.W / gridUnit);
-
-      let placed = false;
-
-      // rear -> front
-      for (let z = 0; z <= gridRows - needRows && !placed; z++) {
-        for (let x = (gridCols - needCols); x >= 0 && !placed; x--) {
-          const ok = canPlaceAt(x, z, box);
-          if (ok) { placeAt(x, z, box, ok.base); placed = true; }
+    for (const box of stopBoxes) {
+      // If this lane can’t fit the box length-wise, open new lane for the same stop
+      const wouldUsed = currentLane.usedLenFromRear + box.L + REAR_GUTTER_X;
+      if (wouldUsed > truckL + 1e-9) {
+        if (!closeAndOpenNewLaneForStop(box.W)) {
+          console.warn(`Width exhausted while placing stop ${stopEntry.stop}; skipping remaining boxes.`);
+          break;
         }
       }
 
-      // fallback scan: front-left
-      if (!placed) {
-        for (let z = 0; z <= gridRows - needRows && !placed; z++) {
-          for (let x = 0; x <= gridCols - needCols && !placed; x++) {
-            const ok = canPlaceAt(x, z, box);
-            if (ok) { placeAt(x, z, box, ok.base); placed = true; }
-          }
-        }
-      }
+      // Place at rear→front inside this lane (x measured from front wall)
+      const xFront = truckL - currentLane.usedLenFromRear - box.L - REAR_GUTTER_X;
+      const y = 0;
+      const z = currentLane.z;
 
-      if (!placed) {
-        console.warn(`Box ${box.prod_ID} from ${box.pkg_ID} (stop ${group.stop}) could not be placed.`);
-      }
+      placements.push({
+        pkg_ID: box.pkg_ID,
+        prod_ID: box.prod_ID,
+        color: box.color,
+        position: [r3(xFront), r3(y), r3(z)],
+        dimensions: [r3(box.L), r3(box.H), r3(box.W)],
+      });
+
+      // Update lane usage
+      currentLane.usedLenFromRear += box.L;
+      currentLane.laneWidth = Math.max(currentLane.laneWidth, box.W);
     }
+
+    // After finishing this stop, advance global z so the next stop starts to the right
+    const consumedZ = currentLane.laneWidth + LANE_GUTTER_Z;
+    zCursorGlobal = Math.min(truckW, zCursorStop + consumedZ);
   }
 
-  // Safety assert: if everything has sfCap<=1, nothing should be above y=0
-  const GLOBAL_NO_STACK =
-    packageInfoDetails.every(p => (p.lines || []).every(l => (l.sfCap || 1) <= 1));
-  if (GLOBAL_NO_STACK && placements.some(b => (b.position?.[1] || 0) > 1e-9)) {
-    throw new Error('Invariant violated: SF≤1 globally but a box was placed above the floor.');
+  // Safety: single layer invariant
+  if (placements.some(p => (p.position?.[1] || 0) > 0)) {
+    throw new Error('Invariant: single-layer packer produced y>0 (stacking).');
   }
 
   return placements;
 }
+
 
 /** FE already colors by product+package from placements; keep as passthrough */
 function generatePackageBlocks(boxPlacements) {

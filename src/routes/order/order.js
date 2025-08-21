@@ -1769,14 +1769,38 @@ async function getPackagesByIds(packageIDs) {
 
 /* ------------------- dimension + 3D placement ------------------- */
 function parseDimension(str = '') {
+  if (typeof str === 'number') return +str || 0;
   const m = String(str).match(/(\d+(?:\.\d+)?)/);
   if (!m) return 0;
   const val = parseFloat(m[1]);
   return /cm/i.test(str) ? val / 100 : val;
 }
 
+/** Color map per product across this allocation */
+function buildProductColorMap(packageInfoDetails) {
+  const palette = ["#10b981","#3b82f6","#f59e0b","#ef4444","#8b5cf6","#ec4899","#14b8a6","#f43f5e","#0ea5e9","#6366f1","#22c55e"];
+  const colorByProd = {};
+  let i = 0;
+  for (const p of packageInfoDetails) {
+    for (const l of (p.lines || [])) {
+      if (!l?.prod_ID) continue;
+      if (!colorByProd[l.prod_ID]) colorByProd[l.prod_ID] = palette[i++ % palette.length];
+    }
+  }
+  return colorByProd;
+}
+
+/**
+ * Product-centric FILO placement with hard SF rules:
+ *  - SF <= 1 → must sit on floor and nothing mixed above it.
+ *  - Stacks are homogeneous (same prod_ID) only.
+ *  - Place end-to-end rear→front, across width left→right.
+ *  - Origin = front-left floor (x: from front wall).
+ */
 function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimensions) {
   const placements = [];
+
+  const r3 = n => Math.round(n * 1000) / 1000;
 
   const truckLength = vehicleDimensions.interiorLengthM;
   const truckWidth  = vehicleDimensions.interiorWidthM;
@@ -1786,57 +1810,64 @@ function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimens
   const gridCols = Math.max(0, Math.floor(truckLength / gridUnit));
   const gridRows = Math.max(0, Math.floor(truckWidth  / gridUnit));
 
-  // Per (x,z) cell: used height, stack count, and max allowed total layers.
+  // Per (x,z) cell
   const heightMap = Array.from({ length: gridCols }, () =>
     Array.from({ length: gridRows }, () => ({
       height: 0,
       stackCount: 0,
-      maxAllowedLayers: Infinity
+      maxAllowedLayers: Infinity,
+      topProduct: null
     }))
   );
 
-  // Stable color per package id
-  const pkgColorMap = {};
-  const palette = ["#10b981","#3b82f6","#f59e0b","#ef4444","#8b5cf6","#ec4899","#14b8a6","#f43f5e","#0ea5e9","#6366f1","#22c55e"];
-  let cIdx = 0;
-  const colorOf = id => (pkgColorMap[id] ??= palette[cIdx++ % palette.length]);
+  const colorByProd = buildProductColorMap(packageInfoDetails);
 
-  // Flatten boxes in FILO: last stop first
-  const allBoxes = [];
+  // FILO groups: last stop first; within a stop, group contiguous by product
+  const filoGroups = []; // [{stop, prod_ID, boxes:[{...}]}]
   for (let i = loadArrangement.length - 1; i >= 0; i--) {
     const { stop, packages } = loadArrangement[i];
+    const byProd = new Map();
     for (const pkg_ID of packages) {
-      const pkg = packageInfoDetails.find(p => p.pkg_ID === pkg_ID);
-      if (!pkg) continue;
-      for (const line of (pkg.lines || [])) {
-        if (!line?.packagingDimensions) continue;
-        const { lengthM, widthM, heightM } = line.packagingDimensions;
-        const qty = Number(line.quantity || 0);
-        // use precomputed per-line cap: min(height, SF)
-        const allowedLayers = Math.max(1, Number(line.allowedLayers ?? 1));
-        for (let q = 0; q < qty; q++) {
-          allBoxes.push({
-            pkg_ID,
-            stop,
-            color: colorOf(pkg_ID),
-            length: lengthM,
-            width:  widthM,
-            height: heightM,
-            allowedLayers
+      const p = packageInfoDetails.find(x => x.pkg_ID === pkg_ID);
+      if (!p) continue;
+      for (const l of (p.lines || [])) {
+        if (!l?.packagingDimensions) continue;
+        const { lengthM, widthM, heightM } = l.packagingDimensions;
+        const list = byProd.get(l.prod_ID) || [];
+        list.push({
+          pkg_ID,
+          prod_ID: l.prod_ID,
+          L: lengthM, W: widthM, H: heightM,
+          sfCap: l.sfCap,                     // 1 or n>1
+          allowedLayers: l.allowedLayers,
+          qty: Number(l.quantity || 0)
+        });
+        byProd.set(l.prod_ID, list);
+      }
+    }
+    for (const [prod_ID, arr] of byProd) {
+      const boxes = [];
+      for (const item of arr) {
+        for (let q = 0; q < item.qty; q++) {
+          boxes.push({
+            pkg_ID: item.pkg_ID,
+            prod_ID,
+            L: item.L, W: item.W, H: item.H,
+            sfCap: item.sfCap,
+            allowedLayers: item.allowedLayers,
+            color: colorByProd[prod_ID] || "#999"
           });
         }
       }
+      if (boxes.length) filoGroups.push({ stop, prod_ID, boxes });
     }
   }
 
-  // If *every* box has allowedLayers===1, globally forbid stacking
-  const GLOBAL_NO_STACK = allBoxes.length > 0 && allBoxes.every(b => b.allowedLayers <= 1);
   const EPS = 1e-9;
 
-  // ----- helpers -----
-  function canPlaceAt(x0, z0, L, W, H, boxAllowedLayers) {
-    const needCols = Math.ceil(L / gridUnit);
-    const needRows = Math.ceil(W / gridUnit);
+  function canPlaceAt(x0, z0, b) {
+    const needCols = Math.ceil(b.L / gridUnit);
+    const needRows = Math.ceil(b.W / gridUnit);
 
     let baseMin = Infinity, baseMax = -Infinity;
 
@@ -1844,110 +1875,135 @@ function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimens
       for (let dz = 0; dz < needRows; dz++) {
         const cell = heightMap[x0 + dx][z0 + dz];
 
-        if (GLOBAL_NO_STACK && (cell.height > EPS || cell.stackCount > 0)) return false;
+        // Enforce homogeneous stacks
+        
+        if (cell.stackCount > 0 && cell.topProduct && cell.topProduct !== b.prod_ID) return false;
 
         baseMin = Math.min(baseMin, cell.height);
         baseMax = Math.max(baseMax, cell.height);
 
         const wouldStack = cell.stackCount + 1;
         const cellAllowed = cell.maxAllowedLayers;
-        if (wouldStack > Math.min(cellAllowed, boxAllowedLayers)) return false; // stacking limit
-        if (cell.height + H > truckHeight + EPS) return false;                  // roof
+
+        if (wouldStack > Math.min(cellAllowed, b.allowedLayers)) return false;
+        if (cell.height + b.H > truckHeight + EPS) return false;
       }
     }
 
     // flat base footprint
     if (Math.abs(baseMax - baseMin) > EPS) return false;
-    if (GLOBAL_NO_STACK && baseMax > EPS) return false;
+
+    // SF<=1 => must sit on floor
+    if (b.sfCap <= 1 && baseMax > EPS) return false;
 
     return { base: baseMax, needCols, needRows };
   }
 
-  function placeAt(x0, z0, L, W, H, base, boxAllowedLayers, pkg_ID, color) {
-    const needCols = Math.ceil(L / gridUnit);
-    const needRows = Math.ceil(W / gridUnit);
-    const newHeight = base + H;
-
+  function placeAt(x0, z0, b, base) {
+    const needCols = Math.ceil(b.L / gridUnit);
+    const needRows = Math.ceil(b.W / gridUnit);
+    const newHeight = base + b.H;
+  
     for (let dx = 0; dx < needCols; dx++) {
       for (let dz = 0; dz < needRows; dz++) {
         const cell = heightMap[x0 + dx][z0 + dz];
         cell.height = newHeight;
         cell.stackCount += 1;
-        cell.maxAllowedLayers = Math.min(cell.maxAllowedLayers, boxAllowedLayers);
+        cell.maxAllowedLayers = Math.min(cell.maxAllowedLayers, b.allowedLayers);
+        cell.topProduct = b.prod_ID;
       }
     }
-
+  
+    // ✅ round to 3 decimals and reference fields from `b`
     placements.push({
-      pkg_ID,
-      color,
-      position: [x0 * gridUnit, base, z0 * gridUnit], // [X(length), Y(height), Z(width)]
-      dimensions: [L, H, W]
+      pkg_ID:  b.pkg_ID,
+      prod_ID: b.prod_ID,
+      color:   b.color,
+      position:   [r3(x0 * gridUnit), r3(base), r3(z0 * gridUnit)],
+      dimensions: [r3(b.L), r3(b.H), r3(b.W)]
     });
   }
+  
 
-  // ----- placement loop -----
-  for (const box of allBoxes) {
-    const L = box.length, W = box.width, H = box.height;
+  // Lane filling: for each product group, rear→front (x desc), left→right (z asc)
+  for (const group of filoGroups) {
+    for (const box of group.boxes) {
+      const needCols = Math.ceil(box.L / gridUnit);
+      const needRows = Math.ceil(box.W / gridUnit);
 
-    const needCols = Math.ceil(L / gridUnit);
-    const needRows = Math.ceil(W / gridUnit);
+      let placed = false;
 
-    let placed = false;
-
-    // 1) lane-ish: end-to-end (rear -> front). X desc, Z asc.
-    for (let z = 0; z <= gridRows - needRows && !placed; z++) {
-      for (let x = (gridCols - needCols); x >= 0 && !placed; x--) {
-        const ok = canPlaceAt(x, z, L, W, H, box.allowedLayers);
-        if (ok) {
-          placeAt(x, z, L, W, H, ok.base, box.allowedLayers, box.pkg_ID, box.color);
-          placed = true;
+      // rear -> front
+      for (let z = 0; z <= gridRows - needRows && !placed; z++) {
+        for (let x = (gridCols - needCols); x >= 0 && !placed; x--) {
+          const ok = canPlaceAt(x, z, box);
+          if (ok) { placeAt(x, z, box, ok.base); placed = true; }
         }
       }
-    }
 
-    // 2) fallback: front-left scan. X asc, Z asc.
-    if (!placed) {
-      for (let z = 0; z <= gridRows - needRows && !placed; z++) {
-        for (let x = 0; x <= gridCols - needCols && !placed; x++) {
-          const ok = canPlaceAt(x, z, L, W, H, box.allowedLayers);
-          if (ok) {
-            placeAt(x, z, L, W, H, ok.base, box.allowedLayers, box.pkg_ID, box.color);
-            placed = true;
+      // fallback scan: front-left
+      if (!placed) {
+        for (let z = 0; z <= gridRows - needRows && !placed; z++) {
+          for (let x = 0; x <= gridCols - needCols && !placed; x++) {
+            const ok = canPlaceAt(x, z, box);
+            if (ok) { placeAt(x, z, box, ok.base); placed = true; }
           }
         }
       }
-    }
 
-    if (!placed) {
-      console.warn(`Box from ${box.pkg_ID} (stop ${box.stop}) could not be placed.`);
+      if (!placed) {
+        console.warn(`Box ${box.prod_ID} from ${box.pkg_ID} (stop ${group.stop}) could not be placed.`);
+      }
     }
   }
 
   return placements;
 }
 
+/** FE already colors by product from placements; keep as passthrough */
 function generatePackageBlocks(boxPlacements) {
-  const colorPalette = [
-    "#10b981", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6",
-    "#14b8a6", "#f43f5e", "#0ea5e9", "#6366f1", "#22c55e"
-  ];
-  const colorMap = {};
-  let colorIndex = 0;
-  const blocks = [];
+  return boxPlacements.map(b => ({
+    pkg_ID: b.pkg_ID,
+    prod_ID: b.prod_ID,
+    color: b.color || "#999",
+    position: b.position,
+    dimensions: b.dimensions
+  }));
+}
 
-  boxPlacements.forEach(box => {
-    const { pkg_ID } = box;
-    if (!colorMap[pkg_ID]) {
-      colorMap[pkg_ID] = colorPalette[colorIndex % colorPalette.length];
-      colorIndex++;
+/** Build per-product legend for FE, with totals by package and by stop */
+function buildProductLegend(loadArrangement, packageInfoDetails, colorByProd) {
+  const byProd = {};
+  for (const stopEntry of loadArrangement) {
+    const stop = stopEntry.stop;
+    for (const pkg_ID of stopEntry.packages) {
+      const p = packageInfoDetails.find(x => x.pkg_ID === pkg_ID);
+      if (!p) continue;
+      for (const l of (p.lines || [])) {
+        if (!l?.prod_ID) continue;
+        const rec = (byProd[l.prod_ID] ||= {
+          prod_ID: l.prod_ID,
+          color: colorByProd[l.prod_ID] || "#999",
+          totalQty: 0,
+          byPackage: {},
+          byStop: {}
+        });
+        const q = Number(l.quantity || 0);
+        rec.totalQty += q;
+        rec.byPackage[pkg_ID] = (rec.byPackage[pkg_ID] || 0) + q;
+        rec.byStop[stop] = (rec.byStop[stop] || 0) + q;
+      }
     }
-    blocks.push({
-      ...box,
-      color: colorMap[pkg_ID]
-    });
-  });
-
-  return blocks;
+  }
+  return Object.values(byProd).map(r => ({
+    prod_ID: r.prod_ID,
+    color: r.color,
+    totalQty: r.totalQty,
+    byPackage: Object.entries(r.byPackage).map(([pack_ID, qty]) => ({ pack_ID, qty })),
+    byStop: Object.entries(r.byStop)
+      .map(([stop, qty]) => ({ stop: Number(stop), qty }))
+      .sort((a,b) => a.stop - b.stop)
+  }));
 }
 
 /* -------------------------- ROUTES --------------------------- */
@@ -1982,11 +2038,11 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
     );
     const productMap = prodRows.reduce((m, r) => (m[r.product_ID] = r, m), {});
 
-    // 3) collect ALL pac_IDs & load packagingInfo once
+    // 3) collect ALL pac_IDs & load packagingInfo once (from master_products.packaging_type ONLY)
     const allPacIDs = collectAllPacIDs(packagesData, productMap);
     const packagingInfoMap = await loadAllPackageInfo(allPacIDs);
 
-    // determine tallest package height
+    // determine tallest package height (from packaging info)
     const heights = allLines.map(l => {
       const prod = productMap[l.prod_ID];
       const pacIds = resolvePacIdsFromProduct(prod);
@@ -1997,7 +2053,7 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
     }).filter(Boolean);
     const maxPkgH = heights.length ? Math.max(...heights) : 0;
 
-    // derive a global SF cap hint (per your rule: 0/null/1 => 1; n>1 => n)
+    // global SF hint (0/null/≤1 => 1; n>1 => n)
     const sfCaps = allLines.map(l => {
       const raw = productMap[l.prod_ID]?.stacking_factor;
       if (raw === null || raw === undefined || raw === '') return 1;
@@ -2050,8 +2106,8 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
         oneLayerM3,
         usableVol,
         maxLayersByHeight,
-        maxLayers: maxLayersByHeight,            // keep old name too
-        allowedLayers: truckAllowedLayers,       // hint
+        maxLayers: maxLayersByHeight,
+        allowedLayers: truckAllowedLayers,
         cost_per_ton: +safeJsonParse(v.additional_details, {}).cost_per_ton || 0
       };
     });
@@ -2089,8 +2145,10 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
           const firstPac = pacIds[0] || null;
           const packInfo = firstPac ? packagingInfoMap[firstPac] : null;
 
-          const sfRaw = prod?.stacking_factor; // keep exact (null/number)
+          const sfRaw = prod?.stacking_factor;              // as-is from DB
           const stacking_factor = (sfRaw === '' ? null : sfRaw);
+          const sfNum = Number(stacking_factor);
+          const sfCap = (!sfNum || isNaN(sfNum) || sfNum <= 1) ? 1 : sfNum;
 
           const dims = packInfo ? {
             lengthM: parseDimension(`${packInfo.pack_length} ${packInfo.dimensions_uom}`),
@@ -2102,8 +2160,6 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
           let allowedLayers = 1;
           if (dims?.heightM && heightM) {
             const heightCap = Math.max(1, Math.floor(heightM / dims.heightM));
-            const n = (stacking_factor === null || stacking_factor === undefined) ? 1 : Number(stacking_factor);
-            const sfCap = (isNaN(n) || n <= 1) ? 1 : n;   // 0/null/1 => 1; n>1 => n
             allowedLayers = Math.min(heightCap, sfCap);
           }
 
@@ -2111,10 +2167,11 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
             prod_ID: line.prod_ID,
             quantity: line.quantity,
             pac_ID: firstPac,
-            stacking_factor,                   // reflects DB (may be null)
+            stacking_factor,  // DB value (may be null/0/1/n)
+            sfCap,            // normalized (1 or n>1)
             package_info: packInfo,
             packagingDimensions: dims,
-            allowedLayers                      // per-line cap
+            allowedLayers
           };
         });
 
@@ -2138,7 +2195,7 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
         ? Math.max(...perLineLayers.map(x => x.allowedLayers))
         : 1;
 
-      // progress bar: use RAW truck m³
+      // UI volumes: progress uses RAW truck m³
       const occupied = a.occupiedVolume;
       const denomRaw = v.totalVolumeCapacity || 0;
       const occupiedPercent = denomRaw > 0
@@ -2146,10 +2203,10 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
         : 0;
 
       // per-package volume %ages vs RAW m³
-      const packageDetails = a.packages.map((pkgID, idx) => {
+      const packageDetails = a.packages.map((pkg_ID, idx) => {
         const vol = (a.pkgVolumes && a.pkgVolumes[idx]) || 0;
         const pct = denomRaw > 0 ? +(vol / denomRaw * 100).toFixed(2) : 0;
-        return { pkg_ID: pkgID, volumeM3: vol, percentOfTruck: pct };
+        return { pkg_ID, volumeM3: vol, percentOfTruck: pct };
       });
 
       const vehicleDims = {
@@ -2158,9 +2215,11 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
         interiorHeightM: heightM
       };
 
-      // 3D placements using FILO + per-line caps
+      // 3D placements using FILO + per-product caps
+      const colorByProdLegend = buildProductColorMap(packageInfoDetails);
       const rawPlacements = computeBoxPlacements(a.loadArrangement, packageInfoDetails, vehicleDims);
       const boxPlacements = generatePackageBlocks(rawPlacements);
+      const productLegend = buildProductLegend(a.loadArrangement, packageInfoDetails, colorByProdLegend);
 
       return {
         ...a,
@@ -2169,12 +2228,13 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
         packageInfoDetails,
         occupiedPercent,
         packageDetails,
+        productLegend, // <— for FE legend (by product)
         truckCapacity: {
-          rawM3: v.totalVolumeCapacity,             // e.g., 96.00
-          oneLayerM3: v.oneLayerM3,                 // FYI
-          usableM3: v.usableVol,                    // FYI (feasibility)
-          maxLayersByHeight: v.maxLayersByHeight,   // physical by height
-          // single-number hint for FE badges
+          rawM3: v.totalVolumeCapacity,
+          oneLayerM3: v.oneLayerM3,
+          usableM3: v.usableVol,
+          maxLayersByHeight: v.maxLayersByHeight,
+          // FE badge hint: show the max allowed across lines
           allowedLayers: Math.max(v.allowedLayers || 1, truckAllowedLayersFromLines),
           // detailed per-line caps FE/3D should honor
           perLineLayers

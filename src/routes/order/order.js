@@ -1264,6 +1264,7 @@
 // module.exports = router;
 
 
+// routes/orders/createOrder.js
 require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
@@ -1314,7 +1315,6 @@ function parseDistanceText(txt) {
   return parseFloat(txt.replace(/[^\d.]/g, '')) || 0;
 }
 
-/* ------------------------ routing ------------------------- */
 async function getOptimizedRouteWithLoad(locations, shipmentLoads) {
   if (!Array.isArray(locations) || locations.length < 2) {
     throw new Error("Need at least origin and destination");
@@ -1369,7 +1369,6 @@ async function getOptimizedRouteWithLoad(locations, shipmentLoads) {
   return { optimizedRoute, sampledCoords };
 }
 
-/* ------------------- bearing / clustering ------------------- */
 function getBearing(lat1, lon1, lat2, lon2) {
   const toRad = d => d * Math.PI / 180;
   const y = Math.sin(toRad(lon2 - lon1)) * Math.cos(toRad(lat2));
@@ -1416,7 +1415,6 @@ function groupPackagesByDirection(pkgs) {
   return groups;
 }
 
-/* ---------------------- DB helpers ----------------------- */
 function isVehicleValid(v) {
   const t = new Date(), from = new Date(v.transportation_details.validity_from),
     to = new Date(v.transportation_details.validity_to);
@@ -1749,20 +1747,6 @@ async function allocatePackages(packagesData, vehicles, sourceLocation, productM
   return { allocations, totalCost, unallocated: unallocatedPackages };
 }
 
-async function getPackagesByIds(packageIDs) {
-  const ph = packageIDs.map(_ => '?').join(',');
-  const [rows] = await db.query(`
-    SELECT * FROM packages WHERE pack_ID IN (${ph})`, packageIDs);
-  if (!rows.length) throw new Error(`No matching packages`);
-  return rows.map(r => ({
-    pack_ID: r.pack_ID,
-    ship_from: r.ship_from,
-    ship_to: r.ship_to,
-    products: safeJsonParse(r.product_ID),
-    pickup_date_time: r.pickup_date_time
-  }));
-}
-
 /* ------------------- dimension + 3D placement ------------------- */
 function parseDimension(str = '') {
   if (typeof str === 'number') return +str || 0;
@@ -1789,7 +1773,7 @@ function buildColorMapByProdPkg(packageInfoDetails) {
   return colorByKey;
 }
 
-/** explode one package's product lines into concrete boxes (with per-line allowedLayers capped in BE rendering) */
+/** explode one package's product lines into concrete boxes */
 function explodePackage(pkgRecord, colorByKey) {
   const out = [];
   for (const l of (pkgRecord.lines || [])) {
@@ -1798,152 +1782,134 @@ function explodePackage(pkgRecord, colorByKey) {
     const L = +d.lengthM || 0, W = +d.widthM || 0, H = +d.heightM || 0;
     const q = Number(l.quantity || 0);
     const color = colorByKey[`${l.prod_ID}|${pkgRecord.pkg_ID}`] || "#999";
-    const allowedLayers = Math.max(1, Number(l.allowedLayers || 1));
-    for (let i = 0; i < q; i++) out.push({ pkg_ID: pkgRecord.pkg_ID, prod_ID: l.prod_ID, L, W, H, color, allowedLayers });
+    for (let i = 0; i < q; i++) out.push({ pkg_ID: pkgRecord.pkg_ID, prod_ID: l.prod_ID, L, W, H, color });
   }
   return out;
 }
 
-function getMaxBoxHeight(packageInfoDetails) {
-  let h = 0;
-  for (const p of packageInfoDetails) {
-    for (const l of (p.lines || [])) {
-      if (l?.packagingDimensions?.heightM) {
-        h = Math.max(h, +l.packagingDimensions.heightM);
-      }
-    }
-  }
-  return h || 0.5; // safe default
-}
-
-/* ------------ 3D placement (no gaps + stack-if-needed) ------------- */
+/* -------------- zero-gap + dynamic-height stacking packer ---------------- */
 
 /**
  * Preferred top-view packing (from cabin toward tailgate).
  * - No horizontal gaps between stops (rows continue across stops).
  * - If ground is full, open a second (third, ...) layer up to the height limit.
- * - FILO respected: we process stops in descending order.
- * - Adds a tiny visual Y gap between layers to avoid overlap artifacts.
- *
- * Returns: { placements, total, placed, layersUsed }
+ * - **Dynamic layer heights:** each layer’s Y is previous layer’s actual used height + tiny layerGap
+ * - FILO respected: we process stops in descending order, so earlier drops are nearer to the door
  */
-function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimensions, opts = {}) {
-  const res = packStopBlocks(loadArrangement, packageInfoDetails, vehicleDimensions, opts);
-  return res;
-}
-
-/* -------------- no-gap + stacking packer (fixed) ---------------- */
-
 function packStopBlocks(loadArrangement, packageInfoDetails, vehicleDimensions, opts = {}) {
   const truckL = vehicleDimensions.interiorLengthM || 0; // X (front→rear)
-  const truckW = vehicleDimensions.interiorWidthM || 0;  // Z (left→right)
-  const truckH = vehicleDimensions.interiorHeightM || 0;
+  const truckW = vehicleDimensions.interiorWidthM  || 0; // Z (left→right)
 
-  const EPS = 1e-9;
+  const EPS = 1e-6;
 
-  // visual spacing: keep horizontal gutters 0 to eliminate gaps,
-  // add a tiny *vertical* gap so layers look separated.
+  // visual spacing (keep zero to avoid any gaps along Z / X)
   const Z_GUTTER = opts.zGutter ?? 0.0;
   const FRONT_GUTTER_X = opts.frontGutter ?? 0.0;
-  const LAYER_GAP = opts.layerGap ?? 0.02; // 2 cm visual gap
 
-  // stacking
-  const layerHeight = opts.layerHeight ?? getMaxBoxHeight(packageInfoDetails);
-  const maxLayers = Math.max(1, Math.min(opts.maxLayers || 1, layerHeight > 0 ? Math.floor(truckH / layerHeight) : 1));
+  // dynamic stacking
+  const layerGap = opts.layerGap ?? 0.02;        // 2 cm visual clearance
+  const maxLayers = Math.max(1, opts.maxLayers || 1);
 
   const colorByKey = buildColorMapByProdPkg(packageInfoDetails);
   const pkgMap = new Map(packageInfoDetails.map(p => [p.pkg_ID, p]));
 
-  // FILO: last stop deepest; place in descending stop order
+  // FILO: last stop (largest stop #) deepest; so place in descending stop order
   const stopsDesc = [...loadArrangement].sort((a, b) => b.stop - a.stop);
 
-  /**
-   * Each layer contains stripes (bands) across Z. A stripe keeps a *live*
-   * state that persists across stops:
-   *  - xCursor: current X start for this band
-   *  - zCursor: how much of the current row is filled
-   *  - rowMaxL: the longest L in the current x-band (rectangular advancement)
-   *
-   * We DO NOT prematurely advance x to the final rectangle when a stop ends.
-   * Next stops resume from the unfinished row -> fills the L-shaped pocket.
+  /** Each layer has stripes (rows) that span some Z-width across the truck.
+   * A stripe keeps how far we've filled along X (xEnd) for that Z-band.
+   * Next stops continue each stripe at its current xEnd → no gaps.
+   * Each layer also tracks y0 (vertical base) and usedHeight (tallest box on that layer).
    */
   const layers = Array.from({ length: maxLayers }, () => ({
-    stripes: /** @type {{z0:number,width:number,xCursor:number,zCursor:number,rowMaxL:number}[]} */([]),
-    zUsed: 0
+    stripes: /** @type {{z0:number,width:number,xEnd:number}[]} */([]),
+    zUsed: 0,
+    usedHeight: 0,
+    y0: 0
   }));
 
   const placements = [];
-  let total = 0, placed = 0, highestLayerUsed = -1;
+  let total = 0, placed = 0;
 
-  function placeInStripe(layerIdx, s, boxes) {
-    // attempt to place boxes into a single stripe, continuing its live row
-    while (boxes.length) {
-      // find first box that can ever fit width-wise
-      let pick = -1;
-      for (let i = 0; i < boxes.length; i++) {
-        if (boxes[i].W - s.width <= EPS) { pick = i; break; }
-      }
-      if (pick < 0) break; // none fits this stripe
-
-      const b = boxes[pick];
-
-      // if we cannot fit along X anymore for ANY box, give up this stripe
-      if (s.xCursor + b.L - truckL > EPS) break;
-
-      // if current row is full in Z, close the rectangular band and move X
-      if (s.zCursor + b.W - s.width > EPS) {
-        if (s.rowMaxL <= EPS) break; // no progress possible
-        s.xCursor = Math.min(truckL, s.xCursor + s.rowMaxL);
-        s.zCursor = 0;
-        s.rowMaxL = 0;
-
-        // after advancing, if along X we no longer fit, stop
-        if (s.xCursor + b.L - truckL > EPS) break;
-      }
-
-      // place the box
-      placements.push({
-        pkg_ID: b.pkg_ID, prod_ID: b.prod_ID, color: b.color,
-        position: [r3(s.xCursor), r3(layerIdx * layerHeight + layerIdx * LAYER_GAP), r3(s.z0 + s.zCursor)],
-        dimensions: [r3(b.L), r3(b.H), r3(b.W)]
-      });
-      placed++;
-      highestLayerUsed = Math.max(highestLayerUsed, layerIdx);
-
-      // advance row
-      s.zCursor += b.W + Z_GUTTER;
-      s.rowMaxL = Math.max(s.rowMaxL, b.L);
-      boxes.splice(pick, 1);
-    }
-  }
-
+  // helper: try to place as many boxes as possible into a single layer
   function placeIntoLayer(layerIdx, boxes) {
     const layer = layers[layerIdx];
+    let maxHSeen = 0;
 
-    // 1) continue existing stripes first (keeps rows contiguous across stops)
+    // 1) continue existing stripes first (no gaps between stops)
     for (const s of layer.stripes) {
-      placeInStripe(layerIdx, s, boxes);
-      if (!boxes.length) return true;
+      let xCursor = Math.max(FRONT_GUTTER_X, s.xEnd);
+      let zCursor = 0;
+      let rowMaxL = 0;
+
+      for (let i = 0; i < boxes.length; i++) {
+        const b = boxes[i];
+        if (xCursor + b.L - truckL > EPS) break; // this stripe is out of X space
+
+        if (zCursor + b.W - s.width > EPS) {
+          // close row in this stripe
+          xCursor = Math.min(truckL, xCursor + rowMaxL);
+          zCursor = 0;
+          rowMaxL = 0;
+          if (xCursor + b.L - truckL > EPS) break;
+        }
+
+        placements.push({
+          pkg_ID: b.pkg_ID, prod_ID: b.prod_ID, color: b.color,
+          position: [r3(xCursor), r3(layer.y0), r3(s.z0 + zCursor)],
+          dimensions: [r3(b.L), r3(b.H), r3(b.W)]
+        });
+        placed++;
+        maxHSeen = Math.max(maxHSeen, b.H);
+        zCursor += b.W + Z_GUTTER;
+        rowMaxL = Math.max(rowMaxL, b.L);
+        boxes.splice(i, 1); i--;
+      }
+      s.xEnd = Math.min(truckL, xCursor + rowMaxL);
+      if (!boxes.length) { layer.usedHeight = Math.max(layer.usedHeight, maxHSeen); return true; }
     }
 
-    // 2) open stripes while there's width left on this layer
+    // 2) if width is still available on this layer, open new stripes and keep placing
     while (boxes.length && layer.zUsed + EPS < truckW) {
       const availW = Math.max(0, truckW - layer.zUsed);
       if (availW <= EPS) break;
 
-      const s = { z0: layer.zUsed, width: availW, xCursor: FRONT_GUTTER_X, zCursor: 0, rowMaxL: 0 };
-      placeInStripe(layerIdx, s, boxes);
+      const s = { z0: layer.zUsed, width: availW, xEnd: FRONT_GUTTER_X };
+      let xCursor = s.xEnd;
+      let zCursor = 0;
+      let rowMaxL = 0;
 
-      // persist stripe even if partially filled, so next stops keep continuity
+      for (let i = 0; i < boxes.length; i++) {
+        const b = boxes[i];
+        if (xCursor + b.L - truckL > EPS) break;
+
+        if (zCursor + b.W - availW > EPS) {
+          xCursor = Math.min(truckL, xCursor + rowMaxL);
+          zCursor = 0;
+          rowMaxL = 0;
+          if (xCursor + b.L - truckL > EPS) break;
+        }
+
+        placements.push({
+          pkg_ID: b.pkg_ID, prod_ID: b.prod_ID, color: b.color,
+          position: [r3(xCursor), r3(layer.y0), r3(s.z0 + zCursor)],
+          dimensions: [r3(b.L), r3(b.H), r3(b.W)]
+        });
+        placed++;
+        maxHSeen = Math.max(maxHSeen, b.H);
+        zCursor += b.W + Z_GUTTER;
+        rowMaxL = Math.max(rowMaxL, b.L);
+        boxes.splice(i, 1); i--;
+      }
+
+      s.xEnd = Math.min(truckL, xCursor + rowMaxL);
       layer.stripes.push(s);
-      // reserve the full width so stripes boundaries stay fixed for later stops
+      // reserve the full remaining Z-width for this stripe so that later stops
+      // keep the same row boundaries (no gaps).
       layer.zUsed = Math.min(truckW, s.z0 + s.width);
-
-      if (!boxes.length) return true;
-      // if we couldn't place anything in this new stripe (too narrow), break
-      if (s.zCursor === 0 && s.rowMaxL === 0) break;
     }
 
+    layer.usedHeight = Math.max(layer.usedHeight, maxHSeen);
     return boxes.length === 0;
   }
 
@@ -1959,16 +1925,26 @@ function packStopBlocks(loadArrangement, packageInfoDetails, vehicleDimensions, 
     total += boxes.length;
 
     for (let layerIdx = 0; layerIdx < maxLayers && boxes.length; layerIdx++) {
+      // compute y0 from previous layer’s *actual* used height + a tiny gap
+      if (layerIdx > 0) {
+        const prev = layers[layerIdx - 1];
+        layers[layerIdx].y0 = r3(prev.y0 + prev.usedHeight + layerGap);
+      }
       placeIntoLayer(layerIdx, boxes);
     }
-    // if boxes remain after maxLayers, truck is "full in height"; those boxes
-    // simply can't be shown (optionally return a notPlaced list if needed).
+    // If anything is left after maxLayers, we simply can't show more (truck full in H).
+    // (Optional: push leftovers into a "notPlaced" list to surface in the UI.)
   }
 
-  return { placements, total, placed, layersUsed: Math.max(0, highestLayerUsed + 1) };
+  return { placements, total, placed };
 }
 
-/** passthrough for FE */
+/** top-level convenience */
+function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimensions, opts = {}) {
+  return packStopBlocks(loadArrangement, packageInfoDetails, vehicleDimensions, opts).placements;
+}
+
+/** FE passthrough */
 function generatePackageBlocks(boxPlacements) {
   return boxPlacements.map(b => ({
     pkg_ID: b.pkg_ID,
@@ -2153,7 +2129,7 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
           const firstPac = pacIds[0] || null;
           const packInfo = firstPac ? packagingInfoMap[firstPac] : null;
 
-          const sfRaw = prod?.stacking_factor;
+          const sfRaw = prod?.stacking_factor;              // as-is from DB
           const stacking_factor = (sfRaw === '' ? null : sfRaw);
           const sfNum = Number(stacking_factor);
           const sfCap = (!sfNum || isNaN(sfNum) || sfNum <= 1) ? 1 : sfNum;
@@ -2164,6 +2140,7 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
             heightM: parseDimension(`${packInfo.pack_height} ${packInfo.dimensions_uom}`)
           } : null;
 
+          // per-line allowed layers = min(heightCap, sfCap)
           let allowedLayers = 1;
           if (dims?.heightM && heightM) {
             const heightCap = Math.max(1, Math.floor(heightM / dims.heightM));
@@ -2174,8 +2151,8 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
             prod_ID: line.prod_ID,
             quantity: line.quantity,
             pac_ID: firstPac,
-            stacking_factor,
-            sfCap,
+            stacking_factor,  // DB value (may be null/0/1/n)
+            sfCap,            // normalized (1 or n>1)
             package_info: packInfo,
             packagingDimensions: dims,
             allowedLayers
@@ -2198,6 +2175,9 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
           }
         });
       });
+      const truckAllowedLayersFromLines = perLineLayers.length
+        ? Math.max(...perLineLayers.map(x => x.allowedLayers))
+        : 1;
 
       // UI volumes: progress uses RAW truck m³
       const occupied = a.occupiedVolume;
@@ -2213,20 +2193,23 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
         return { pkg_ID, volumeM3: vol, percentOfTruck: pct };
       });
 
-      // 3D placements using FILO + zero-gap + stack-if-needed
+      // 3D placements using FILO + zero-gap + dynamic stacked layers
       const colorByProdPkg = buildColorMapByProdPkg(packageInfoDetails);
-      const tallestH = getMaxBoxHeight(packageInfoDetails);
 
-      const { placements: rawPlacements, layersUsed } = computeBoxPlacements(
+      const rawPlacements = computeBoxPlacements(
         a.loadArrangement,
         packageInfoDetails,
         { interiorWidthM: widthM, interiorLengthM: lengthM, interiorHeightM: heightM },
         {
+          // stack up to the height the truck physically allows
           maxLayers: Math.max(1, v.maxLayersByHeight || 1),
+
+          // ZERO visual gaps along X/Z
           zGutter: 0.0,
           frontGutter: 0.0,
-          layerGap: 0.02, // visual
-          layerHeight: tallestH
+
+          // tiny clearance between vertically stacked layers
+          layerGap: 0.02
         }
       );
 
@@ -2246,9 +2229,8 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
           oneLayerM3: v.oneLayerM3,
           usableM3: v.usableVol,
           maxLayersByHeight: v.maxLayersByHeight,
-          // show physical height limit; per-line caps are listed below
-          allowedLayers: v.maxLayersByHeight,
-          layersUsed,
+          // FE badge hint = **min** to avoid suggesting stacking when a line forbids it
+          allowedLayers: Math.min(v.allowedLayers || 1, truckAllowedLayersFromLines),
           perLineLayers
         }
       };
@@ -2297,5 +2279,20 @@ router.post('/sample-route', jwtAuth.verifyToken, async (req, res) => {
     return res.status(500).json({ error: err.message });
   }
 });
+
+/* ------------------- package fetch ------------------- */
+async function getPackagesByIds(packageIDs) {
+  const ph = packageIDs.map(_ => '?').join(',');
+  const [rows] = await db.query(`
+    SELECT * FROM packages WHERE pack_ID IN (${ph})`, packageIDs);
+  if (!rows.length) throw new Error(`No matching packages`);
+  return rows.map(r => ({
+    pack_ID: r.pack_ID,
+    ship_from: r.ship_from,
+    ship_to: r.ship_to,
+    products: safeJsonParse(r.product_ID),
+    pickup_date_time: r.pickup_date_time
+  }));
+}
 
 module.exports = router;

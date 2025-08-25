@@ -1960,55 +1960,72 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
         });
       });
 
-      const occupied = a.occupiedVolume;
-      const denomRaw = v.totalVolumeCapacity || 0;
-      const occupiedPercent = denomRaw > 0
-        ? +((occupied / denomRaw) * 100).toFixed(2)
-        : 0;
-
-      const packageDetails = a.packages.map((pkg_ID, idx) => {
-        const vol = (a.pkgVolumes && a.pkgVolumes[idx]) || 0;
-        const pct = denomRaw > 0 ? +(vol / denomRaw * 100).toFixed(2) : 0;
-        return { pkg_ID, volumeM3: vol, percentOfTruck: pct };
-      });
-
-      const colorByProdPkg = buildColorMapByProdPkg(packageInfoDetails);
-      const tallestH = getMaxBoxHeight(packageInfoDetails);
-
-      const { placements: rawPlacements, layersUsed } = computeBoxPlacements(
-        a.loadArrangement,
-        packageInfoDetails,
-        { interiorWidthM: widthM, interiorLengthM: lengthM, interiorHeightM: heightM },
-        {
-          maxLayers: Math.max(1, v.maxLayersByHeight || 1),
-          zGutter: 0.0,
-          frontGutter: 0.0,
-          layerGap: 0.02,
-          layerHeight: tallestH
-        }
-      );
-
-      const boxPlacements = generatePackageBlocks(rawPlacements);
-      const productLegend = buildProductLegend(a.loadArrangement, packageInfoDetails, colorByProdPkg);
-
-      return {
-        ...a,
-        boxPlacements,
-        vehicleDimensions: { interiorWidthM: widthM, interiorLengthM: lengthM, interiorHeightM: heightM },
-        packageInfoDetails,
-        occupiedPercent,
-        packageDetails,
-        productLegend,
-        truckCapacity: {
-          rawM3: v.totalVolumeCapacity,
-          oneLayerM3: v.oneLayerM3,
-          usableM3: v.usableVol,
-          maxLayersByHeight: v.maxLayersByHeight,
-          allowedLayers: v.maxLayersByHeight,
-          layersUsed,
-          perLineLayers
-        }
-      };
+           // --- occupancy calcs (raw vs rule-usable) ---
+           const occupied = a.occupiedVolume;
+           const rawM3 = v.totalVolumeCapacity || 0;
+           const usableM3 = v.usableVol || rawM3;
+     
+           const occupiedPercentRaw    = rawM3   ? +((occupied / rawM3)   * 100).toFixed(2) : 0;
+           const occupiedPercentUsable = usableM3? +((occupied / usableM3)* 100).toFixed(2) : 0;
+     
+           // per-package volume + percentages
+           const packageDetails = a.packages.map((pkg_ID, idx) => {
+             const vol = (a.pkgVolumes && a.pkgVolumes[idx]) || 0;
+             const percentOfTruckRaw    = rawM3    ? +(vol / rawM3    * 100).toFixed(2) : 0;
+             const percentOfUsableRules = usableM3 ? +(vol / usableM3 * 100).toFixed(2) : 0;
+             return {
+               pkg_ID,
+               volumeM3: vol,
+               percentOfTruck: percentOfTruckRaw,         // kept for FE backward-compat
+               percentOfUsable: percentOfUsableRules      // new: against rule envelope
+             };
+           });
+     
+           const colorByProdPkg = buildColorMapByProdPkg(packageInfoDetails);
+           const tallestH = getMaxBoxHeight(packageInfoDetails);
+     
+           // IMPORTANT: cap visualization by rule-allowed layers (not height only)
+           const { placements: rawPlacements, layersUsed } = computeBoxPlacements(
+             a.loadArrangement,
+             packageInfoDetails,
+             { interiorWidthM: widthM, interiorLengthM: lengthM, interiorHeightM: heightM },
+             {
+               maxLayers: Math.max(1, v.allowedLayers || 1), // <— was v.maxLayersByHeight
+               zGutter: 0.0,
+               frontGutter: 0.0,
+               layerGap: 0.02,
+               layerHeight: tallestH
+             }
+           );
+     
+           const boxPlacements = generatePackageBlocks(rawPlacements);
+           const productLegend = buildProductLegend(a.loadArrangement, packageInfoDetails, colorByProdPkg);
+     
+           return {
+             ...a,
+             boxPlacements,
+             vehicleDimensions: { interiorWidthM: widthM, interiorLengthM: lengthM, interiorHeightM: heightM },
+             packageInfoDetails,
+     
+  
+             occupiedPercent: occupiedPercentRaw,         
+             occupiedPercentRaw: occupiedPercentRaw,
+             occupiedPercentUsable: occupiedPercentUsable,
+     
+             packageDetails,
+             productLegend,
+             truckCapacity: {
+               rawM3: v.totalVolumeCapacity,
+               oneLayerM3: v.oneLayerM3,
+               usableM3: v.usableVol,
+               maxLayersByHeight: v.maxLayersByHeight,
+               allowedLayers: v.allowedLayers,
+               allowedByHeight: v.maxLayersByHeight,
+               allowedBySF: globalSfCap,                
+               layersUsed,
+               perLineLayers
+             }
+           };     
     });
 
     return res.status(200).json({

@@ -9,6 +9,7 @@ const fs = require('fs');
 const swaggerUi = require('swagger-ui-express');
 require('dotenv').config();
 
+
 //Mongo
 // const uri="mongodb+srv://jaimptrust:R1c312qPF6CPTs96@jaimp-dev.k7qfi2a.mongodb.net/?retryWrites=true&w=majority&appName=jaiMP-dev";
 
@@ -25,23 +26,22 @@ require('dotenv').config();
 
 
 app.use(cors({
-    origin:"*"
+  origin: "*"
 }));
-app.use(bodyParser.urlencoded({extended: false}));
+app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
 
 
-app.get("/", (req, res, next)=>{
-    res.json({
-        name:"Truk",
-        message:"Hii, I'm working"
-    })
+app.get("/", (req, res, next) => {
+  res.json({
+    name: "Truk",
+    message: "Hii, I'm working"
+  })
 })
 
 const masterSwaggerDocument = JSON.parse(fs.readFileSync('./src/swagger/master-swagger.json', 'utf8'));
 // const userSwaggerDocument = JSON.parse(fs.readFileSync('./src/swagger/user-swagger.json', 'utf8'));
-
 
 const combinedSwaggerDocument = {
   openapi: '3.0.0',
@@ -86,6 +86,7 @@ const combinedSwaggerDocument = {
 app.use('/trukapp-api-docs', swaggerUi.serve, swaggerUi.setup(combinedSwaggerDocument));
 
 
+
 const signup = require('./src/routes/signup/signup');
 const login = require('./src/routes/login/login');
 const userData = require('./src/routes/user/userData');
@@ -113,40 +114,40 @@ const assignmentBidding = require('./src/routes/order/assignmentBidding');
 const masDocks = require('./src/routes/masterLocations/masDocks');
 
 
-app.use('/truk/reg',signup);
-app.use('/truk/log',login);
-app.use('/truk/user',userData);
-app.use('/truk/masLoc',masLocation);
-app.use('/truk/business',businessPartner);
-app.use('/truk/driver',drivers);
-app.use('/truk/vehicle',vehicles);
-app.use('/truk/package',packagesInfo);
-app.use('/truk/carrier',carrier);
-app.use('/truk/lane',lanes);
-app.use('/truk/device',devices);
-app.use('/truk/masterUom',masterUom);
-app.use('/truk/masterProducts',products);
-app.use('/truk/createOrder',order);
-app.use('/truk/order',confirmOrder);
-app.use('/truk/data',data);
-app.use('/truk/products/packages',packages);
-app.use('/truk/image',images);
-app.use('/truk/route',route);
-app.use('/truk/ao',assign);
-app.use('/truk/veh',actVehicles);
-app.use('/truk/self',selfVehicles);
-app.use('/truk/carrier-assignment',assignCarriers);
-app.use('/truk/assignment-bid',assignmentBidding);
-app.use('/truk/masterDock',masDocks)
+app.use('/truk/reg', signup);
+app.use('/truk/log', login);
+app.use('/truk/user', userData);
+app.use('/truk/masLoc', masLocation);
+app.use('/truk/business', businessPartner);
+app.use('/truk/driver', drivers);
+app.use('/truk/vehicle', vehicles);
+app.use('/truk/package', packagesInfo);
+app.use('/truk/carrier', carrier);
+app.use('/truk/lane', lanes);
+app.use('/truk/device', devices);
+app.use('/truk/masterUom', masterUom);
+app.use('/truk/masterProducts', products);
+app.use('/truk/createOrder', order);
+app.use('/truk/order', confirmOrder);
+app.use('/truk/data', data);
+app.use('/truk/products/packages', packages);
+app.use('/truk/image', images);
+app.use('/truk/route', route);
+app.use('/truk/ao', assign);
+app.use('/truk/veh', actVehicles);
+app.use('/truk/self', selfVehicles);
+app.use('/truk/carrier-assignment', assignCarriers);
+app.use('/truk/assignment-bid', assignmentBidding);
+app.use('/truk/masterDock', masDocks)
 
 
 // Global error handling middleware
 app.use((err, req, res, next) => {
-    logger.error(err.stack);
-    res.status(500).json({
-        message: "Internal Server Error",
-        detail: err.message
-    });
+  logger.error(err.stack);
+  res.status(500).json({
+    message: "Internal Server Error",
+    detail: err.message
+  });
 });
 
 

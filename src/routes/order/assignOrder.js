@@ -39,9 +39,9 @@ router.post('/assign-order', jwtAuth.verifyToken, async (req, res) => {
 
         await db.query(
             `INSERT INTO assigning_orders (assign_ID, order_ID, assigned_vehicle_data, self_transport, pod, pod_doc)
-            VALUES (?, ?, ?, ?, ?, ?)`,
+             VALUES (?, ?, ?, ?, ?, ?)`,
             [assign_ID, order_ID, JSON.stringify(assigned_vehicle_data), self_transport, JSON.stringify(pod), pod_doc]
-        );
+        );  
 
         await db.query(
             `UPDATE orders SET order_status = ? WHERE order_ID = ?`,

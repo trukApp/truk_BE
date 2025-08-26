@@ -187,6 +187,7 @@ router.get('/vehicle', jwtAuth.verifyToken, async (req, res) => {
 });
 
 
+
 // Edit vehicle
 router.put('/edit-vehicle', jwtAuth.verifyToken, async (req, res) => {
     try {

@@ -112,8 +112,9 @@ const selfVehicles = require('./src/routes/vehicles/selfVehicles');
 const assignCarriers = require('./src/routes/order/assignCarrier');
 const assignmentBidding = require('./src/routes/order/assignmentBidding');
 const masDocks = require('./src/routes/masterLocations/masDocks');
+const healthRoutes = require('./src/routes/health');
 
-
+app.use('/health', healthRoutes);
 app.use('/truk/reg', signup);
 app.use('/truk/log', login);
 app.use('/truk/user', userData);

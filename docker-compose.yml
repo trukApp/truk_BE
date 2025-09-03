@@ -1,0 +1,127 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: truk_redis
+    ports: ["6379:6379"]
+    command: ["redis-server","--appendonly","yes"]
+    volumes: ["redis-data:/data"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  kafka:
+    image: bitnami/kafka:3.7
+    container_name: truk_kafka
+    # Expose one listener to the host (9092) and one to the Docker network (29092)
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      - KAFKA_ENABLE_KRAFT=yes
+      - KAFKA_CFG_PROCESS_ROLES=broker,controller
+      - KAFKA_CFG_NODE_ID=1
+      # three listeners: host, internal, controller
+      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT_HOST:PLAINTEXT,PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      - KAFKA_CFG_LISTENERS=PLAINTEXT_HOST://:9092,PLAINTEXT://:29092,CONTROLLER://:9093
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT_HOST://localhost:9092,PLAINTEXT://kafka:29092
+      - KAFKA_CFG_INTER_BROKER_LISTENER_NAME=PLAINTEXT
+      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=1@kafka:9093
+      # convenience for dev
+      - KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true
+      - KAFKA_CFG_NUM_PARTITIONS=6
+      - ALLOW_PLAINTEXT_LISTENER=yes
+    volumes:
+      - kafka-data:/bitnami/kafka
+    restart: unless-stopped
+    healthcheck:
+      # wait until the broker answers on the host listener
+      test: ["CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: truk_timescale
+    environment:
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_USER=postgres
+      - POSTGRES_DB=truk_metrics
+      - TIMESCALEDB_TELEMETRY=off
+    ports: ["5432:5432"]
+    volumes: ["ts-data:/var/lib/postgresql/data"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d truk_metrics"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  grafana:
+    image: grafana/grafana:10.4.2
+    container_name: truk_grafana
+    ports: ["3000:3000"]
+    volumes: ["grafana-data:/var/lib/grafana"]
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Your API as a container (optional—use this if you want one command for everything)
+  api:
+    build: .
+    container_name: truk_api
+    # if you keep a .env file, you can uncomment:
+    # env_file: .env
+    environment:
+      # talk to other containers by service name
+      - REDIS_URL=redis://redis:6379
+      - TS_HOST=timescaledb
+      - TS_PORT=5432
+      - TS_DB=truk_metrics
+      - TS_USER=postgres
+      - TS_PASSWORD=postgres
+      # IMPORTANT: use the internal listener from inside Docker
+      - KAFKA_BROKERS=kafka:29092
+      - KAFKA_CLIENT_ID=trukapp-api
+      - KAFKA_GROUP_ID=trukapp-workers
+      # routing
+      - ROUTING_PROVIDER=${ROUTING_PROVIDER:-google}
+      - OSRM_BASE_URL=http://osrm:5000
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      # your normal PORT / NODE_ENV etc if needed
+      - PORT=8088
+      - NODE_ENV=development
+    depends_on:
+      kafka:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8088:8088"
+    restart: unless-stopped
+    command: ["node","server.js"]
+
+  # Optional: OSRM (start via profile once you have data)
+  osrm:
+    image: ghcr.io/project-osrm/osrm-backend:latest
+    container_name: truk_osrm
+    profiles: ["osrm"]
+    command: ["osrm-routed","/data/india-latest.osrm"]
+    volumes:
+      - ./osrm-data:/data
+    ports:
+      - "5000:5000"
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+  kafka-data:
+  ts-data:
+  grafana-data:

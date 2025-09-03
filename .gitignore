@@ -1,2 +1,39 @@
+# Node
 node_modules/
+npm-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+dist/
+build/
+coverage/
+
+# Env & secrets
 .env
+.env.*
+!.env.example
+!.env.sample
+
+# OSRM datasets & generated files
+osrm-data/
+*.osrm
+*.osrm.*
+*.pbf
+*.osm.pbf
+*.timestamp
+
+# Docker local artifacts (if any host binds)
+docker-data/
+redis-data/
+kafka-data/
+ts-data/
+grafana-data/
+
+# Logs / misc
+*.log
+*.pid
+
+# IDE/OS cruft
+.vscode/
+*.code-workspace
+.DS_Store
+Thumbs.db

@@ -2,6 +2,7 @@
 // const express = require('express');
 // const axios = require('axios');
 // const router = express.Router();
+
 // const db = require('../../../dbConnection');
 // const { logger } = require('../../logger/logger');
 // const { parseWeightAndUOM, parseVolumeAndUOM } = require('./unitParser');
@@ -13,12 +14,10 @@
 // const { logApiPerf, logSolverPerf } = require('../../lib/tsdb');
 // const { emit } = require('../../lib/kafka');
 
+// // Config
+// const GOOGLE_API_KEY = cfg.googleApiKey;
 
-// const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
-// // const GOOGLE_API_KEY = cfg.googleApiKey;
-// const routeCache = new Map();
-
-// /* ---------------------- small helpers ---------------------- */
+// /* ---------------------- tiny helpers ---------------------- */
 // function buildRouteKey(locations) {
 //   return locations.map(loc => `${loc.latitude},${loc.longitude}`).join('|');
 // }
@@ -54,25 +53,17 @@
 // function parseDistanceText(txt) {
 //   return parseFloat(txt.replace(/[^\d.]/g, '')) || 0;
 // }
+// const kmText = m => `${(m / 1000).toFixed(1)} km`;
+// const minText = s => `${Math.round(s / 60)} mins`;
 
-// /* ------------------------ routing ------------------------- */
-// async function getOptimizedRouteWithLoad(locations, shipmentLoads) {
-//   if (!Array.isArray(locations) || locations.length < 2) {
-//     throw new Error("Need at least origin and destination");
-//   }
-//   const key = buildRouteKey(locations);
-//   if (routeCache.has(key)) {
-//     const { optimizedRoute, sampledCoords } = routeCache.get(key);
-//     optimizedRoute.forEach((leg, i) => {
-//       if (i < shipmentLoads.length) leg.loadAfterStop = i === 0 ? shipmentLoads[i] : leg.loadAfterStop;
-//     });
-//     return { optimizedRoute, sampledCoords };
-//   }
-
-//   const origin = locations[0], dest = locations[locations.length - 1];
+// /* ------------------ ROUTING (Google / OSRM) ------------------ */
+// async function fetchRouteGoogle(locations) {
+//   const origin = locations[0];
+//   const dest = locations[locations.length - 1];
 //   const waypoints = locations.length > 2
 //     ? locations.slice(1, -1).map(l => `${l.latitude},${l.longitude}`).join('|')
 //     : '';
+
 //   const url =
 //     `https://maps.googleapis.com/maps/api/directions/json?origin=${origin.latitude},${origin.longitude}` +
 //     `&destination=${dest.latitude},${dest.longitude}` +
@@ -81,32 +72,113 @@
 
 //   const resp = await axios.get(url);
 //   if (resp.data.status !== 'OK') {
-//     console.error("Google API error:", resp.data);
 //     throw new Error(`Google error: ${resp.data.status}`);
 //   }
+//   const r0 = resp.data.routes[0];
+//   const legs = r0.legs || [];
+//   const decoded = polyline.decode(r0.overview_polyline.points)
+//     .map(([lat, lng]) => ({ lat, lng }));
 
-//   const legs = resp.data.routes[0].legs;
+//   // Map legs to our format
+//   const mappedLegs = legs.map((leg, i) => ({
+//     start: {
+//       address: leg.start_address,
+//       latitude: locations[i].latitude,
+//       longitude: locations[i].longitude
+//     },
+//     end: {
+//       address: leg.end_address,
+//       latitude: locations[i + 1].latitude,
+//       longitude: locations[i + 1].longitude
+//     },
+//     distance: leg.distance.text,
+//     duration: leg.duration.text
+//   }));
+
+//   return { legs: mappedLegs, shape: decoded };
+// }
+
+// async function fetchRouteOSRM(locations) {
+//   // OSRM expects "lon,lat" pairs
+//   const coords = locations.map(p => `${p.longitude},${p.latitude}`).join(';');
+//   const url = `${cfg.osrmBaseUrl}/route/v1/driving/${coords}?overview=full&geometries=polyline`;
+//   const resp = await axios.get(url);
+//   if (resp.data.code !== 'Ok') {
+//     throw new Error(`OSRM error: ${resp.data.code}`);
+//   }
+//   const route = resp.data.routes[0];
+//   const decoded = polyline.decode(route.geometry)
+//     .map(([lat, lng]) => ({ lat, lng }));
+
+//   // OSRM legs have numeric distance (m) & duration (s)
+//   const legs = (route.legs || []).map((leg, i) => ({
+//     start: {
+//       address: '', // OSRM has no address reverse-lookup
+//       latitude: locations[i].latitude,
+//       longitude: locations[i].longitude
+//     },
+//     end: {
+//       address: '',
+//       latitude: locations[i + 1].latitude,
+//       longitude: locations[i + 1].longitude
+//     },
+//     distance: kmText(leg.distance || 0),
+//     duration: minText(leg.duration || 0)
+//   }));
+
+//   return { legs, shape: decoded };
+// }
+
+// /**
+//  * Core helper that:
+//  *  - checks Redis cache
+//  *  - fetches route from provider (Google or OSRM)
+//  *  - computes sampled points every ~20km
+//  *  - returns { optimizedRoute[], sampledCoords[] }
+//  */
+// async function getOptimizedRouteWithLoad(locations, shipmentLoads) {
+//   if (!Array.isArray(locations) || locations.length < 2) {
+//     throw new Error('Need at least origin and destination');
+//   }
+
+//   const cacheKey = `route:${cfg.routingProvider}:${buildRouteKey(locations)}`;
+//   const cached = await getJSON(cacheKey);
+//   if (cached) {
+//     const { optimizedRoute, sampledCoords } = cached;
+//     // refresh load field if caller provided loads
+//     optimizedRoute.forEach((leg, i) => {
+//       if (i < shipmentLoads.length) {
+//         leg.loadAfterStop = i === 0 ? shipmentLoads[i] : leg.loadAfterStop;
+//       }
+//     });
+//     return { optimizedRoute, sampledCoords };
+//   }
+
+//   // choose provider
+//   let legs, shape;
+//   if (cfg.routingProvider === 'osrm') {
+//     ({ legs, shape } = await fetchRouteOSRM(locations));
+//   } else {
+//     ({ legs, shape } = await fetchRouteGoogle(locations)); // default
+//   }
+
+//   // Add load accumulation
 //   const optimizedRoute = [];
 //   let currentLoad = 0;
 //   legs.forEach((leg, i) => {
 //     const load = shipmentLoads[i] || 0;
 //     currentLoad += load;
-//     if (leg.start_address !== leg.end_address) {
-//       optimizedRoute.push({
-//         start: { address: leg.start_address, latitude: locations[i].latitude, longitude: locations[i].longitude },
-//         end: { address: leg.end_address, latitude: locations[i + 1].latitude, longitude: locations[i + 1].longitude },
-//         distance: leg.distance.text,
-//         duration: leg.duration.text,
-//         loadAfterStop: currentLoad
-//       });
+//     if (
+//       leg.start.latitude !== leg.end.latitude ||
+//       leg.start.longitude !== leg.end.longitude
+//     ) {
+//       optimizedRoute.push({ ...leg, loadAfterStop: currentLoad });
 //     }
 //   });
 
-//   const decoded = polyline.decode(resp.data.routes[0].overview_polyline.points)
-//     .map(([lat, lng]) => ({ lat, lng }));
-//   const sampledCoords = sampleRoutePoints(decoded, 20);
+//   const sampledCoords = sampleRoutePoints(shape, 20);
 
-//   routeCache.set(key, { optimizedRoute, sampledCoords });
+//   await setJSON(cacheKey, { optimizedRoute, sampledCoords }, cfg.redisTTL);
 //   return { optimizedRoute, sampledCoords };
 // }
 
@@ -129,7 +201,7 @@
 //   return 'NW';
 // }
 // function isDirectionCompatible(a, b) {
-//   const dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+//   const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
 //   let iA = dirs.indexOf(a), iB = dirs.indexOf(b);
 //   if (iA < 0 || iB < 0) return false;
 //   let d = Math.abs(iA - iB);
@@ -178,11 +250,11 @@
 //   return {
 //     latitude: parseFloat(rows[0].latitude) || 0,
 //     longitude: parseFloat(rows[0].longitude) || 0,
-//     loc_desc: rows[0].loc_desc || ""
+//     loc_desc: rows[0].loc_desc || ''
 //   };
 // }
 // function safeJsonParse(val, def = []) {
-//   if (typeof val === "string") {
+//   if (typeof val === 'string') {
 //     try { return JSON.parse(val); } catch { return def; }
 //   }
 //   return val || def;
@@ -208,9 +280,7 @@
 //   };
 // }
 // /**
-//  * IMPORTANT POLICY (kept): normal goods may NOT go on special trucks.
-//  * i.e., if the package has no special flags, then the vehicle must also
-//  * have no special capabilities enabled.
+//  * POLICY: normal goods may NOT go on special trucks.
 //  */
 // function checkPackageVehicleCompatibility(pkgF, vehF) {
 //   const pkgIsNormal = !pkgF.fragile && !pkgF.dangerous && !pkgF.hazardous && !pkgF.tempCtrl;
@@ -270,18 +340,13 @@
 // }
 
 // /* ---------------- backtracking cost solver ---------------- */
-// /**
-//  * Tries ALL combinations across the fleet (multi-vehicle allowed).
-//  * If not all packages can be placed, still returns the best partial set
-//  * (lowest cost for the most packages), and marks the remainder as unallocated.
-//  */
 // async function findMinCostArrangement(cluster, vehicles, sourceLoc) {
 //   vehicles = vehicles.slice().sort((a, b) => a.cost_per_ton - b.cost_per_ton);
 
 //   let best = {
 //     cost: Infinity,
 //     allocations: [],
-//     unallocated: cluster.map(p => p.pack_ID), // start assuming none placed
+//     unallocated: cluster.map(p => p.pack_ID),
 //     placedCount: 0
 //   };
 
@@ -295,23 +360,16 @@
 //   }
 
 //   async function backtrack(rem, iVeh, used) {
-//     // if we placed all, record optimal
 //     if (!rem.length) {
 //       const shot = snapshot(used, rem);
-//       if (
-//         shot.placedCount > best.placedCount ||
-//         (shot.placedCount === best.placedCount && shot.cost < best.cost)
-//       ) best = shot;
+//       if (shot.placedCount > best.placedCount ||
+//           (shot.placedCount === best.placedCount && shot.cost < best.cost)) best = shot;
 //       return;
 //     }
-
-//     // if we ran out of vehicles, record the partial we have
 //     if (iVeh >= vehicles.length) {
 //       const shot = snapshot(used, rem);
-//       if (
-//         shot.placedCount > best.placedCount ||
-//         (shot.placedCount === best.placedCount && shot.cost < best.cost)
-//       ) best = shot;
+//       if (shot.placedCount > best.placedCount ||
+//           (shot.placedCount === best.placedCount && shot.cost < best.cost)) best = shot;
 //       return;
 //     }
 
@@ -323,7 +381,7 @@
 //         subsets.push({ chosen, sumW, sumV, flags });
 //         return;
 //       }
-//       buildSub(idx + 1, chosen, sumW, sumV, flags); // skip
+//       buildSub(idx + 1, chosen, sumW, sumV, flags);
 //       const pkg = rem[idx];
 //       const newW = sumW + pkg.totalWeight;
 //       const newV = sumV + pkg.totalVolume;
@@ -341,7 +399,6 @@
 
 //     buildSub(0, [], 0, 0, { fragile: 0, dangerous: 0, hazardous: 0, tempCtrl: 0 });
 
-//     // try every feasible subset on this vehicle
 //     for (const { chosen, sumW } of subsets) {
 //       if (!chosen.length) continue;
 
@@ -353,15 +410,14 @@
 //       const tons = sumW / 1000;
 //       const cost = tons * v.cost_per_ton * totalDist;
 
-//       // forward stop sequence → load arrangement for FILO
 //       let loadArr = [], remainIDs = chosen.map(x => x.pack_ID);
 //       optimizedRoute.forEach((leg, i) => {
 //         const stop = i + 1, matches = [];
 //         for (const id of remainIDs) {
 //           const pObj = chosen.find(x => x.pack_ID === id);
 //           if (pObj &&
-//             pObj.destination.latitude === leg.end.latitude &&
-//             pObj.destination.longitude === leg.end.longitude) {
+//               pObj.destination.latitude === leg.end.latitude &&
+//               pObj.destination.longitude === leg.end.longitude) {
 //             matches.push(id);
 //           }
 //         }
@@ -389,35 +445,32 @@
 //       await backtrack(rem.filter(r => !chosen.includes(r)), iVeh + 1, used);
 //       used.pop();
 //     }
-
-//     // also try skipping this vehicle entirely
 //     await backtrack(rem, iVeh + 1, used);
 //   }
 
 //   await backtrack(cluster, 0, []);
-
 //   return (best.placedCount > 0)
 //     ? { cost: best.cost, allocations: best.allocations, unallocated: best.unallocated }
 //     : { cost: 0, allocations: [], unallocated: best.unallocated };
 // }
 
 // function generateUnallocationReason(pkgInfo, vehicles) {
-//   if (!vehicles.length) return "No vehicles after filters.";
+//   if (!vehicles.length) return 'No vehicles after filters.';
 //   const fleet = vehicles.map(getVehicleSpecialFlags);
 //   if (pkgInfo.specialFlags.tempCtrl && !fleet.some(v => v.temp_controlled_vehicle))
-//     return "Needs temperature-controlled truck.";
+//     return 'Needs temperature-controlled truck.';
 //   if (pkgInfo.specialFlags.fragile && !fleet.some(v => v.fragile_vehicle))
-//     return "Needs fragile-goods truck.";
+//     return 'Needs fragile-goods truck.';
 //   if (pkgInfo.specialFlags.dangerous && !fleet.some(v => v.danger_proof))
-//     return "Needs dangerous-goods truck.";
+//     return 'Needs dangerous-goods truck.';
 //   if (pkgInfo.specialFlags.hazardous && !fleet.some(v => v.hazardous_proof))
-//     return "Needs hazardous-goods truck.";
+//     return 'Needs hazardous-goods truck.';
 
 //   const maxW = Math.max(...vehicles.map(v => v.weightCapKg));
 //   const maxV = Math.max(...vehicles.map(v => v.volumeCapM3));
-//   if (pkgInfo.totalWeight > maxW) return "Package too heavy for any truck.";
-//   if (pkgInfo.totalVolume > maxV) return "Package too large for any truck.";
-//   return "Could not allocate package.";
+//   if (pkgInfo.totalWeight > maxW) return 'Package too heavy for any truck.';
+//   if (pkgInfo.totalVolume > maxV) return 'Package too large for any truck.';
+//   return 'Could not allocate package.';
 // }
 
 // /* ---------------- allocation orchestration ---------------- */
@@ -475,15 +528,14 @@
 //       const cost = tons * chosen.cost_per_ton * totalDist;
 //       totalCost += cost;
 
-//       // forward route-based loadArrangement
 //       let loadArr = [], remainIDs = group.map(g => g.pack_ID);
 //       optimizedRoute.forEach((leg, i) => {
 //         const stop = i + 1, using = [];
 //         remainIDs.forEach(id => {
 //           const pkg = group.find(g => g.pack_ID === id);
 //           if (pkg &&
-//             pkg.destination.latitude === leg.end.latitude &&
-//             pkg.destination.longitude === leg.end.longitude) {
+//               pkg.destination.latitude === leg.end.latitude &&
+//               pkg.destination.longitude === leg.end.longitude) {
 //             using.push(id);
 //           }
 //         });
@@ -512,7 +564,6 @@
 //       });
 
 //     } else {
-//       // multi-vehicle search across entire fleet
 //       const { cost, allocations: subAllocs, unallocated } =
 //         await findMinCostArrangement(group, vehicles, sourceLocation);
 //       totalCost += cost;
@@ -534,7 +585,7 @@
 //   const ph = packageIDs.map(_ => '?').join(',');
 //   const [rows] = await db.query(`
 //     SELECT * FROM packages WHERE pack_ID IN (${ph})`, packageIDs);
-//   if (!rows.length) throw new Error(`No matching packages`);
+//   if (!rows.length) throw new Error('No matching packages');
 //   return rows.map(r => ({
 //     pack_ID: r.pack_ID,
 //     ship_from: r.ship_from,
@@ -554,9 +605,8 @@
 // }
 // function r3(n) { return Math.round(n * 1000) / 1000; }
 
-// /** Color map per (product, package) key */
 // function buildColorMapByProdPkg(packageInfoDetails) {
-//   const palette = ["#10b981", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#14b8a6", "#f43f5e", "#0ea5e9", "#6366f1", "#22c55e"];
+//   const palette = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f43f5e', '#0ea5e9', '#6366f1', '#22c55e'];
 //   const colorByKey = {};
 //   let i = 0;
 //   for (const p of packageInfoDetails) {
@@ -569,8 +619,6 @@
 //   }
 //   return colorByKey;
 // }
-
-// /** explode one package's product lines into concrete boxes */
 // function explodePackage(pkgRecord, colorByKey) {
 //   const out = [];
 //   for (const l of (pkgRecord.lines || [])) {
@@ -578,13 +626,12 @@
 //     if (!d) continue;
 //     const L = +d.lengthM || 0, W = +d.widthM || 0, H = +d.heightM || 0;
 //     const q = Number(l.quantity || 0);
-//     const color = colorByKey[`${l.prod_ID}|${pkgRecord.pkg_ID}`] || "#999";
+//     const color = colorByKey[`${l.prod_ID}|${pkgRecord.pkg_ID}`] || '#999';
 //     const allowedLayers = Math.max(1, Number(l.allowedLayers || 1));
 //     for (let i = 0; i < q; i++) out.push({ pkg_ID: pkgRecord.pkg_ID, prod_ID: l.prod_ID, L, W, H, color, allowedLayers });
 //   }
 //   return out;
 // }
-
 // function getMaxBoxHeight(packageInfoDetails) {
 //   let h = 0;
 //   for (const p of packageInfoDetails) {
@@ -594,26 +641,21 @@
 //       }
 //     }
 //   }
-//   return h || 0.5; // safe default
+//   return h || 0.5;
 // }
-
-// /* ------------ 3D placement (no gaps + stack-if-needed) ------------- */
 // function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimensions, opts = {}) {
 //   const res = packStopBlocks(loadArrangement, packageInfoDetails, vehicleDimensions, opts);
 //   return res;
 // }
-
-// /* -------------- no-gap + stacking packer (fixed) ---------------- */
 // function packStopBlocks(loadArrangement, packageInfoDetails, vehicleDimensions, opts = {}) {
-//   const truckL = vehicleDimensions.interiorLengthM || 0; // X (front→rear)
-//   const truckW = vehicleDimensions.interiorWidthM || 0;  // Z (left→right)
+//   const truckL = vehicleDimensions.interiorLengthM || 0;
+//   const truckW = vehicleDimensions.interiorWidthM || 0;
 //   const truckH = vehicleDimensions.interiorHeightM || 0;
 
 //   const EPS = 1e-9;
-
 //   const Z_GUTTER = opts.zGutter ?? 0.0;
 //   const FRONT_GUTTER_X = opts.frontGutter ?? 0.0;
-//   const LAYER_GAP = opts.layerGap ?? 0.02; // 2 cm visual gap
+//   const LAYER_GAP = opts.layerGap ?? 0.02;
 
 //   const layerHeight = opts.layerHeight ?? getMaxBoxHeight(packageInfoDetails);
 //   const maxLayers = Math.max(1, Math.min(opts.maxLayers || 1, layerHeight > 0 ? Math.floor(truckH / layerHeight) : 1));
@@ -685,7 +727,6 @@
 //       if (!boxes.length) return true;
 //       if (s.zCursor === 0 && s.rowMaxL === 0) break;
 //     }
-
 //     return boxes.length === 0;
 //   }
 
@@ -705,19 +746,15 @@
 
 //   return { placements, total, placed, layersUsed: Math.max(0, highestLayerUsed + 1) };
 // }
-
-// /** passthrough for FE */
 // function generatePackageBlocks(boxPlacements) {
 //   return boxPlacements.map(b => ({
 //     pkg_ID: b.pkg_ID,
 //     prod_ID: b.prod_ID,
-//     color: b.color || "#999",
+//     color: b.color || '#999',
 //     position: b.position,
 //     dimensions: b.dimensions
 //   }));
 // }
-
-// /** Build per-product legend for FE */
 // function buildProductLegend(loadArrangement, packageInfoDetails, colorByProdPkg) {
 //   const byProd = {};
 //   for (const stopEntry of loadArrangement) {
@@ -729,7 +766,7 @@
 //         if (!l?.prod_ID) continue;
 //         const rec = (byProd[l.prod_ID] ||= {
 //           prod_ID: l.prod_ID,
-//           color: "#999",
+//           color: '#999',
 //           totalQty: 0,
 //           byPackage: {},
 //           byStop: {}
@@ -737,7 +774,7 @@
 //         const q = Number(l.quantity || 0);
 //         rec.totalQty += q;
 //         const key = `${l.prod_ID}|${pkg_ID}`;
-//         const prev = rec.byPackage[pkg_ID] || { qty: 0, color: colorByProdPkg[key] || "#999" };
+//         const prev = rec.byPackage[pkg_ID] || { qty: 0, color: colorByProdPkg[key] || '#999' };
 //         rec.byPackage[pkg_ID] = { qty: prev.qty + q, color: prev.color };
 //         rec.byStop[stop] = (rec.byStop[stop] || 0) + q;
 //       }
@@ -753,7 +790,10 @@
 // }
 
 // /* -------------------------- ROUTES --------------------------- */
+
+// // Create order (allocations)
 // router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
+//   const t0 = Date.now();
 //   try {
 //     const { packages: packageIDs, filters } = req.body;
 //     if (!packageIDs?.length) return res.status(400).json({ error: 'No packages provided.' });
@@ -768,7 +808,7 @@
 //         throw new Error('All packages must share pickup date');
 //     });
 
-//     // 2) build productMap BEFORE needing any pac_IDs
+//     // 2) products
 //     const allLines = packagesData.flatMap(p => p.products || []);
 //     const prodIDs = [...new Set(allLines.map(l => l.prod_ID))];
 //     if (!prodIDs.length)
@@ -784,7 +824,7 @@
 //     );
 //     const productMap = prodRows.reduce((m, r) => (m[r.product_ID] = r, m), {});
 
-//     // 3) collect ALL pac_IDs & load packagingInfo once
+//     // 3) packaging info
 //     const allPacIDs = collectAllPacIDs(packagesData, productMap);
 //     const packagingInfoMap = await loadAllPackageInfo(allPacIDs);
 
@@ -793,13 +833,11 @@
 //       const prod = productMap[l.prod_ID];
 //       const pacIds = resolvePacIdsFromProduct(prod);
 //       const info = pacIds[0] ? packagingInfoMap[pacIds[0]] : null;
-//       return info
-//         ? parseDimension(`${info.pack_height} ${info.dimensions_uom}`)
-//         : 0;
+//       return info ? parseDimension(`${info.pack_height} ${info.dimensions_uom}`) : 0;
 //     }).filter(Boolean);
 //     const maxPkgH = heights.length ? Math.max(...heights) : 0;
 
-//     // global stacking factor cap (max across products; <=1 becomes 1)
+//     // global stacking factor cap
 //     const sfCaps = allLines.map(l => {
 //       const raw = productMap[l.prod_ID]?.stacking_factor;
 //       if (raw === null || raw === undefined || raw === '') return 1;
@@ -808,7 +846,7 @@
 //     });
 //     const globalSfCap = sfCaps.length ? Math.max(...sfCaps) : 1;
 
-//     // 4) load vehicles & compute capacities
+//     // 4) vehicles near origin
 //     const [dbVehicles] = await db.query(
 //       `SELECT * FROM master_resources WHERE JSON_CONTAINS(loc_ID, ?)`,
 //       [JSON.stringify(origin)]
@@ -825,7 +863,6 @@
 
 //       const maxLayersByHeight = (maxPkgH > 0 && H > 0) ? Math.max(1, Math.floor(H / maxPkgH)) : 1;
 //       const truckAllowedLayers = Math.min(maxLayersByHeight, globalSfCap);
-
 //       const oneLayerM3 = (maxPkgH > 0) ? (W * L * maxPkgH) : 0;
 //       const usableVol = oneLayerM3 * truckAllowedLayers;
 
@@ -838,10 +875,8 @@
 //         capacity: caps,
 //         weightCapKg,
 //         totalWeightCapacity: weightCapKg,
-
 //         totalVolumeCapacity: rawM3,
 //         volumeCapM3: rawM3,
-
 //         oneLayerM3,
 //         usableVol,
 //         maxLayersByHeight,
@@ -851,7 +886,7 @@
 //       };
 //     });
 
-//     // 5) filters & sorts
+//     // 5) filters/sorts
 //     if (filters?.checkValidity) fleet = fleet.filter(isVehicleValid);
 //     if (filters?.checkDowntime) fleet = fleet.filter(v => !isVehicleDown(v));
 //     if (filters?.sortUnlimitedUsage) fleet.sort((a, b) => (a.unlimited_usage || 0) - (b.unlimited_usage || 0));
@@ -861,12 +896,12 @@
 //     // 6) origin coords
 //     const sourceLoc = await getLocationById(origin);
 
-//     // 7) allocate packages
+//     // 7) allocate
 //     const { allocations, totalCost, unallocated } = await allocatePackages(
 //       packagesData, fleet, sourceLoc, productMap, packagingInfoMap
 //     );
 
-//     // 8) enrich allocations for response
+//     // 8) enrich for FE
 //     const enriched = allocations.map(a => {
 //       const v = fleet.find(x => x.vehicle_ID === a.vehicle_ID) || {};
 //       const caps = v.capacity || {};
@@ -928,114 +963,110 @@
 //         });
 //       });
 
-//            // --- occupancy calcs (raw vs rule-usable) ---
-//            const occupied = a.occupiedVolume;
-//            const rawM3 = v.totalVolumeCapacity || 0;
-//            const usableM3 = v.usableVol || rawM3;
-     
-//            const occupiedPercentRaw    = rawM3   ? +((occupied / rawM3)   * 100).toFixed(2) : 0;
-//            const occupiedPercentUsable = usableM3? +((occupied / usableM3)* 100).toFixed(2) : 0;
-     
-//            // per-package volume + percentages
-//            const packageDetails = a.packages.map((pkg_ID, idx) => {
-//              const vol = (a.pkgVolumes && a.pkgVolumes[idx]) || 0;
-//              const percentOfTruckRaw    = rawM3    ? +(vol / rawM3    * 100).toFixed(2) : 0;
-//              const percentOfUsableRules = usableM3 ? +(vol / usableM3 * 100).toFixed(2) : 0;
-//              return {
-//                pkg_ID,
-//                volumeM3: vol,
-//                percentOfTruck: percentOfTruckRaw,         // kept for FE backward-compat
-//                percentOfUsable: percentOfUsableRules      // new: against rule envelope
-//              };
-//            });
-     
-//            const colorByProdPkg = buildColorMapByProdPkg(packageInfoDetails);
-//            const tallestH = getMaxBoxHeight(packageInfoDetails);
-     
-//            // IMPORTANT: cap visualization by rule-allowed layers (not height only)
-//            const { placements: rawPlacements, layersUsed } = computeBoxPlacements(
-//              a.loadArrangement,
-//              packageInfoDetails,
-//              { interiorWidthM: widthM, interiorLengthM: lengthM, interiorHeightM: heightM },
-//              {
-//                maxLayers: Math.max(1, v.allowedLayers || 1), // <— was v.maxLayersByHeight
-//                zGutter: 0.0,
-//                frontGutter: 0.0,
-//                layerGap: 0.02,
-//                layerHeight: tallestH
-//              }
-//            );
-     
-//            const boxPlacements = generatePackageBlocks(rawPlacements);
-//            const productLegend = buildProductLegend(a.loadArrangement, packageInfoDetails, colorByProdPkg);
-     
-//            return {
-//              ...a,
-//              boxPlacements,
-//              vehicleDimensions: { interiorWidthM: widthM, interiorLengthM: lengthM, interiorHeightM: heightM },
-//              packageInfoDetails,
-     
-  
-//              occupiedPercent: occupiedPercentRaw,         
-//              occupiedPercentRaw: occupiedPercentRaw,
-//              occupiedPercentUsable: occupiedPercentUsable,
-     
-//              packageDetails,
-//              productLegend,
-//              truckCapacity: {
-//                rawM3: v.totalVolumeCapacity,
-//                oneLayerM3: v.oneLayerM3,
-//                usableM3: v.usableVol,
-//                maxLayersByHeight: v.maxLayersByHeight,
-//                allowedLayers: v.allowedLayers,
-//                allowedByHeight: v.maxLayersByHeight,
-//                allowedBySF: globalSfCap,                
-//                layersUsed,
-//                perLineLayers
-//              }
-//            };     
+//       const occupied = a.occupiedVolume;
+//       const rawM3 = v.totalVolumeCapacity || 0;
+//       const usableM3 = v.usableVol || rawM3;
+
+//       const occupiedPercentRaw    = rawM3    ? +((occupied / rawM3)    * 100).toFixed(2) : 0;
+//       const occupiedPercentUsable = usableM3 ? +((occupied / usableM3) * 100).toFixed(2) : 0;
+
+//       const packageDetails = a.packages.map((pkg_ID, idx) => {
+//         const vol = (a.pkgVolumes && a.pkgVolumes[idx]) || 0;
+//         const percentOfTruckRaw    = rawM3    ? +(vol / rawM3    * 100).toFixed(2) : 0;
+//         const percentOfUsableRules = usableM3 ? +(vol / usableM3 * 100).toFixed(2) : 0;
+//         return {
+//           pkg_ID,
+//           volumeM3: vol,
+//           percentOfTruck: percentOfTruckRaw,
+//           percentOfUsable: percentOfUsableRules
+//         };
+//       });
+
+//       const colorByProdPkg = buildColorMapByProdPkg(packageInfoDetails);
+//       const tallestH = getMaxBoxHeight(packageInfoDetails);
+
+//       const { placements: rawPlacements, layersUsed } = computeBoxPlacements(
+//         a.loadArrangement,
+//         packageInfoDetails,
+//         { interiorWidthM: widthM, interiorLengthM: lengthM, interiorHeightM: heightM },
+//         {
+//           maxLayers: Math.max(1, v.allowedLayers || 1),
+//           zGutter: 0.0,
+//           frontGutter: 0.0,
+//           layerGap: 0.02,
+//           layerHeight: tallestH
+//         }
+//       );
+
+//       const boxPlacements = generatePackageBlocks(rawPlacements);
+//       const productLegend = buildProductLegend(a.loadArrangement, packageInfoDetails, colorByProdPkg);
+
+//       return {
+//         ...a,
+//         boxPlacements,
+//         vehicleDimensions: { interiorWidthM: widthM, interiorLengthM: lengthM, interiorHeightM: heightM },
+//         packageInfoDetails,
+
+//         occupiedPercent: occupiedPercentRaw,
+//         occupiedPercentRaw,
+//         occupiedPercentUsable,
+
+//         packageDetails,
+//         productLegend,
+//         truckCapacity: {
+//           rawM3: v.totalVolumeCapacity,
+//           oneLayerM3: v.oneLayerM3,
+//           usableM3: v.usableVol,
+//           maxLayersByHeight: v.maxLayersByHeight,
+//           allowedLayers: v.allowedLayers,
+//           allowedByHeight: v.maxLayersByHeight,
+//           allowedBySF: globalSfCap,
+//           layersUsed,
+//           perLineLayers
+//         }
+//       };
 //     });
+
+//     // metrics + event
+//     const ms = Date.now() - t0;
+//     await logApiPerf('/create-order', ms, true);
+//     await logSolverPerf(packagesData.length, fleet.length, ms, totalCost);
+//     try { await emit('plan.optimized', { totalCost, allocations: enriched, at: Date.now() }); } catch {}
 
 //     return res.status(200).json({
 //       message: enriched.length ? 'Best Combinational Scenario' : 'No suitable vehicles found',
 //       totalCost: enriched.length ? totalCost : null,
 //       allocations: enriched,
-//       // IMPORTANT: return the actual unallocated we computed
 //       unallocatedPackages: unallocated
 //     });
 
 //   } catch (err) {
+//     const ms = Date.now() - t0;
+//     try { await logApiPerf('/create-order', ms, false); } catch {}
 //     logger.error('Error creating order:', err);
 //     return res.status(500).json({ error: err.message });
 //   }
 // });
 
+// // Sample route (returns sampled polyline points)
 // router.post('/sample-route', jwtAuth.verifyToken, async (req, res) => {
+//   const t0 = Date.now();
 //   try {
 //     const { locations } = req.body;
 //     if (!Array.isArray(locations) || locations.length < 2) {
 //       return res.status(400).json({ error: 'Provide at least origin and destination.' });
 //     }
-//     const origin = locations[0];
-//     const dest = locations[locations.length - 1];
-//     const waypoints = locations.length > 2
-//       ? locations.slice(1, -1).map(l => `${l.latitude},${l.longitude}`).join('|')
-//       : '';
-//     const url =
-//       `https://maps.googleapis.com/maps/api/directions/json?origin=${origin.latitude},${origin.longitude}` +
-//       `&destination=${dest.latitude},${dest.longitude}` +
-//       (waypoints ? `&waypoints=${waypoints}` : '') +
-//       `&key=${GOOGLE_API_KEY}`;
 
-//     const resp = await axios.get(url);
-//     if (resp.data.status !== 'OK') {
-//       return res.status(502).json({ error: `Google API: ${resp.data.status}` });
-//     }
-//     const decoded = polyline.decode(resp.data.routes[0].overview_polyline.points)
-//       .map(([lat, lng]) => ({ lat, lng }));
-//     const sampledRoutePoints = sampleRoutePoints(decoded, 20);
-//     return res.status(200).json({ sampledRoutePoints });
+//     const shipments = new Array(Math.max(0, locations.length - 1)).fill(0);
+//     const { sampledCoords } = await getOptimizedRouteWithLoad(locations, shipments);
+
+//     // log + emit
+//     await logApiPerf('/sample-route', Date.now() - t0, true);
+//     try { await emit('route.sampled', { points: sampledCoords, at: Date.now() }); } catch {}
+
+//     return res.status(200).json({ sampledRoutePoints: sampledCoords });
 //   } catch (err) {
+//     try { await logApiPerf('/sample-route', Date.now() - t0, false); } catch {}
 //     logger.error('Error sampling route:', err);
 //     return res.status(500).json({ error: err.message });
 //   }
@@ -1061,8 +1092,13 @@ const { getJSON, setJSON } = require('../../lib/redis');
 const { logApiPerf, logSolverPerf } = require('../../lib/tsdb');
 const { emit } = require('../../lib/kafka');
 
-// Config
+/* ----------------------- CONFIG ----------------------- */
 const GOOGLE_API_KEY = cfg.googleApiKey;
+const OPENWEATHER_API_KEY = (cfg.openWeatherApiKey || process.env.OPENWEATHER_API_KEY || '').trim();
+const WEATHER_UNITS_DEFAULT = (cfg.weatherUnits || process.env.WEATHER_UNITS || 'metric').trim();
+const WEATHER_CACHE_TTL = Number(cfg.weatherCacheTtl || 600);
+const WEATHER_MAX_POINTS_DEFAULT = 30;
+const WEATHER_SAMPLE_EVERY_KM_DEFAULT = 20;
 
 /* ---------------------- tiny helpers ---------------------- */
 function buildRouteKey(locations) {
@@ -1079,7 +1115,7 @@ function distanceBetweenCoords(lat1, lon1, lat2, lon2) {
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   return R * c;
 }
-function sampleRoutePoints(coords, intervalKm = 20) {
+function sampleRoutePoints(coords, intervalKm = 20, maxPoints = Infinity) {
   if (!coords.length) return [];
   const sampled = [coords[0]];
   let last = coords[0], acc = 0;
@@ -1090,9 +1126,10 @@ function sampleRoutePoints(coords, intervalKm = 20) {
       sampled.push(coords[i]);
       last = coords[i];
       acc = 0;
+      if (sampled.length >= maxPoints) break;
     }
   }
-  if (sampled[sampled.length - 1] !== coords[coords.length - 1]) {
+  if (sampled[sampled.length - 1] !== coords[coords.length - 1] && sampled.length < maxPoints) {
     sampled.push(coords[coords.length - 1]);
   }
   return sampled;
@@ -1103,50 +1140,190 @@ function parseDistanceText(txt) {
 const kmText = m => `${(m / 1000).toFixed(1)} km`;
 const minText = s => `${Math.round(s / 60)} mins`;
 
+function secs(nowOrEpoch) {
+  return nowOrEpoch && nowOrEpoch > 0 ? nowOrEpoch : Math.floor(Date.now() / 1000);
+}
+
+/* --------- NEW: normalize departure & cache bucket helpers --------- */
+function normalizeDeparture(epoch) {
+  const now = Math.floor(Date.now() / 1000);
+  if (!epoch || epoch < now - 600) return now;        // clamp past to "now"
+  const maxAhead = 24 * 3600;                         // cap future to 24h
+  return Math.min(epoch, now + maxAhead);
+}
+function departureBucket(epoch, minutes = 15) {
+  const e = normalizeDeparture(epoch);
+  return Math.floor(e / (minutes * 60));
+}
+
+/* ---------------- WEATHER HELPERS (OpenWeather) ---------------- */
+function wKey(lat, lng, units) {
+  return `weather:${units}:${lat.toFixed(2)},${lng.toFixed(2)}`;
+}
+async function fetchWeatherPoint(lat, lng, units = WEATHER_UNITS_DEFAULT) {
+  if (!OPENWEATHER_API_KEY) throw new Error('OPENWEATHER_API_KEY missing');
+  const key = wKey(lat, lng, units);
+  const cached = await getJSON(key);
+  if (cached) return cached;
+
+  // NOTE: OpenWeather expects "lon", not "lng"
+  const url = `https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lng}&appid=${OPENWEATHER_API_KEY}&units=${units}`;
+  const resp = await axios.get(url);
+  const d = resp.data || {};
+  const out = {
+    lat: +lat,
+    lng: +lng,
+    at: Math.floor(Date.now() / 1000),
+    units,
+    temp: d.main?.temp ?? null,
+    feelsLike: d.main?.feels_like ?? null,
+    humidity: d.main?.humidity ?? null,
+    windSpeed: d.wind?.speed ?? null,
+    windDir: d.wind?.deg ?? null,
+    condition: (d.weather && d.weather[0]?.main) || null,
+    icon: (d.weather && d.weather[0]?.icon) || null,
+    precip1h: (d.rain && (d.rain['1h'] || 0)) || (d.snow && (d.snow['1h'] || 0)) || 0
+  };
+  await setJSON(key, out, WEATHER_CACHE_TTL);
+  return out;
+}
+
+// Parallel + resilient weather fetch with summary
+async function getWeatherAlongRoute(points, { units = WEATHER_UNITS_DEFAULT, maxPoints = WEATHER_MAX_POINTS_DEFAULT } = {}) {
+  const use = Array.isArray(points) ? points.slice(0, maxPoints) : [];
+  if (!use.length) {
+    return { pointsWeather: [], summary: { minTemp: null, maxTemp: null, distinctConditions: [], points: 0 }, units };
+  }
+
+  const promises = use.map(p =>
+    fetchWeatherPoint(p.lat, p.lng, units)
+      .then(v => v)
+      .catch(e => {
+        logger.warn('weather fetch failed at point', {
+          point: p,
+          status: e?.response?.status,
+          data: e?.response?.data,
+          msg: e?.message || String(e)
+        });
+        return null;
+      })
+  );
+
+  const settled = await Promise.all(promises);
+  const results = settled.filter(Boolean);
+
+  const temps = results.map(r => r.temp).filter(v => typeof v === 'number');
+  const conds = new Set(results.map(r => r.condition).filter(Boolean));
+  const summary = {
+    minTemp: temps.length ? Math.min(...temps) : null,
+    maxTemp: temps.length ? Math.max(...temps) : null,
+    distinctConditions: Array.from(conds),
+    points: results.length
+  };
+  return { pointsWeather: results, summary, units };
+}
+
 /* ------------------ ROUTING (Google / OSRM) ------------------ */
-async function fetchRouteGoogle(locations) {
+async function fetchRouteGoogle(locations, { includeTraffic = false, departureTimeEpoch = 0 } = {}) {
   const origin = locations[0];
   const dest = locations[locations.length - 1];
   const waypoints = locations.length > 2
     ? locations.slice(1, -1).map(l => `${l.latitude},${l.longitude}`).join('|')
     : '';
 
-  const url =
-    `https://maps.googleapis.com/maps/api/directions/json?origin=${origin.latitude},${origin.longitude}` +
-    `&destination=${dest.latitude},${dest.longitude}` +
-    (waypoints ? `&waypoints=${waypoints}` : '') +
-    `&key=${GOOGLE_API_KEY}`;
+  const params = [
+    `origin=${origin.latitude},${origin.longitude}`,
+    `destination=${dest.latitude},${dest.longitude}`,
+    waypoints ? `waypoints=${waypoints}` : '',
+    `mode=driving`,
+    `key=${GOOGLE_API_KEY}`
+  ];
 
-  const resp = await axios.get(url);
-  if (resp.data.status !== 'OK') {
-    throw new Error(`Google error: ${resp.data.status}`);
+  // request traffic metrics when asked
+  if (includeTraffic) {
+    const dep = normalizeDeparture(departureTimeEpoch);
+    params.push('region=IN'); // helps with routing in India; harmless elsewhere
+    params.push('departure_time=' + dep);
+    params.push('traffic_model=best_guess'); // requires "departure_time" for duration_in_traffic
   }
-  const r0 = resp.data.routes[0];
+
+  const url = `https://maps.googleapis.com/maps/api/directions/json?${params.filter(Boolean).join('&')}`;
+  const resp = await axios.get(url);
+  const data = resp?.data || {};
+  if (data.status !== 'OK') {
+    const err = new Error(`Google error: ${data.status}${data.error_message ? ` - ${data.error_message}` : ''}`);
+    // log diagnostics
+    logger.error('Google Directions failed', {
+      status: data.status,
+      error_message: data.error_message,
+      waypointCount: locations.length,
+      includeTraffic,
+      departureTimeEpoch
+    });
+    throw err;
+  }
+  const r0 = data.routes[0] || {};
   const legs = r0.legs || [];
-  const decoded = polyline.decode(r0.overview_polyline.points)
-    .map(([lat, lng]) => ({ lat, lng }));
+  const poly = r0.overview_polyline?.points || '';
+  const decoded = poly ? polyline.decode(poly).map(([lat, lng]) => ({ lat, lng })) : [];
 
-  // Map legs to our format
-  const mappedLegs = legs.map((leg, i) => ({
-    start: {
-      address: leg.start_address,
-      latitude: locations[i].latitude,
-      longitude: locations[i].longitude
-    },
-    end: {
-      address: leg.end_address,
-      latitude: locations[i + 1].latitude,
-      longitude: locations[i + 1].longitude
-    },
-    distance: leg.distance.text,
-    duration: leg.duration.text
-  }));
+  const mappedLegs = legs.map((leg, i) => {
+    const base = {
+      start: {
+        address: leg.start_address,
+        latitude: locations[i].latitude,
+        longitude: locations[i].longitude
+      },
+      end: {
+        address: leg.end_address,
+        latitude: locations[i + 1].latitude,
+        longitude: locations[i + 1].longitude
+      },
+      distance: leg.distance?.text || '',
+      duration: leg.duration?.text || ''
+    };
 
-  return { legs: mappedLegs, shape: decoded };
+    if (includeTraffic && leg.duration_in_traffic?.value != null) {
+      const normalSec = leg.duration?.value || 0;
+      const trafficSec = leg.duration_in_traffic.value;
+      base.durationInTraffic = leg.duration_in_traffic?.text || base.duration;
+      base.trafficDelaySec = Math.max(0, trafficSec - normalSec);
+      base.traffic = {
+        durationInTrafficSec: trafficSec,
+        normalDurationSec: normalSec,
+        delaySec: Math.max(0, trafficSec - normalSec)
+      };
+    }
+
+    return base;
+  });
+
+  // warn if traffic requested but missing
+  if (includeTraffic && legs.some(l => l?.duration_in_traffic?.value == null)) {
+    logger.warn('Google: duration_in_traffic missing for some legs', {
+      legCount: legs.length
+    });
+  }
+
+  // route-level traffic summary if requested
+  let trafficSummary = null;
+  if (includeTraffic) {
+    const delays = mappedLegs.map(l => +l.trafficDelaySec || 0);
+    const totalDelaySec = delays.reduce((s, n) => s + n, 0);
+    const avgDelay = mappedLegs.length ? Math.round(totalDelaySec / mappedLegs.length) : 0;
+    const congestion = totalDelaySec > 3600 ? 'high' : totalDelaySec > 900 ? 'medium' : 'low';
+    trafficSummary = {
+      trafficAt: normalizeDeparture(departureTimeEpoch),
+      totalDelaySec,
+      avgDelayPerLegSec: avgDelay,
+      congestion
+    };
+  }
+
+  return { legs: mappedLegs, shape: decoded, trafficSummary };
 }
 
 async function fetchRouteOSRM(locations) {
-  // OSRM expects "lon,lat" pairs
   const coords = locations.map(p => `${p.longitude},${p.latitude}`).join(';');
   const url = `${cfg.osrmBaseUrl}/route/v1/driving/${coords}?overview=full&geometries=polyline`;
   const resp = await axios.get(url);
@@ -1157,10 +1334,9 @@ async function fetchRouteOSRM(locations) {
   const decoded = polyline.decode(route.geometry)
     .map(([lat, lng]) => ({ lat, lng }));
 
-  // OSRM legs have numeric distance (m) & duration (s)
   const legs = (route.legs || []).map((leg, i) => ({
     start: {
-      address: '', // OSRM has no address reverse-lookup
+      address: '',
       latitude: locations[i].latitude,
       longitude: locations[i].longitude
     },
@@ -1173,60 +1349,82 @@ async function fetchRouteOSRM(locations) {
     duration: minText(leg.duration || 0)
   }));
 
-  return { legs, shape: decoded };
+  return { legs, shape: decoded, trafficSummary: null };
 }
 
 /**
  * Core helper that:
  *  - checks Redis cache
  *  - fetches route from provider (Google or OSRM)
- *  - computes sampled points every ~20km
- *  - returns { optimizedRoute[], sampledCoords[] }
+ *  - computes sampled points every ~N km
+ *  - returns { optimizedRoute[], sampledCoords[], trafficSummary }
  */
-async function getOptimizedRouteWithLoad(locations, shipmentLoads) {
+async function getOptimizedRouteWithLoad(locations, shipmentLoads, {
+  includeTraffic = false,
+  departureTimeEpoch = 0,
+  sampleEveryKm = WEATHER_SAMPLE_EVERY_KM_DEFAULT,
+  maxSamplePoints = Infinity
+} = {}) {
   if (!Array.isArray(locations) || locations.length < 2) {
     throw new Error('Need at least origin and destination');
   }
 
-  const cacheKey = `route:${cfg.routingProvider}:${buildRouteKey(locations)}`;
+  // cache key includes provider + traffic toggle + DEPARTURE BUCKET + coordinates
+  // also include sampling params only for fallback; we'll resample if 'shape' is cached.
+  const depBucket = includeTraffic ? departureBucket(departureTimeEpoch) : 0;
+  const cacheKey = `route:${cfg.routingProvider}:${includeTraffic ? 'T' : 'N'}:${depBucket}:${buildRouteKey(locations)}:${sampleEveryKm}:${maxSamplePoints}`;
   const cached = await getJSON(cacheKey);
+  let optimizedRoute, sampledCoords, trafficSummary, shape;
+
   if (cached) {
-    const { optimizedRoute, sampledCoords } = cached;
-    // refresh load field if caller provided loads
-    optimizedRoute.forEach((leg, i) => {
-      if (i < shipmentLoads.length) {
-        leg.loadAfterStop = i === 0 ? shipmentLoads[i] : leg.loadAfterStop;
+    // Backward compatibility if old cache had no 'shape'
+    optimizedRoute = cached.optimizedRoute;
+    trafficSummary = cached.trafficSummary || null;
+    shape = cached.shape || null;
+    if (shape && Array.isArray(shape)) {
+      sampledCoords = sampleRoutePoints(shape, sampleEveryKm, maxSamplePoints);
+    } else {
+      sampledCoords = cached.sampledCoords || [];
+    }
+  } else {
+    let legs, trafficSummaryLocal = null, shapeLocal = [];
+    if (cfg.routingProvider === 'osrm') {
+      ({ legs, shape: shapeLocal, trafficSummary: trafficSummaryLocal } = await fetchRouteOSRM(locations));
+    } else {
+      ({ legs, shape: shapeLocal, trafficSummary: trafficSummaryLocal } = await fetchRouteGoogle(locations, { includeTraffic, departureTimeEpoch }));
+    }
+
+    // Build optimizedRoute while computing cumulative load
+    const builtRoute = [];
+    let currentLoad = 0;
+    legs.forEach((leg, i) => {
+      const load = shipmentLoads[i] || 0;
+      currentLoad += load;
+      if (
+        leg.start.latitude !== leg.end.latitude ||
+        leg.start.longitude !== leg.end.longitude
+      ) {
+        builtRoute.push({ ...leg, loadAfterStop: currentLoad });
       }
     });
-    return { optimizedRoute, sampledCoords };
+
+    optimizedRoute = builtRoute;
+    shape = shapeLocal || [];
+    sampledCoords = sampleRoutePoints(shape, sampleEveryKm, maxSamplePoints);
+    trafficSummary = trafficSummaryLocal;
+
+    // Store 'shape' so future callers can resample differently
+    await setJSON(cacheKey, { optimizedRoute, shape, trafficSummary }, cfg.redisTTL);
   }
 
-  // choose provider
-  let legs, shape;
-  if (cfg.routingProvider === 'osrm') {
-    ({ legs, shape } = await fetchRouteOSRM(locations));
-  } else {
-    ({ legs, shape } = await fetchRouteGoogle(locations)); // default
-  }
-
-  // Add load accumulation
-  const optimizedRoute = [];
+  // Recompute loadAfterStop for the caller's shipments (in case cache came from different loads)
   let currentLoad = 0;
-  legs.forEach((leg, i) => {
-    const load = shipmentLoads[i] || 0;
-    currentLoad += load;
-    if (
-      leg.start.latitude !== leg.end.latitude ||
-      leg.start.longitude !== leg.end.longitude
-    ) {
-      optimizedRoute.push({ ...leg, loadAfterStop: currentLoad });
-    }
+  const recomputed = optimizedRoute.map((leg, i) => {
+    currentLoad += (shipmentLoads[i] || 0);
+    return { ...leg, loadAfterStop: currentLoad };
   });
 
-  const sampledCoords = sampleRoutePoints(shape, 20);
-
-  await setJSON(cacheKey, { optimizedRoute, sampledCoords }, cfg.redisTTL);
-  return { optimizedRoute, sampledCoords };
+  return { optimizedRoute: recomputed, sampledCoords, trafficSummary };
 }
 
 /* ------------------- bearing / clustering ------------------- */
@@ -1326,9 +1524,6 @@ function getVehicleSpecialFlags(v) {
     temp_controlled_vehicle: v.temp_controlled_vehicle || 0
   };
 }
-/**
- * POLICY: normal goods may NOT go on special trucks.
- */
 function checkPackageVehicleCompatibility(pkgF, vehF) {
   const pkgIsNormal = !pkgF.fragile && !pkgF.dangerous && !pkgF.hazardous && !pkgF.tempCtrl;
   if (pkgIsNormal) {
@@ -1452,7 +1647,10 @@ async function findMinCostArrangement(cluster, vehicles, sourceLoc) {
       chosen.sort((a, b) => a.distFromSource - b.distFromSource);
       const locs = [sourceLoc, ...chosen.map(x => x.destination)];
       const shipments = new Array(chosen.length).fill(1);
+
+      // traffic off in solver recursion for speed/cost
       const { optimizedRoute, sampledCoords } = await getOptimizedRouteWithLoad(locs, shipments);
+
       const totalDist = optimizedRoute.reduce((s, leg) => s + parseDistanceText(leg.distance), 0);
       const tons = sumW / 1000;
       const cost = tons * v.cost_per_ton * totalDist;
@@ -1521,7 +1719,13 @@ function generateUnallocationReason(pkgInfo, vehicles) {
 }
 
 /* ---------------- allocation orchestration ---------------- */
-async function allocatePackages(packagesData, vehicles, sourceLocation, productMap, packagingInfoMap) {
+async function allocatePackages(packagesData, vehicles, sourceLocation, productMap, packagingInfoMap, extra = {}) {
+  const {
+    includeTraffic = false,
+    departureTimeEpoch = 0,
+    weatherOpts = {}
+  } = extra;
+
   const allocations = [], unallocatedPackages = [];
   let totalCost = 0;
   const pkgInfos = [];
@@ -1568,7 +1772,14 @@ async function allocatePackages(packagesData, vehicles, sourceLocation, productM
       group.sort((a, b) => a.distFromSource - b.distFromSource);
       const routeLocs = [sourceLocation, ...group.map(g => g.destination)];
       const shipments = new Array(group.length).fill(1);
-      const { optimizedRoute, sampledCoords } = await getOptimizedRouteWithLoad(routeLocs, shipments);
+
+      const { optimizedRoute, sampledCoords, trafficSummary } =
+        await getOptimizedRouteWithLoad(routeLocs, shipments, {
+          includeTraffic,
+          departureTimeEpoch,
+          sampleEveryKm: weatherOpts.sampleEveryKm || WEATHER_SAMPLE_EVERY_KM_DEFAULT,
+          maxSamplePoints: weatherOpts.maxPoints || WEATHER_MAX_POINTS_DEFAULT
+        });
 
       const totalDist = optimizedRoute.reduce((s, leg) => s + parseDistanceText(leg.distance), 0);
       const tons = sumW / 1000;
@@ -1592,8 +1803,6 @@ async function allocatePackages(packagesData, vehicles, sourceLocation, productM
         }
       });
 
-      const pkgVolumes = group.map(g => g.totalVolume);
-
       allocations.push({
         vehicle_ID: chosen.vehicle_ID,
         totalWeightCapacity: chosen.totalWeightCapacity,
@@ -1604,8 +1813,9 @@ async function allocatePackages(packagesData, vehicles, sourceLocation, productM
         leftoverVolume: chosen.volumeCapM3 - group.reduce((s, g) => s + g.totalVolume, 0),
         cost,
         packages: group.map(g => g.pack_ID),
-        pkgVolumes,
+        pkgVolumes: group.map(g => g.totalVolume),
         route: optimizedRoute,
+        trafficSummary,
         loadArrangement: loadArr,
         sampledRoutePoints: sampledCoords
       });
@@ -1628,20 +1838,6 @@ async function allocatePackages(packagesData, vehicles, sourceLocation, productM
   return { allocations, totalCost, unallocated: unallocatedPackages };
 }
 
-async function getPackagesByIds(packageIDs) {
-  const ph = packageIDs.map(_ => '?').join(',');
-  const [rows] = await db.query(`
-    SELECT * FROM packages WHERE pack_ID IN (${ph})`, packageIDs);
-  if (!rows.length) throw new Error('No matching packages');
-  return rows.map(r => ({
-    pack_ID: r.pack_ID,
-    ship_from: r.ship_from,
-    ship_to: r.ship_to,
-    products: safeJsonParse(r.product_ID),
-    pickup_date_time: r.pickup_date_time
-  }));
-}
-
 /* ------------------- dimension + 3D placement ------------------- */
 function parseDimension(str = '') {
   if (typeof str === 'number') return +str || 0;
@@ -1651,7 +1847,6 @@ function parseDimension(str = '') {
   return /cm/i.test(str) ? val / 100 : val;
 }
 function r3(n) { return Math.round(n * 1000) / 1000; }
-
 function buildColorMapByProdPkg(packageInfoDetails) {
   const palette = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f43f5e', '#0ea5e9', '#6366f1', '#22c55e'];
   const colorByKey = {};
@@ -1713,7 +1908,7 @@ function packStopBlocks(loadArrangement, packageInfoDetails, vehicleDimensions, 
   const stopsDesc = [...loadArrangement].sort((a, b) => b.stop - a.stop);
 
   const layers = Array.from({ length: maxLayers }, () => ({
-    stripes: /** @type {{z0:number,width:number,xCursor:number,zCursor:number,rowMaxL:number}[]} */([]),
+    stripes: [],
     zUsed: 0
   }));
 
@@ -1761,9 +1956,9 @@ function packStopBlocks(loadArrangement, packageInfoDetails, vehicleDimensions, 
       if (!boxes.length) return true;
     }
 
-    while (boxes.length && layer.zUsed + EPS < truckW) {
+    while (boxes.length && layer.zUsed + 1e-9 < truckW) {
       const availW = Math.max(0, truckW - layer.zUsed);
-      if (availW <= EPS) break;
+      if (availW <= 1e-9) break;
 
       const s = { z0: layer.zUsed, width: availW, xCursor: FRONT_GUTTER_X, zCursor: 0, rowMaxL: 0 };
       placeInStripe(layerIdx, s, boxes);
@@ -1812,11 +2007,7 @@ function buildProductLegend(loadArrangement, packageInfoDetails, colorByProdPkg)
       for (const l of (p.lines || [])) {
         if (!l?.prod_ID) continue;
         const rec = (byProd[l.prod_ID] ||= {
-          prod_ID: l.prod_ID,
-          color: '#999',
-          totalQty: 0,
-          byPackage: {},
-          byStop: {}
+          prod_ID: l.prod_ID, color: '#999', totalQty: 0, byPackage: {}, byStop: {}
         });
         const q = Number(l.quantity || 0);
         rec.totalQty += q;
@@ -1838,12 +2029,26 @@ function buildProductLegend(loadArrangement, packageInfoDetails, colorByProdPkg)
 
 /* -------------------------- ROUTES --------------------------- */
 
-// Create order (allocations)
+// Create order (allocations) with optional traffic + weather
 router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
   const t0 = Date.now();
   try {
     const { packages: packageIDs, filters } = req.body;
     if (!packageIDs?.length) return res.status(400).json({ error: 'No packages provided.' });
+
+    const includeTraffic = !!filters?.includeTraffic;
+    const departureTimeEpoch = Number(filters?.traffic?.departureTimeEpoch || 0);
+
+    // Default to true if a weather key exists (caller can disable by send includeWeather:false)
+    const includeWeather = (typeof filters?.includeWeather === 'boolean')
+      ? !!filters.includeWeather
+      : !!OPENWEATHER_API_KEY;
+
+    const weatherOpts = {
+      units: (filters?.weather?.units || WEATHER_UNITS_DEFAULT),
+      sampleEveryKm: Number(filters?.weather?.sampleEveryKm || WEATHER_SAMPLE_EVERY_KM_DEFAULT),
+      maxPoints: Number(filters?.weather?.maxPoints || WEATHER_MAX_POINTS_DEFAULT)
+    };
 
     // 1) fetch packages & validate same origin/date
     const packagesData = await getPackagesByIds(packageIDs);
@@ -1943,13 +2148,22 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
     // 6) origin coords
     const sourceLoc = await getLocationById(origin);
 
-    // 7) allocate
+    // 7) allocate (with toggles)
     const { allocations, totalCost, unallocated } = await allocatePackages(
-      packagesData, fleet, sourceLoc, productMap, packagingInfoMap
+      packagesData,
+      fleet,
+      sourceLoc,
+      productMap,
+      packagingInfoMap,
+      {
+        includeTraffic,
+        departureTimeEpoch,
+        weatherOpts
+      }
     );
 
-    // 8) enrich for FE
-    const enriched = allocations.map(a => {
+    // 8) enrich for FE (3D packing etc.)
+    const enriched = await Promise.all(allocations.map(async a => {
       const v = fleet.find(x => x.vehicle_ID === a.vehicle_ID) || {};
       const caps = v.capacity || {};
 
@@ -2048,6 +2262,40 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
       const boxPlacements = generatePackageBlocks(rawPlacements);
       const productLegend = buildProductLegend(a.loadArrangement, packageInfoDetails, colorByProdPkg);
 
+      // Attach weather if requested
+      let weatherAlongRoute = undefined;
+      let weatherSummary = undefined;
+      if (includeWeather) {
+        if (!OPENWEATHER_API_KEY) {
+          logger.warn('OPENWEATHER_API_KEY missing: skipping weather');
+        } else if (a.sampledRoutePoints?.length) {
+          const { pointsWeather, summary } = await getWeatherAlongRoute(
+            a.sampledRoutePoints,
+            { units: weatherOpts.units, maxPoints: weatherOpts.maxPoints }
+          );
+          weatherAlongRoute = pointsWeather;
+          weatherSummary = summary;
+        } else {
+          weatherAlongRoute = [];
+          weatherSummary = { minTemp: null, maxTemp: null, distinctConditions: [], points: 0 };
+        }
+      }
+
+      // Compute traffic summary if route has traffic fields but summary missing
+      let trafficSummary = a.trafficSummary || null;
+      if (includeTraffic && !trafficSummary && Array.isArray(a.route)) {
+        const delays = a.route.map(l => +l.trafficDelaySec || 0);
+        const totalDelaySec = delays.reduce((s, n) => s + n, 0);
+        const avgDelay = a.route.length ? Math.round(totalDelaySec / a.route.length) : 0;
+        const congestion = totalDelaySec > 3600 ? 'high' : totalDelaySec > 900 ? 'medium' : 'low';
+        trafficSummary = {
+          trafficAt: normalizeDeparture(departureTimeEpoch),
+          totalDelaySec,
+          avgDelayPerLegSec: avgDelay,
+          congestion
+        };
+      }
+
       return {
         ...a,
         boxPlacements,
@@ -2070,9 +2318,14 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
           allowedBySF: globalSfCap,
           layersUsed,
           perLineLayers
-        }
+        },
+
+        // new optional extras
+        weatherAlongRoute,
+        weatherSummary,
+        trafficSummary
       };
-    });
+    }));
 
     // metrics + event
     const ms = Date.now() - t0;
@@ -2095,7 +2348,21 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
   }
 });
 
-// Sample route (returns sampled polyline points)
+/* ---- Sample route (unchanged) ---- */
+async function getPackagesByIds(packageIDs) {
+  const ph = packageIDs.map(_ => '?').join(',');
+  const [rows] = await db.query(`
+    SELECT * FROM packages WHERE pack_ID IN (${ph})`, packageIDs);
+  if (!rows.length) throw new Error('No matching packages');
+  return rows.map(r => ({
+    pack_ID: r.pack_ID,
+    ship_from: r.ship_from,
+    ship_to: r.ship_to,
+    products: safeJsonParse(r.product_ID),
+    pickup_date_time: r.pickup_date_time
+  }));
+}
+
 router.post('/sample-route', jwtAuth.verifyToken, async (req, res) => {
   const t0 = Date.now();
   try {
@@ -2107,7 +2374,6 @@ router.post('/sample-route', jwtAuth.verifyToken, async (req, res) => {
     const shipments = new Array(Math.max(0, locations.length - 1)).fill(0);
     const { sampledCoords } = await getOptimizedRouteWithLoad(locations, shipments);
 
-    // log + emit
     await logApiPerf('/sample-route', Date.now() - t0, true);
     try { await emit('route.sampled', { points: sampledCoords, at: Date.now() }); } catch {}
 
@@ -2115,6 +2381,79 @@ router.post('/sample-route', jwtAuth.verifyToken, async (req, res) => {
   } catch (err) {
     try { await logApiPerf('/sample-route', Date.now() - t0, false); } catch {}
     logger.error('Error sampling route:', err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/* ---------------- new helper endpoints ---------------- */
+
+// Traffic: returns legs + summary (Google only)
+router.post('/route/traffic', jwtAuth.verifyToken, async (req, res) => {
+  const t0 = Date.now();
+  try {
+    const { locations, departureTimeEpoch = 0 } = req.body || {};
+    if (!Array.isArray(locations) || locations.length < 2) {
+      return res.status(400).json({ error: 'Provide at least origin and destination.' });
+    }
+    if (cfg.routingProvider !== 'google') {
+      return res.status(400).json({ error: 'Traffic is supported only when ROUTING_PROVIDER=google' });
+    }
+    if (!GOOGLE_API_KEY) {
+      return res.status(500).json({ error: 'Google API key missing' });
+    }
+
+    const { legs, trafficSummary } = await fetchRouteGoogle(locations, {
+      includeTraffic: true,
+      departureTimeEpoch
+    });
+
+    await logApiPerf('/route/traffic', Date.now() - t0, true);
+    try { await emit('route.traffic', { legs, summary: trafficSummary, at: Date.now() }); } catch {}
+
+    return res.status(200).json({
+      provider: 'google',
+      legs,
+      summary: trafficSummary
+    });
+  } catch (err) {
+    try { await logApiPerf('/route/traffic', Date.now() - t0, false); } catch {}
+    logger.error('Error on /route/traffic:', err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Weather: accepts points[] or locations[] and samples along polyline
+router.post('/route/weather', jwtAuth.verifyToken, async (req, res) => {
+  const t0 = Date.now();
+  try {
+    if (!OPENWEATHER_API_KEY) {
+      return res.status(500).json({ error: 'OPENWEATHER_API_KEY missing' });
+    }
+    const { points, locations, units = WEATHER_UNITS_DEFAULT, sampleEveryKm = WEATHER_SAMPLE_EVERY_KM_DEFAULT, maxPoints = WEATHER_MAX_POINTS_DEFAULT } = req.body || {};
+
+    let usePoints = Array.isArray(points) ? points : null;
+    if ((!usePoints || !usePoints.length) && Array.isArray(locations) && locations.length >= 2) {
+      const shipments = new Array(Math.max(0, locations.length - 1)).fill(0);
+      const { sampledCoords } = await getOptimizedRouteWithLoad(locations, shipments, {
+        sampleEveryKm,
+        maxSamplePoints: maxPoints
+      });
+      usePoints = sampledCoords;
+    }
+
+    if (!usePoints || !usePoints.length) {
+      return res.status(400).json({ error: 'Provide points[] or locations[] (>=2)' });
+    }
+
+    const { pointsWeather, summary } = await getWeatherAlongRoute(usePoints, { units, maxPoints });
+
+    await logApiPerf('/route/weather', Date.now() - t0, true);
+    try { await emit('route.weather', { count: pointsWeather.length, at: Date.now() }); } catch {}
+
+    return res.status(200).json({ units, pointsWeather, summary });
+  } catch (err) {
+    try { await logApiPerf('/route/weather', Date.now() - t0, false); } catch {}
+    logger.error('Error on /route/weather:', err);
     return res.status(500).json({ error: err.message });
   }
 });

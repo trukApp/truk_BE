@@ -24,7 +24,6 @@ const cfg = {
       (process.env.KAFKA_TOPICS
         ? process.env.KAFKA_TOPICS.split(',').map(s => s.trim()).filter(Boolean)
         : [
-            // Phase-1/2 bus per your spec
             'load.created','load.updated','load.cancelled',
             'vehicle.location','vehicle.status','vehicle.breakdown',
             'driver.assigned','driver.available','driver.overtime',
@@ -38,7 +37,11 @@ const cfg = {
   routingProvider: (process.env.ROUTING_PROVIDER || 'google').toLowerCase(),
   osrmBaseUrl: process.env.OSRM_BASE_URL || 'http://localhost:5000',
 
+  // keys & weather settings used by order.js
   googleApiKey: process.env.GOOGLE_API_KEY,
+  openWeatherApiKey: process.env.OPENWEATHER_API_KEY,
+  weatherUnits: process.env.WEATHER_UNITS || 'metric',
+  weatherCacheTtl: Number(process.env.WEATHER_CACHE_TTL || 600),
 };
 
 module.exports = cfg;

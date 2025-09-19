@@ -9,10 +9,11 @@ const kafka = new Kafka({
 });
 
 const producer = kafka.producer({
-  allowAutoTopicCreation: false,
+  allowAutoTopicCreation: false, // keep explicit creation
   retry: { initialRetryTime: 300, retries: 8 },
 });
 
+// include the route.* topics you emit to
 const topics = [
   'load.created','load.updated','load.cancelled',
   'vehicle.location','vehicle.status','vehicle.breakdown',
@@ -20,7 +21,7 @@ const topics = [
   'telemetry.gps','telemetry.fuel','telemetry.temperature',
   'plan.updated','plan.optimized',
   'alert.delay','alert.geofence','alert.emergency',
-  'route.sampled'
+  'route.sampled','route.traffic','route.weather'
 ];
 
 // idempotent ensure-topics (safe to run on every boot)
@@ -37,7 +38,7 @@ async function ensureTopics() {
       topics: toCreate.map(name => ({
         topic: name,
         numPartitions: 6,
-        replicationFactor: 1,
+        replicationFactor: 1, // dev-friendly; bump in prod
         configEntries: [
           { name: 'cleanup.policy', value: 'delete' },
           { name: 'retention.ms', value: String(7 * 24 * 60 * 60 * 1000) }, // 7 days

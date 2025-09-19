@@ -1100,7 +1100,14 @@ const WEATHER_CACHE_TTL = Number(cfg.weatherCacheTtl || 600);
 const WEATHER_MAX_POINTS_DEFAULT = 30;
 const WEATHER_SAMPLE_EVERY_KM_DEFAULT = 20;
 
-/* ---------------------- tiny helpers ---------------------- */
+// External HTTP timeouts & concurrency caps
+const AXIOS_TIMEOUT_MS = Number(cfg.httpTimeoutMs || process.env.HTTP_TIMEOUT_MS || 3500);
+const WEATHER_CONCURRENCY = Number(cfg.weatherConcurrency || process.env.WEATHER_CONCURRENCY || 5);
+
+// Traffic cache TTL (seconds)
+const TRAFFIC_CACHE_TTL = Number(cfg.trafficCacheTtl || process.env.TRAFFIC_CACHE_TTL || 120);
+
+/* ---------------------- helpers ---------------------- */
 function buildRouteKey(locations) {
   return locations.map(loc => `${loc.latitude},${loc.longitude}`).join('|');
 }
@@ -1140,11 +1147,44 @@ function parseDistanceText(txt) {
 const kmText = m => `${(m / 1000).toFixed(1)} km`;
 const minText = s => `${Math.round(s / 60)} mins`;
 
-function secs(nowOrEpoch) {
-  return nowOrEpoch && nowOrEpoch > 0 ? nowOrEpoch : Math.floor(Date.now() / 1000);
+// Fire-and-forget so telemetry never blocks a response
+function noBlock(promise, label, ms = 400) {
+  Promise.race([
+    promise,
+    new Promise(resolve => setTimeout(resolve, ms))
+  ]).catch(e => logger && logger.warn && logger.warn(`${label} failed`, { msg: e.message }));
 }
 
-/* --------- NEW: normalize departure & cache bucket helpers --------- */
+// simple batching helper (limits concurrent promises)
+async function runInBatches(items, batchSize, worker) {
+  const out = [];
+  for (let i = 0; i < items.length; i += batchSize) {
+    const slice = items.slice(i, i + batchSize);
+    const res = await Promise.all(slice.map(worker));
+    out.push(...res);
+  }
+  return out;
+}
+
+/* --------- NEW: point and location normalizers --------- */
+function normalizePoint(p) {
+  if (p && typeof p === 'object') {
+    if ('lat' in p && 'lng' in p) return { lat: +p.lat, lng: +p.lng };
+    if ('latitude' in p && 'longitude' in p) return { lat: +p.latitude, lng: +p.longitude };
+  }
+  throw new Error('Bad point: expected {lat,lng} or {latitude,longitude}');
+}
+function dedupeConsecutiveLocations(locs) {
+  if (!Array.isArray(locs) || locs.length === 0) return [];
+  const out = [locs[0]];
+  for (let i = 1; i < locs.length; i++) {
+    const a = out[out.length - 1], b = locs[i];
+    if (a.latitude !== b.latitude || a.longitude !== b.longitude) out.push(b);
+  }
+  return out;
+}
+
+/* --------- normalize departure & cache bucket helpers --------- */
 function normalizeDeparture(epoch) {
   const now = Math.floor(Date.now() / 1000);
   if (!epoch || epoch < now - 600) return now;        // clamp past to "now"
@@ -1157,8 +1197,11 @@ function departureBucket(epoch, minutes = 15) {
 }
 
 /* ---------------- WEATHER HELPERS (OpenWeather) ---------------- */
+// hardened: validate numbers so toFixed never gets undefined
 function wKey(lat, lng, units) {
-  return `weather:${units}:${lat.toFixed(2)},${lng.toFixed(2)}`;
+  const la = Number(lat), lo = Number(lng);
+  if (!Number.isFinite(la) || !Number.isFinite(lo)) throw new Error('Invalid lat/lng for weather key');
+  return `weather:${units}:${la.toFixed(2)},${lo.toFixed(2)}`;
 }
 async function fetchWeatherPoint(lat, lng, units = WEATHER_UNITS_DEFAULT) {
   if (!OPENWEATHER_API_KEY) throw new Error('OPENWEATHER_API_KEY missing');
@@ -1168,7 +1211,7 @@ async function fetchWeatherPoint(lat, lng, units = WEATHER_UNITS_DEFAULT) {
 
   // NOTE: OpenWeather expects "lon", not "lng"
   const url = `https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lng}&appid=${OPENWEATHER_API_KEY}&units=${units}`;
-  const resp = await axios.get(url);
+  const resp = await axios.get(url, { timeout: AXIOS_TIMEOUT_MS });
   const d = resp.data || {};
   const out = {
     lat: +lat,
@@ -1188,43 +1231,45 @@ async function fetchWeatherPoint(lat, lng, units = WEATHER_UNITS_DEFAULT) {
   return out;
 }
 
-// Parallel + resilient weather fetch with summary
+// Parallel + resilient weather fetch with concurrency limit
 async function getWeatherAlongRoute(points, { units = WEATHER_UNITS_DEFAULT, maxPoints = WEATHER_MAX_POINTS_DEFAULT } = {}) {
   const use = Array.isArray(points) ? points.slice(0, maxPoints) : [];
   if (!use.length) {
     return { pointsWeather: [], summary: { minTemp: null, maxTemp: null, distinctConditions: [], points: 0 }, units };
   }
 
-  const promises = use.map(p =>
-    fetchWeatherPoint(p.lat, p.lng, units)
-      .then(v => v)
-      .catch(e => {
-        logger.warn('weather fetch failed at point', {
-          point: p,
-          status: e?.response?.status,
-          data: e?.response?.data,
-          msg: e?.message || String(e)
-        });
-        return null;
-      })
-  );
+  const results = await runInBatches(use, WEATHER_CONCURRENCY, async (p) => {
+    try {
+      // p is already normalized to {lat,lng} by callers that accept mixed shapes
+      return await fetchWeatherPoint(p.lat, p.lng, units);
+    } catch (e) {
+      logger.warn('weather fetch failed at point', {
+        point: p,
+        status: e?.response?.status,
+        data: e?.response?.data,
+        msg: e?.message || String(e)
+      });
+      return null;
+    }
+  });
 
-  const settled = await Promise.all(promises);
-  const results = settled.filter(Boolean);
-
-  const temps = results.map(r => r.temp).filter(v => typeof v === 'number');
-  const conds = new Set(results.map(r => r.condition).filter(Boolean));
+  const ok = results.filter(Boolean);
+  const temps = ok.map(r => r.temp).filter(v => typeof v === 'number');
+  const conds = new Set(ok.map(r => r.condition).filter(Boolean));
   const summary = {
     minTemp: temps.length ? Math.min(...temps) : null,
     maxTemp: temps.length ? Math.max(...temps) : null,
     distinctConditions: Array.from(conds),
-    points: results.length
+    points: ok.length
   };
-  return { pointsWeather: results, summary, units };
+  return { pointsWeather: ok, summary, units };
 }
 
 /* ------------------ ROUTING (Google / OSRM) ------------------ */
 async function fetchRouteGoogle(locations, { includeTraffic = false, departureTimeEpoch = 0 } = {}) {
+  // ensure no consecutive dupes to avoid zero-length legs
+  locations = dedupeConsecutiveLocations(locations);
+
   const origin = locations[0];
   const dest = locations[locations.length - 1];
   const waypoints = locations.length > 2
@@ -1248,7 +1293,7 @@ async function fetchRouteGoogle(locations, { includeTraffic = false, departureTi
   }
 
   const url = `https://maps.googleapis.com/maps/api/directions/json?${params.filter(Boolean).join('&')}`;
-  const resp = await axios.get(url);
+  const resp = await axios.get(url, { timeout: AXIOS_TIMEOUT_MS });
   const data = resp?.data || {};
   if (data.status !== 'OK') {
     const err = new Error(`Google error: ${data.status}${data.error_message ? ` - ${data.error_message}` : ''}`);
@@ -1298,7 +1343,7 @@ async function fetchRouteGoogle(locations, { includeTraffic = false, departureTi
     return base;
   });
 
-  // warn if traffic requested but missing
+  // warn if traffic requested but missing (can happen on tiny/zero legs; we de-dupe to reduce this)
   if (includeTraffic && legs.some(l => l?.duration_in_traffic?.value == null)) {
     logger.warn('Google: duration_in_traffic missing for some legs', {
       legCount: legs.length
@@ -1324,9 +1369,12 @@ async function fetchRouteGoogle(locations, { includeTraffic = false, departureTi
 }
 
 async function fetchRouteOSRM(locations) {
+  // de-dupe to keep parity with Google path
+  locations = dedupeConsecutiveLocations(locations);
+
   const coords = locations.map(p => `${p.longitude},${p.latitude}`).join(';');
   const url = `${cfg.osrmBaseUrl}/route/v1/driving/${coords}?overview=full&geometries=polyline`;
-  const resp = await axios.get(url);
+  const resp = await axios.get(url, { timeout: AXIOS_TIMEOUT_MS });
   if (resp.data.code !== 'Ok') {
     throw new Error(`OSRM error: ${resp.data.code}`);
   }
@@ -1368,6 +1416,9 @@ async function getOptimizedRouteWithLoad(locations, shipmentLoads, {
   if (!Array.isArray(locations) || locations.length < 2) {
     throw new Error('Need at least origin and destination');
   }
+
+  // NEW: de-dupe consecutive identical coords to avoid zero legs
+  locations = dedupeConsecutiveLocations(locations);
 
   // cache key includes provider + traffic toggle + DEPARTURE BUCKET + coordinates
   // also include sampling params only for fallback; we'll resample if 'shape' is cached.
@@ -2269,8 +2320,9 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
         if (!OPENWEATHER_API_KEY) {
           logger.warn('OPENWEATHER_API_KEY missing: skipping weather');
         } else if (a.sampledRoutePoints?.length) {
+          const normalized = a.sampledRoutePoints.map(normalizePoint);
           const { pointsWeather, summary } = await getWeatherAlongRoute(
-            a.sampledRoutePoints,
+            normalized,
             { units: weatherOpts.units, maxPoints: weatherOpts.maxPoints }
           );
           weatherAlongRoute = pointsWeather;
@@ -2348,7 +2400,7 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
   }
 });
 
-/* ---- Sample route (unchanged) ---- */
+/* ---- Sample route ---- */
 async function getPackagesByIds(packageIDs) {
   const ph = packageIDs.map(_ => '?').join(',');
   const [rows] = await db.query(`
@@ -2374,20 +2426,22 @@ router.post('/sample-route', jwtAuth.verifyToken, async (req, res) => {
     const shipments = new Array(Math.max(0, locations.length - 1)).fill(0);
     const { sampledCoords } = await getOptimizedRouteWithLoad(locations, shipments);
 
-    await logApiPerf('/sample-route', Date.now() - t0, true);
-    try { await emit('route.sampled', { points: sampledCoords, at: Date.now() }); } catch {}
+    // respond first
+    res.status(200).json({ sampledRoutePoints: sampledCoords });
 
-    return res.status(200).json({ sampledRoutePoints: sampledCoords });
+    // non-blocking telemetry
+    noBlock(logApiPerf('/sample-route', Date.now() - t0, true), 'logApiPerf(/sample-route)');
+    noBlock(emit('route.sampled', { points: sampledCoords, at: Date.now() }), 'emit(route.sampled)');
   } catch (err) {
-    try { await logApiPerf('/sample-route', Date.now() - t0, false); } catch {}
+    res.status(500).json({ error: err.message });
+    noBlock(logApiPerf('/sample-route', Date.now() - t0, false), 'logApiPerf(/sample-route)');
     logger.error('Error sampling route:', err);
-    return res.status(500).json({ error: err.message });
   }
 });
 
-/* ---------------- new helper endpoints ---------------- */
+/* ---------------- helper endpoints ---------------- */
 
-// Traffic: returns legs + summary (Google only)
+// Traffic: returns legs + summary (Google only) — cached + non-blocking telemetry
 router.post('/route/traffic', jwtAuth.verifyToken, async (req, res) => {
   const t0 = Date.now();
   try {
@@ -2402,23 +2456,35 @@ router.post('/route/traffic', jwtAuth.verifyToken, async (req, res) => {
       return res.status(500).json({ error: 'Google API key missing' });
     }
 
-    const { legs, trafficSummary } = await fetchRouteGoogle(locations, {
+    const depBucket = departureBucket(departureTimeEpoch);
+    const keyLocs = dedupeConsecutiveLocations(locations);
+    const cacheKey = `traffic:${cfg.routingProvider}:${depBucket}:${buildRouteKey(keyLocs)}`;
+
+    const cached = await getJSON(cacheKey);
+    if (cached) {
+      res.status(200).json(cached);
+      noBlock(logApiPerf('/route/traffic', Date.now() - t0, true), 'logApiPerf(/route/traffic)');
+      return;
+    }
+
+    const { legs, trafficSummary } = await fetchRouteGoogle(keyLocs, {
       includeTraffic: true,
       departureTimeEpoch
     });
 
-    await logApiPerf('/route/traffic', Date.now() - t0, true);
-    try { await emit('route.traffic', { legs, summary: trafficSummary, at: Date.now() }); } catch {}
+    const payload = { provider: 'google', legs, summary: trafficSummary };
 
-    return res.status(200).json({
-      provider: 'google',
-      legs,
-      summary: trafficSummary
-    });
+    // respond immediately
+    res.status(200).json(payload);
+
+    // background cache + telemetry
+    noBlock(setJSON(cacheKey, payload, TRAFFIC_CACHE_TTL), 'traffic cache set');
+    noBlock(logApiPerf('/route/traffic', Date.now() - t0, true), 'logApiPerf(/route/traffic)');
+    noBlock(emit('route.traffic', { legs, summary: trafficSummary, at: Date.now() }), 'emit(route.traffic)');
   } catch (err) {
-    try { await logApiPerf('/route/traffic', Date.now() - t0, false); } catch {}
+    res.status(500).json({ error: err.message });
+    noBlock(logApiPerf('/route/traffic', Date.now() - t0, false), 'logApiPerf(/route/traffic)');
     logger.error('Error on /route/traffic:', err);
-    return res.status(500).json({ error: err.message });
   }
 });
 
@@ -2445,16 +2511,22 @@ router.post('/route/weather', jwtAuth.verifyToken, async (req, res) => {
       return res.status(400).json({ error: 'Provide points[] or locations[] (>=2)' });
     }
 
-    const { pointsWeather, summary } = await getWeatherAlongRoute(usePoints, { units, maxPoints });
+    // NEW: normalize potential {latitude,longitude} inputs to {lat,lng}
+    const normalized = usePoints.map(normalizePoint);
 
-    await logApiPerf('/route/weather', Date.now() - t0, true);
-    try { await emit('route.weather', { count: pointsWeather.length, at: Date.now() }); } catch {}
+    const { pointsWeather, summary } = await getWeatherAlongRoute(normalized, { units, maxPoints });
 
-    return res.status(200).json({ units, pointsWeather, summary });
+    // respond first
+    const payload = { units, pointsWeather, summary };
+    res.status(200).json(payload);
+
+    // non-blocking telemetry
+    noBlock(logApiPerf('/route/weather', Date.now() - t0, true), 'logApiPerf(/route/weather)');
+    noBlock(emit('route.weather', { count: pointsWeather.length, at: Date.now() }), 'emit(route.weather)');
   } catch (err) {
-    try { await logApiPerf('/route/weather', Date.now() - t0, false); } catch {}
+    res.status(500).json({ error: err.message });
+    noBlock(logApiPerf('/route/weather', Date.now() - t0, false), 'logApiPerf(/route/weather)');
     logger.error('Error on /route/weather:', err);
-    return res.status(500).json({ error: err.message });
   }
 });
 

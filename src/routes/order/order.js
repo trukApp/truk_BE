@@ -2318,13 +2318,23 @@ function getMaxBoxHeight(packageInfoDetails) {
 }
 
 /**
- * FIXED packer: stop-contiguous, **sequential** (rear → front) with no middle gaps.
- * - We complete one stop fully, then move the global x-cursor forward and start the next.
- * - Within a stop we build rows of constant depth (seed by a box L), filling width each row.
- * - At each (x,z) footprint we stack vertically up to allowedLayers / height.
- * - No side-by-side mixing across different stops.
+ * Compute placements with "stop-wise contiguous blocks" (no side-by-side mixing).
+ * - FILO respected (later drops are loaded deeper first).
+ * - Within each stop we pack using a shelf algorithm across the full width,
+ *   advancing the layer's X cursor only by the length actually used by that stop,
+ *   so there are no big gaps between stops.
  */
-function packStopsSequential(loadArrangement, packageInfoDetails, vehicleDimensions, opts = {}) {
+function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimensions, opts = {}) {
+  const res = packStopBlocks(loadArrangement, packageInfoDetails, vehicleDimensions, opts);
+  return res;
+}
+
+/**
+ * STOP-BLOCK PACKER
+ * Packs each stop as a contiguous segment along the truck length (full width),
+ * layer-by-layer, avoiding side-by-side interleaving across different stops.
+ */
+function packStopBlocks(loadArrangement, packageInfoDetails, vehicleDimensions, opts = {}) {
   const truckL = vehicleDimensions.interiorLengthM || 0;
   const truckW = vehicleDimensions.interiorWidthM || 0;
   const truckH = vehicleDimensions.interiorHeightM || 0;
@@ -2334,118 +2344,118 @@ function packStopsSequential(loadArrangement, packageInfoDetails, vehicleDimensi
   const FRONT_GUTTER_X = opts.frontGutter ?? 0.0;
   const LAYER_GAP = opts.layerGap ?? 0.02;
 
+  const layerHeight = opts.layerHeight ?? getMaxBoxHeight(packageInfoDetails);
+  const maxLayers = Math.max(1, Math.min(opts.maxLayers || 1, layerHeight > 0 ? Math.floor(truckH / layerHeight) : 1));
+
   const colorByKey = buildColorMapByProdPkg(packageInfoDetails);
   const pkgMap = new Map(packageInfoDetails.map(p => [p.pkg_ID, p]));
 
-  // stops in ascending order: stop 1 nearest door, then next, etc.
-  const stopsAsc = [...loadArrangement].sort((a, b) => a.stop - b.stop);
+  // FILO: last stop number first (deepest), then earlier ones
+  const stopsDesc = [...loadArrangement].sort((a, b) => b.stop - a.stop);
 
-  let xCursor = FRONT_GUTTER_X; // grows towards the front
+  // Track x-cursor per layer so stops form bands one-after-another
+  const layerX = Array.from({ length: maxLayers }, () => FRONT_GUTTER_X);
+
   const placements = [];
-  let total = 0, placed = 0;
-  let maxTopY = 0;
+  let total = 0, placed = 0, highestLayerUsed = -1;
 
-  function compressBoxes(boxes) {
-    const map = new Map();
-    for (const b of boxes) {
-      const key = `${b.pkg_ID}|${b.prod_ID}|${b.L}|${b.W}|${b.H}|${b.color}|${b.allowedLayers}`;
-      if (!map.has(key)) map.set(key, { ...b, count: 1 });
-      else map.get(key).count += 1;
-    }
-    return Array.from(map.values());
-  }
+  // Helper: place as many boxes of one stop as possible on a given layer.
+  function placeStopOnLayer(layerIdx, boxes) {
+    let x = layerX[layerIdx];
+    if (x >= truckL - EPS) return { remaining: boxes, usedLen: 0 };
 
-  function collectStopBoxes(stop) {
-    const boxes = [];
-    for (const pkgId of (stop.packages || [])) {
-      const pkg = pkgMap.get(pkgId);
-      if (!pkg) continue;
-      const exploded = explodePackage(pkg, colorByKey);
-      boxes.push(...exploded);
-      total += exploded.length;
-    }
-    // Prefer big footprints to reduce fragmentation
-    boxes.sort((a, b) => (b.L * b.W) - (a.L * a.W) || b.H - a.H);
-    return compressBoxes(boxes);
-  }
-
-  function placeStop(items) {
+    let zCursor = 0;
+    let rowMaxL = 0;
     let usedLen = 0;
 
-    while (items.some(it => it.count > 0) && xCursor + usedLen < truckL - EPS) {
-      const availLen = truckL - (xCursor + usedLen);
-
-      // pick a seed that fits the remaining length; prefer deeper (larger L)
-      let seedIdx = -1, seedL = 0;
-      for (let i = 0; i < items.length; i++) {
-        if (items[i].count > 0 && items[i].L <= availLen + EPS) {
-          if (items[i].L > seedL) { seedL = items[i].L; seedIdx = i; }
-        }
-      }
-      if (seedIdx < 0) break;
-
-      const rowDepth = items[seedIdx].L;
-      const x0 = xCursor + usedLen;
-      let zCursor = 0;
-
-      while (zCursor < truckW - EPS) {
-        // choose a box that fits width & this rowDepth; prefer wider to pack tight
-        let idx = -1, bestW = 0;
-        for (let i = 0; i < items.length; i++) {
-          const it = items[i];
-          if (it.count <= 0) continue;
-          if (it.L <= rowDepth + EPS && it.W <= (truckW - zCursor) + EPS) {
-            if (it.W > bestW) { bestW = it.W; idx = i; }
-          }
-        }
-        if (idx < 0) break;
-
-        const it = items[idx];
-        const maxByHeight = Math.max(1, Math.floor(truckH / Math.max(it.H, EPS)));
-        const stackCount = Math.max(1, Math.min(it.allowedLayers || 1, it.count, maxByHeight));
-
-        let y = 0;
-        for (let i = 0; i < stackCount; i++) {
-          placements.push({
-            pkg_ID: it.pkg_ID,
-            prod_ID: it.prod_ID,
-            color: it.color,
-            position: [r3(x0), r3(y), r3(zCursor)],
-            dimensions: [r3(it.L), r3(it.H), r3(it.W)]
-          });
-          placed++;
-          y += it.H + LAYER_GAP;
-          maxTopY = Math.max(maxTopY, y);
-        }
-
-        it.count -= stackCount;
-        if (it.count <= 0) items.splice(idx, 1);
-        zCursor += bestW + Z_GUTTER;
+    // Greedy shelf: fill one width-row, then advance by the longest box length in that row.
+    while (boxes.length) {
+      // pick first box that fits remaining width of this row
+      const remainingW = Math.max(0, truckW - zCursor);
+      let pick = -1;
+      for (let i = 0; i < boxes.length; i++) {
+        if (boxes[i].W <= remainingW + EPS) { pick = i; break; }
       }
 
-      usedLen += rowDepth;
-      if (xCursor + usedLen > truckL - EPS) break;
+      if (pick < 0) {
+        // close the current row if we placed anything in it
+        if (rowMaxL > EPS) {
+          x += rowMaxL;
+          usedLen += rowMaxL;
+          zCursor = 0;
+          rowMaxL = 0;
+          if (x >= truckL - EPS) break;
+          continue;
+        } else {
+          // cannot fit any box in an empty row: give up on this layer
+          break;
+        }
+      }
+
+      const b = boxes[pick];
+      if (x + b.L > truckL + EPS) {
+        // not enough length left on this layer — move remaining to next layer
+        break;
+      }
+
+      // place the box
+      placements.push({
+        pkg_ID: b.pkg_ID, prod_ID: b.prod_ID, color: b.color,
+        position: [r3(x), r3(layerIdx * layerHeight + layerIdx * LAYER_GAP), r3(zCursor)],
+        dimensions: [r3(b.L), r3(b.H), r3(b.W)]
+      });
+      placed++;
+      highestLayerUsed = Math.max(highestLayerUsed, layerIdx);
+
+      zCursor += b.W + Z_GUTTER;
+      rowMaxL = Math.max(rowMaxL, b.L);
+
+      // consume
+      boxes.splice(pick, 1);
+
+      // if row full in width, close it and advance in length
+      if (zCursor > truckW - EPS) {
+        x += rowMaxL;
+        usedLen += rowMaxL;
+        zCursor = 0;
+        rowMaxL = 0;
+        if (x >= truckL - EPS) break;
+      }
     }
 
-    xCursor += usedLen; // advance the global cursor — ensures no gap before next stop
+    // finalize last partially filled row
+    if (rowMaxL > EPS && x < truckL - EPS) {
+      x += rowMaxL;
+      usedLen += rowMaxL;
+    }
+
+    // advance global layer x-cursor so next stop starts AFTER this stop's block
+    layerX[layerIdx] = Math.min(truckL, x);
+
+    return { remaining: boxes, usedLen };
   }
 
-  for (const stop of stopsAsc) {
-    const items = collectStopBoxes(stop);
-    placeStop(items);
-    if (xCursor >= truckL - EPS) break; // truck full
+  // For each stop, explode its boxes and place them sequentially per layer.
+  for (const stop of stopsDesc) {
+    // collect all boxes for packages delivered at this stop
+    let boxes = [];
+    for (const pkgId of (stop.packages || [])) {
+      const pkg = pkgMap.get(pkgId);
+      if (pkg) boxes.push(...explodePackage(pkg, colorByKey));
+    }
+
+    // Sort by length desc, then width desc — helps tighten rows
+    boxes.sort((a, b) => b.L - a.L || b.W - a.W);
+    total += boxes.length;
+
+    // Try to place across layers until boxes are exhausted
+    for (let layerIdx = 0; layerIdx < maxLayers && boxes.length; layerIdx++) {
+      const res = placeStopOnLayer(layerIdx, boxes);
+      boxes = res.remaining;
+    }
   }
 
-  const tallest = getMaxBoxHeight(packageInfoDetails);
-  const denom = Math.max(tallest + LAYER_GAP, 0.0001);
-  const layersUsed = Math.max(1, Math.ceil(maxTopY / denom));
-
-  return { placements, total, placed, layersUsed };
-}
-
-function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimensions, opts = {}) {
-  // Use the new **sequential** stop packer to eliminate gaps
-  return packStopsSequential(loadArrangement, packageInfoDetails, vehicleDimensions, opts);
+  return { placements, total, placed, layersUsed: Math.max(0, highestLayerUsed + 1) };
 }
 
 function generatePackageBlocks(boxPlacements) {

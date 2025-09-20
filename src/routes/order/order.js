@@ -2318,21 +2318,10 @@ function getMaxBoxHeight(packageInfoDetails) {
 }
 
 /**
- * Compute placements with "stop-wise contiguous blocks" (no side-by-side mixing).
- * - FILO respected (later drops are loaded deeper first).
- * - Within each stop we pack using a shelf algorithm across the full width,
- *   advancing the layer's X cursor only by the length actually used by that stop,
- *   so there are no big gaps between stops.
- */
-function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimensions, opts = {}) {
-  const res = packStopBlocks(loadArrangement, packageInfoDetails, vehicleDimensions, opts);
-  return res;
-}
-
-/**
- * STOP-BLOCK PACKER
- * Packs each stop as a contiguous segment along the truck length (full width),
- * layer-by-layer, avoiding side-by-side interleaving across different stops.
+ * NEW stop-wise bay packer:
+ *  - Packs each stop completely before moving to the next stop along the X axis.
+ *  - Within a stop, fills rows across width (Z) and advances X as rows complete.
+ *  - Keeps layers in sync so each stop’s footprint is a single contiguous bay.
  */
 function packStopBlocks(loadArrangement, packageInfoDetails, vehicleDimensions, opts = {}) {
   const truckL = vehicleDimensions.interiorLengthM || 0;
@@ -2340,8 +2329,8 @@ function packStopBlocks(loadArrangement, packageInfoDetails, vehicleDimensions, 
   const truckH = vehicleDimensions.interiorHeightM || 0;
 
   const EPS = 1e-9;
-  const Z_GUTTER = opts.zGutter ?? 0.0;
-  const FRONT_GUTTER_X = opts.frontGutter ?? 0.0;
+  const Z_GUTTER = opts.zGutter ?? 0.0;      // gap between boxes across width
+  const FRONT_GUTTER_X = opts.frontGutter ?? 0.0; // gap between stop bays along length
   const LAYER_GAP = opts.layerGap ?? 0.02;
 
   const layerHeight = opts.layerHeight ?? getMaxBoxHeight(packageInfoDetails);
@@ -2350,58 +2339,50 @@ function packStopBlocks(loadArrangement, packageInfoDetails, vehicleDimensions, 
   const colorByKey = buildColorMapByProdPkg(packageInfoDetails);
   const pkgMap = new Map(packageInfoDetails.map(p => [p.pkg_ID, p]));
 
-  // FILO: last stop number first (deepest), then earlier ones
+  // FILO: last stop towards the front (higher X), first stop near the tailgate
   const stopsDesc = [...loadArrangement].sort((a, b) => b.stop - a.stop);
-
-  // Track x-cursor per layer so stops form bands one-after-another
-  const layerX = Array.from({ length: maxLayers }, () => FRONT_GUTTER_X);
 
   const placements = [];
   let total = 0, placed = 0, highestLayerUsed = -1;
 
-  // Helper: place as many boxes of one stop as possible on a given layer.
-  function placeStopOnLayer(layerIdx, boxes) {
-    let x = layerX[layerIdx];
-    if (x >= truckL - EPS) return { remaining: boxes, usedLen: 0 };
+  // Global X cursor advances stop-by-stop so bays are contiguous
+  let globalX = FRONT_GUTTER_X;
 
+  // Helper: place all boxes for a single layer inside the current stop bay.
+  function placeLayerBoxes(layerIdx, startX, boxesForStop) {
+    let xCursor = startX;
     let zCursor = 0;
     let rowMaxL = 0;
-    let usedLen = 0;
+    let farthestX = startX;
 
-    // Greedy shelf: fill one width-row, then advance by the longest box length in that row.
-    while (boxes.length) {
-      // pick first box that fits remaining width of this row
-      const remainingW = Math.max(0, truckW - zCursor);
+    // Simple first-fit by width, longest-first helps reduce slivers
+    boxesForStop.sort((a, b) => (b.L - a.L) || (b.W - a.W));
+
+    while (boxesForStop.length) {
+      // find first that fits current row width and remaining truck length
       let pick = -1;
-      for (let i = 0; i < boxes.length; i++) {
-        if (boxes[i].W <= remainingW + EPS) { pick = i; break; }
+      for (let i = 0; i < boxesForStop.length; i++) {
+        const b = boxesForStop[i];
+        const fitsWidth = b.W - (truckW - zCursor) <= EPS;
+        const fitsLength = xCursor + b.L - truckL <= EPS;
+        if (fitsWidth && fitsLength) { pick = i; break; }
       }
 
       if (pick < 0) {
-        // close the current row if we placed anything in it
-        if (rowMaxL > EPS) {
-          x += rowMaxL;
-          usedLen += rowMaxL;
-          zCursor = 0;
-          rowMaxL = 0;
-          if (x >= truckL - EPS) break;
-          continue;
-        } else {
-          // cannot fit any box in an empty row: give up on this layer
-          break;
-        }
+        // cannot place any more in this row — open a new row at next X
+        if (rowMaxL <= EPS) break; // nothing was placed in this row; layer is full at current X budget
+        xCursor = Math.min(truckL, xCursor + rowMaxL);
+        zCursor = 0;
+        rowMaxL = 0;
+        continue;
       }
 
-      const b = boxes[pick];
-      if (x + b.L > truckL + EPS) {
-        // not enough length left on this layer — move remaining to next layer
-        break;
-      }
-
-      // place the box
+      const b = boxesForStop[pick];
       placements.push({
-        pkg_ID: b.pkg_ID, prod_ID: b.prod_ID, color: b.color,
-        position: [r3(x), r3(layerIdx * layerHeight + layerIdx * LAYER_GAP), r3(zCursor)],
+        pkg_ID: b.pkg_ID,
+        prod_ID: b.prod_ID,
+        color: b.color,
+        position: [r3(xCursor), r3(layerIdx * layerHeight + layerIdx * LAYER_GAP), r3(zCursor)],
         dimensions: [r3(b.L), r3(b.H), r3(b.W)]
       });
       placed++;
@@ -2409,55 +2390,52 @@ function packStopBlocks(loadArrangement, packageInfoDetails, vehicleDimensions, 
 
       zCursor += b.W + Z_GUTTER;
       rowMaxL = Math.max(rowMaxL, b.L);
+      farthestX = Math.max(farthestX, xCursor + b.L);
+      boxesForStop.splice(pick, 1);
 
-      // consume
-      boxes.splice(pick, 1);
-
-      // if row full in width, close it and advance in length
-      if (zCursor > truckW - EPS) {
-        x += rowMaxL;
-        usedLen += rowMaxL;
+      // If row filled in width, move to next X column
+      if (zCursor + EPS > truckW) {
+        xCursor = Math.min(truckL, xCursor + rowMaxL);
         zCursor = 0;
         rowMaxL = 0;
-        if (x >= truckL - EPS) break;
       }
     }
-
-    // finalize last partially filled row
-    if (rowMaxL > EPS && x < truckL - EPS) {
-      x += rowMaxL;
-      usedLen += rowMaxL;
-    }
-
-    // advance global layer x-cursor so next stop starts AFTER this stop's block
-    layerX[layerIdx] = Math.min(truckL, x);
-
-    return { remaining: boxes, usedLen };
+    return farthestX; // how far along X we used in this layer
   }
 
-  // For each stop, explode its boxes and place them sequentially per layer.
   for (const stop of stopsDesc) {
-    // collect all boxes for packages delivered at this stop
+    // Gather all boxes for this stop (all its packages)
     let boxes = [];
     for (const pkgId of (stop.packages || [])) {
       const pkg = pkgMap.get(pkgId);
       if (pkg) boxes.push(...explodePackage(pkg, colorByKey));
     }
-
-    // Sort by length desc, then width desc — helps tighten rows
-    boxes.sort((a, b) => b.L - a.L || b.W - a.W);
     total += boxes.length;
 
-    // Try to place across layers until boxes are exhausted
+    // If nothing to place, continue
+    if (!boxes.length) continue;
+
+    // Place across layers, keeping bay width fully dedicated to this stop
+    let bayMaxX = globalX;
     for (let layerIdx = 0; layerIdx < maxLayers && boxes.length; layerIdx++) {
-      const res = placeStopOnLayer(layerIdx, boxes);
-      boxes = res.remaining;
+      const farX = placeLayerBoxes(layerIdx, globalX, boxes);
+      bayMaxX = Math.max(bayMaxX, farX);
     }
+
+    // Advance the global X cursor so the next stop starts AFTER this bay
+    globalX = Math.min(truckL, bayMaxX + FRONT_GUTTER_X);
+
+    // If we ran out of length, bail early (truck full)
+    if (globalX + EPS >= truckL) break;
   }
 
   return { placements, total, placed, layersUsed: Math.max(0, highestLayerUsed + 1) };
 }
 
+function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimensions, opts = {}) {
+  const res = packStopBlocks(loadArrangement, packageInfoDetails, vehicleDimensions, opts);
+  return res;
+}
 function generatePackageBlocks(boxPlacements) {
   return boxPlacements.map(b => ({
     pkg_ID: b.pkg_ID,

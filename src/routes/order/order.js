@@ -2159,7 +2159,7 @@ async function allocatePackages(packagesData, vehicles, sourceLocation, productM
 
   const allocations = [], unallocatedPackages = [];
   let totalCost = 0;
-  const pkgInfos = []
+  const pkgInfos = [];
 
   for (const pkg of packagesData) {
     const { totalW, totalV } = await sumPackageWeightVolume(pkg, productMap, packagingInfoMap);

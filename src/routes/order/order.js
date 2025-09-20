@@ -14,10 +14,22 @@
 // const { logApiPerf, logSolverPerf } = require('../../lib/tsdb');
 // const { emit } = require('../../lib/kafka');
 
-// // Config
+// /* ----------------------- CONFIG ----------------------- */
 // const GOOGLE_API_KEY = cfg.googleApiKey;
+// const OPENWEATHER_API_KEY = (cfg.openWeatherApiKey || process.env.OPENWEATHER_API_KEY || '').trim();
+// const WEATHER_UNITS_DEFAULT = (cfg.weatherUnits || process.env.WEATHER_UNITS || 'metric').trim();
+// const WEATHER_CACHE_TTL = Number(cfg.weatherCacheTtl || 600);
+// const WEATHER_MAX_POINTS_DEFAULT = 30;
+// const WEATHER_SAMPLE_EVERY_KM_DEFAULT = 20;
 
-// /* ---------------------- tiny helpers ---------------------- */
+// // External HTTP timeouts & concurrency caps
+// const AXIOS_TIMEOUT_MS = Number(cfg.httpTimeoutMs || process.env.HTTP_TIMEOUT_MS || 3500);
+// const WEATHER_CONCURRENCY = Number(cfg.weatherConcurrency || process.env.WEATHER_CONCURRENCY || 5);
+
+// // Traffic cache TTL (seconds)
+// const TRAFFIC_CACHE_TTL = Number(cfg.trafficCacheTtl || process.env.TRAFFIC_CACHE_TTL || 120);
+
+// /* ---------------------- helpers ---------------------- */
 // function buildRouteKey(locations) {
 //   return locations.map(loc => `${loc.latitude},${loc.longitude}`).join('|');
 // }
@@ -32,7 +44,7 @@
 //   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 //   return R * c;
 // }
-// function sampleRoutePoints(coords, intervalKm = 20) {
+// function sampleRoutePoints(coords, intervalKm = 20, maxPoints = Infinity) {
 //   if (!coords.length) return [];
 //   const sampled = [coords[0]];
 //   let last = coords[0], acc = 0;
@@ -43,9 +55,10 @@
 //       sampled.push(coords[i]);
 //       last = coords[i];
 //       acc = 0;
+//       if (sampled.length >= maxPoints) break;
 //     }
 //   }
-//   if (sampled[sampled.length - 1] !== coords[coords.length - 1]) {
+//   if (sampled[sampled.length - 1] !== coords[coords.length - 1] && sampled.length < maxPoints) {
 //     sampled.push(coords[coords.length - 1]);
 //   }
 //   return sampled;
@@ -56,53 +69,234 @@
 // const kmText = m => `${(m / 1000).toFixed(1)} km`;
 // const minText = s => `${Math.round(s / 60)} mins`;
 
+// // Fire-and-forget so telemetry never blocks a response
+// function noBlock(promise, label, ms = 400) {
+//   Promise.race([
+//     promise,
+//     new Promise(resolve => setTimeout(resolve, ms))
+//   ]).catch(e => logger && logger.warn && logger.warn(`${label} failed`, { msg: e.message }));
+// }
+
+// // simple batching helper (limits concurrent promises)
+// async function runInBatches(items, batchSize, worker) {
+//   const out = [];
+//   for (let i = 0; i < items.length; i += batchSize) {
+//     const slice = items.slice(i, i + batchSize);
+//     const res = await Promise.all(slice.map(worker));
+//     out.push(...res);
+//   }
+//   return out;
+// }
+
+// /* --------- NEW: point and location normalizers --------- */
+// function normalizePoint(p) {
+//   if (p && typeof p === 'object') {
+//     if ('lat' in p && 'lng' in p) return { lat: +p.lat, lng: +p.lng };
+//     if ('latitude' in p && 'longitude' in p) return { lat: +p.latitude, lng: +p.longitude };
+//   }
+//   throw new Error('Bad point: expected {lat,lng} or {latitude,longitude}');
+// }
+// function dedupeConsecutiveLocations(locs) {
+//   if (!Array.isArray(locs) || locs.length === 0) return [];
+//   const out = [locs[0]];
+//   for (let i = 1; i < locs.length; i++) {
+//     const a = out[out.length - 1], b = locs[i];
+//     if (a.latitude !== b.latitude || a.longitude !== b.longitude) out.push(b);
+//   }
+//   return out;
+// }
+
+// /* --------- normalize departure & cache bucket helpers --------- */
+// function normalizeDeparture(epoch) {
+//   const now = Math.floor(Date.now() / 1000);
+//   if (!epoch || epoch < now - 600) return now;        // clamp past to "now"
+//   const maxAhead = 24 * 3600;                         // cap future to 24h
+//   return Math.min(epoch, now + maxAhead);
+// }
+// function departureBucket(epoch, minutes = 15) {
+//   const e = normalizeDeparture(epoch);
+//   return Math.floor(e / (minutes * 60));
+// }
+
+// /* ---------------- WEATHER HELPERS (OpenWeather) ---------------- */
+// // hardened: validate numbers so toFixed never gets undefined
+// function wKey(lat, lng, units) {
+//   const la = Number(lat), lo = Number(lng);
+//   if (!Number.isFinite(la) || !Number.isFinite(lo)) throw new Error('Invalid lat/lng for weather key');
+//   return `weather:${units}:${la.toFixed(2)},${lo.toFixed(2)}`;
+// }
+// async function fetchWeatherPoint(lat, lng, units = WEATHER_UNITS_DEFAULT) {
+//   if (!OPENWEATHER_API_KEY) throw new Error('OPENWEATHER_API_KEY missing');
+//   const key = wKey(lat, lng, units);
+//   const cached = await getJSON(key);
+//   if (cached) return cached;
+
+//   // NOTE: OpenWeather expects "lon", not "lng"
+//   const url = `https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lng}&appid=${OPENWEATHER_API_KEY}&units=${units}`;
+//   const resp = await axios.get(url, { timeout: AXIOS_TIMEOUT_MS });
+//   const d = resp.data || {};
+//   const out = {
+//     lat: +lat,
+//     lng: +lng,
+//     at: Math.floor(Date.now() / 1000),
+//     units,
+//     temp: d.main?.temp ?? null,
+//     feelsLike: d.main?.feels_like ?? null,
+//     humidity: d.main?.humidity ?? null,
+//     windSpeed: d.wind?.speed ?? null,
+//     windDir: d.wind?.deg ?? null,
+//     condition: (d.weather && d.weather[0]?.main) || null,
+//     icon: (d.weather && d.weather[0]?.icon) || null,
+//     precip1h: (d.rain && (d.rain['1h'] || 0)) || (d.snow && (d.snow['1h'] || 0)) || 0
+//   };
+//   await setJSON(key, out, WEATHER_CACHE_TTL);
+//   return out;
+// }
+
+// // Parallel + resilient weather fetch with concurrency limit
+// async function getWeatherAlongRoute(points, { units = WEATHER_UNITS_DEFAULT, maxPoints = WEATHER_MAX_POINTS_DEFAULT } = {}) {
+//   const use = Array.isArray(points) ? points.slice(0, maxPoints) : [];
+//   if (!use.length) {
+//     return { pointsWeather: [], summary: { minTemp: null, maxTemp: null, distinctConditions: [], points: 0 }, units };
+//   }
+
+//   const results = await runInBatches(use, WEATHER_CONCURRENCY, async (p) => {
+//     try {
+//       // p is already normalized to {lat,lng} by callers that accept mixed shapes
+//       return await fetchWeatherPoint(p.lat, p.lng, units);
+//     } catch (e) {
+//       logger.warn('weather fetch failed at point', {
+//         point: p,
+//         status: e?.response?.status,
+//         data: e?.response?.data,
+//         msg: e?.message || String(e)
+//       });
+//       return null;
+//     }
+//   });
+
+//   const ok = results.filter(Boolean);
+//   const temps = ok.map(r => r.temp).filter(v => typeof v === 'number');
+//   const conds = new Set(ok.map(r => r.condition).filter(Boolean));
+//   const summary = {
+//     minTemp: temps.length ? Math.min(...temps) : null,
+//     maxTemp: temps.length ? Math.max(...temps) : null,
+//     distinctConditions: Array.from(conds),
+//     points: ok.length
+//   };
+//   return { pointsWeather: ok, summary, units };
+// }
+
 // /* ------------------ ROUTING (Google / OSRM) ------------------ */
-// async function fetchRouteGoogle(locations) {
+// async function fetchRouteGoogle(locations, { includeTraffic = false, departureTimeEpoch = 0 } = {}) {
+//   // ensure no consecutive dupes to avoid zero-length legs
+//   locations = dedupeConsecutiveLocations(locations);
+
 //   const origin = locations[0];
 //   const dest = locations[locations.length - 1];
 //   const waypoints = locations.length > 2
 //     ? locations.slice(1, -1).map(l => `${l.latitude},${l.longitude}`).join('|')
 //     : '';
 
-//   const url =
-//     `https://maps.googleapis.com/maps/api/directions/json?origin=${origin.latitude},${origin.longitude}` +
-//     `&destination=${dest.latitude},${dest.longitude}` +
-//     (waypoints ? `&waypoints=${waypoints}` : '') +
-//     `&key=${GOOGLE_API_KEY}`;
+//   const params = [
+//     `origin=${origin.latitude},${origin.longitude}`,
+//     `destination=${dest.latitude},${dest.longitude}`,
+//     waypoints ? `waypoints=${waypoints}` : '',
+//     `mode=driving`,
+//     `key=${GOOGLE_API_KEY}`
+//   ];
 
-//   const resp = await axios.get(url);
-//   if (resp.data.status !== 'OK') {
-//     throw new Error(`Google error: ${resp.data.status}`);
+//   // request traffic metrics when asked
+//   if (includeTraffic) {
+//     const dep = normalizeDeparture(departureTimeEpoch);
+//     params.push('region=IN'); // helps with routing in India; harmless elsewhere
+//     params.push('departure_time=' + dep);
+//     params.push('traffic_model=best_guess'); // requires "departure_time" for duration_in_traffic
 //   }
-//   const r0 = resp.data.routes[0];
+
+//   const url = `https://maps.googleapis.com/maps/api/directions/json?${params.filter(Boolean).join('&')}`;
+//   const resp = await axios.get(url, { timeout: AXIOS_TIMEOUT_MS });
+//   const data = resp?.data || {};
+//   if (data.status !== 'OK') {
+//     const err = new Error(`Google error: ${data.status}${data.error_message ? ` - ${data.error_message}` : ''}`);
+//     // log diagnostics
+//     logger.error('Google Directions failed', {
+//       status: data.status,
+//       error_message: data.error_message,
+//       waypointCount: locations.length,
+//       includeTraffic,
+//       departureTimeEpoch
+//     });
+//     throw err;
+//   }
+//   const r0 = data.routes[0] || {};
 //   const legs = r0.legs || [];
-//   const decoded = polyline.decode(r0.overview_polyline.points)
-//     .map(([lat, lng]) => ({ lat, lng }));
+//   const poly = r0.overview_polyline?.points || '';
+//   const decoded = poly ? polyline.decode(poly).map(([lat, lng]) => ({ lat, lng })) : [];
 
-//   // Map legs to our format
-//   const mappedLegs = legs.map((leg, i) => ({
-//     start: {
-//       address: leg.start_address,
-//       latitude: locations[i].latitude,
-//       longitude: locations[i].longitude
-//     },
-//     end: {
-//       address: leg.end_address,
-//       latitude: locations[i + 1].latitude,
-//       longitude: locations[i + 1].longitude
-//     },
-//     distance: leg.distance.text,
-//     duration: leg.duration.text
-//   }));
+//   const mappedLegs = legs.map((leg, i) => {
+//     const base = {
+//       start: {
+//         address: leg.start_address,
+//         latitude: locations[i].latitude,
+//         longitude: locations[i].longitude
+//       },
+//       end: {
+//         address: leg.end_address,
+//         latitude: locations[i + 1].latitude,
+//         longitude: locations[i + 1].longitude
+//       },
+//       distance: leg.distance?.text || '',
+//       duration: leg.duration?.text || ''
+//     };
 
-//   return { legs: mappedLegs, shape: decoded };
+//     if (includeTraffic && leg.duration_in_traffic?.value != null) {
+//       const normalSec = leg.duration?.value || 0;
+//       const trafficSec = leg.duration_in_traffic.value;
+//       base.durationInTraffic = leg.duration_in_traffic?.text || base.duration;
+//       base.trafficDelaySec = Math.max(0, trafficSec - normalSec);
+//       base.traffic = {
+//         durationInTrafficSec: trafficSec,
+//         normalDurationSec: normalSec,
+//         delaySec: Math.max(0, trafficSec - normalSec)
+//       };
+//     }
+
+//     return base;
+//   });
+
+//   // warn if traffic requested but missing (can happen on tiny/zero legs; we de-dupe to reduce this)
+//   if (includeTraffic && legs.some(l => l?.duration_in_traffic?.value == null)) {
+//     logger.warn('Google: duration_in_traffic missing for some legs', {
+//       legCount: legs.length
+//     });
+//   }
+
+//   // route-level traffic summary if requested
+//   let trafficSummary = null;
+//   if (includeTraffic) {
+//     const delays = mappedLegs.map(l => +l.trafficDelaySec || 0);
+//     const totalDelaySec = delays.reduce((s, n) => s + n, 0);
+//     const avgDelay = mappedLegs.length ? Math.round(totalDelaySec / mappedLegs.length) : 0;
+//     const congestion = totalDelaySec > 3600 ? 'high' : totalDelaySec > 900 ? 'medium' : 'low';
+//     trafficSummary = {
+//       trafficAt: normalizeDeparture(departureTimeEpoch),
+//       totalDelaySec,
+//       avgDelayPerLegSec: avgDelay,
+//       congestion
+//     };
+//   }
+
+//   return { legs: mappedLegs, shape: decoded, trafficSummary };
 // }
 
 // async function fetchRouteOSRM(locations) {
-//   // OSRM expects "lon,lat" pairs
+//   // de-dupe to keep parity with Google path
+//   locations = dedupeConsecutiveLocations(locations);
+
 //   const coords = locations.map(p => `${p.longitude},${p.latitude}`).join(';');
 //   const url = `${cfg.osrmBaseUrl}/route/v1/driving/${coords}?overview=full&geometries=polyline`;
-//   const resp = await axios.get(url);
+//   const resp = await axios.get(url, { timeout: AXIOS_TIMEOUT_MS });
 //   if (resp.data.code !== 'Ok') {
 //     throw new Error(`OSRM error: ${resp.data.code}`);
 //   }
@@ -110,10 +304,9 @@
 //   const decoded = polyline.decode(route.geometry)
 //     .map(([lat, lng]) => ({ lat, lng }));
 
-//   // OSRM legs have numeric distance (m) & duration (s)
 //   const legs = (route.legs || []).map((leg, i) => ({
 //     start: {
-//       address: '', // OSRM has no address reverse-lookup
+//       address: '',
 //       latitude: locations[i].latitude,
 //       longitude: locations[i].longitude
 //     },
@@ -126,60 +319,85 @@
 //     duration: minText(leg.duration || 0)
 //   }));
 
-//   return { legs, shape: decoded };
+//   return { legs, shape: decoded, trafficSummary: null };
 // }
 
 // /**
 //  * Core helper that:
 //  *  - checks Redis cache
 //  *  - fetches route from provider (Google or OSRM)
-//  *  - computes sampled points every ~20km
-//  *  - returns { optimizedRoute[], sampledCoords[] }
+//  *  - computes sampled points every ~N km
+//  *  - returns { optimizedRoute[], sampledCoords[], trafficSummary }
 //  */
-// async function getOptimizedRouteWithLoad(locations, shipmentLoads) {
+// async function getOptimizedRouteWithLoad(locations, shipmentLoads, {
+//   includeTraffic = false,
+//   departureTimeEpoch = 0,
+//   sampleEveryKm = WEATHER_SAMPLE_EVERY_KM_DEFAULT,
+//   maxSamplePoints = Infinity
+// } = {}) {
 //   if (!Array.isArray(locations) || locations.length < 2) {
 //     throw new Error('Need at least origin and destination');
 //   }
 
-//   const cacheKey = `route:${cfg.routingProvider}:${buildRouteKey(locations)}`;
+//   // NEW: de-dupe consecutive identical coords to avoid zero legs
+//   locations = dedupeConsecutiveLocations(locations);
+
+//   // cache key includes provider + traffic toggle + DEPARTURE BUCKET + coordinates
+//   // also include sampling params only for fallback; we'll resample if 'shape' is cached.
+//   const depBucket = includeTraffic ? departureBucket(departureTimeEpoch) : 0;
+//   const cacheKey = `route:${cfg.routingProvider}:${includeTraffic ? 'T' : 'N'}:${depBucket}:${buildRouteKey(locations)}:${sampleEveryKm}:${maxSamplePoints}`;
 //   const cached = await getJSON(cacheKey);
+//   let optimizedRoute, sampledCoords, trafficSummary, shape;
+
 //   if (cached) {
-//     const { optimizedRoute, sampledCoords } = cached;
-//     // refresh load field if caller provided loads
-//     optimizedRoute.forEach((leg, i) => {
-//       if (i < shipmentLoads.length) {
-//         leg.loadAfterStop = i === 0 ? shipmentLoads[i] : leg.loadAfterStop;
+//     // Backward compatibility if old cache had no 'shape'
+//     optimizedRoute = cached.optimizedRoute;
+//     trafficSummary = cached.trafficSummary || null;
+//     shape = cached.shape || null;
+//     if (shape && Array.isArray(shape)) {
+//       sampledCoords = sampleRoutePoints(shape, sampleEveryKm, maxSamplePoints);
+//     } else {
+//       sampledCoords = cached.sampledCoords || [];
+//     }
+//   } else {
+//     let legs, trafficSummaryLocal = null, shapeLocal = [];
+//     if (cfg.routingProvider === 'osrm') {
+//       ({ legs, shape: shapeLocal, trafficSummary: trafficSummaryLocal } = await fetchRouteOSRM(locations));
+//     } else {
+//       ({ legs, shape: shapeLocal, trafficSummary: trafficSummaryLocal } = await fetchRouteGoogle(locations, { includeTraffic, departureTimeEpoch }));
+//     }
+
+//     // Build optimizedRoute while computing cumulative load
+//     const builtRoute = [];
+//     let currentLoad = 0;
+//     legs.forEach((leg, i) => {
+//       const load = shipmentLoads[i] || 0;
+//       currentLoad += load;
+//       if (
+//         leg.start.latitude !== leg.end.latitude ||
+//         leg.start.longitude !== leg.end.longitude
+//       ) {
+//         builtRoute.push({ ...leg, loadAfterStop: currentLoad });
 //       }
 //     });
-//     return { optimizedRoute, sampledCoords };
+
+//     optimizedRoute = builtRoute;
+//     shape = shapeLocal || [];
+//     sampledCoords = sampleRoutePoints(shape, sampleEveryKm, maxSamplePoints);
+//     trafficSummary = trafficSummaryLocal;
+
+//     // Store 'shape' so future callers can resample differently
+//     await setJSON(cacheKey, { optimizedRoute, shape, trafficSummary }, cfg.redisTTL);
 //   }
 
-//   // choose provider
-//   let legs, shape;
-//   if (cfg.routingProvider === 'osrm') {
-//     ({ legs, shape } = await fetchRouteOSRM(locations));
-//   } else {
-//     ({ legs, shape } = await fetchRouteGoogle(locations)); // default
-//   }
-
-//   // Add load accumulation
-//   const optimizedRoute = [];
+//   // Recompute loadAfterStop for the caller's shipments (in case cache came from different loads)
 //   let currentLoad = 0;
-//   legs.forEach((leg, i) => {
-//     const load = shipmentLoads[i] || 0;
-//     currentLoad += load;
-//     if (
-//       leg.start.latitude !== leg.end.latitude ||
-//       leg.start.longitude !== leg.end.longitude
-//     ) {
-//       optimizedRoute.push({ ...leg, loadAfterStop: currentLoad });
-//     }
+//   const recomputed = optimizedRoute.map((leg, i) => {
+//     currentLoad += (shipmentLoads[i] || 0);
+//     return { ...leg, loadAfterStop: currentLoad };
 //   });
 
-//   const sampledCoords = sampleRoutePoints(shape, 20);
-
-//   await setJSON(cacheKey, { optimizedRoute, sampledCoords }, cfg.redisTTL);
-//   return { optimizedRoute, sampledCoords };
+//   return { optimizedRoute: recomputed, sampledCoords, trafficSummary };
 // }
 
 // /* ------------------- bearing / clustering ------------------- */
@@ -279,9 +497,6 @@
 //     temp_controlled_vehicle: v.temp_controlled_vehicle || 0
 //   };
 // }
-// /**
-//  * POLICY: normal goods may NOT go on special trucks.
-//  */
 // function checkPackageVehicleCompatibility(pkgF, vehF) {
 //   const pkgIsNormal = !pkgF.fragile && !pkgF.dangerous && !pkgF.hazardous && !pkgF.tempCtrl;
 //   if (pkgIsNormal) {
@@ -405,7 +620,10 @@
 //       chosen.sort((a, b) => a.distFromSource - b.distFromSource);
 //       const locs = [sourceLoc, ...chosen.map(x => x.destination)];
 //       const shipments = new Array(chosen.length).fill(1);
+
+//       // traffic off in solver recursion for speed/cost
 //       const { optimizedRoute, sampledCoords } = await getOptimizedRouteWithLoad(locs, shipments);
+
 //       const totalDist = optimizedRoute.reduce((s, leg) => s + parseDistanceText(leg.distance), 0);
 //       const tons = sumW / 1000;
 //       const cost = tons * v.cost_per_ton * totalDist;
@@ -474,7 +692,13 @@
 // }
 
 // /* ---------------- allocation orchestration ---------------- */
-// async function allocatePackages(packagesData, vehicles, sourceLocation, productMap, packagingInfoMap) {
+// async function allocatePackages(packagesData, vehicles, sourceLocation, productMap, packagingInfoMap, extra = {}) {
+//   const {
+//     includeTraffic = false,
+//     departureTimeEpoch = 0,
+//     weatherOpts = {}
+//   } = extra;
+
 //   const allocations = [], unallocatedPackages = [];
 //   let totalCost = 0;
 //   const pkgInfos = [];
@@ -521,7 +745,14 @@
 //       group.sort((a, b) => a.distFromSource - b.distFromSource);
 //       const routeLocs = [sourceLocation, ...group.map(g => g.destination)];
 //       const shipments = new Array(group.length).fill(1);
-//       const { optimizedRoute, sampledCoords } = await getOptimizedRouteWithLoad(routeLocs, shipments);
+
+//       const { optimizedRoute, sampledCoords, trafficSummary } =
+//         await getOptimizedRouteWithLoad(routeLocs, shipments, {
+//           includeTraffic,
+//           departureTimeEpoch,
+//           sampleEveryKm: weatherOpts.sampleEveryKm || WEATHER_SAMPLE_EVERY_KM_DEFAULT,
+//           maxSamplePoints: weatherOpts.maxPoints || WEATHER_MAX_POINTS_DEFAULT
+//         });
 
 //       const totalDist = optimizedRoute.reduce((s, leg) => s + parseDistanceText(leg.distance), 0);
 //       const tons = sumW / 1000;
@@ -545,8 +776,6 @@
 //         }
 //       });
 
-//       const pkgVolumes = group.map(g => g.totalVolume);
-
 //       allocations.push({
 //         vehicle_ID: chosen.vehicle_ID,
 //         totalWeightCapacity: chosen.totalWeightCapacity,
@@ -557,8 +786,9 @@
 //         leftoverVolume: chosen.volumeCapM3 - group.reduce((s, g) => s + g.totalVolume, 0),
 //         cost,
 //         packages: group.map(g => g.pack_ID),
-//         pkgVolumes,
+//         pkgVolumes: group.map(g => g.totalVolume),
 //         route: optimizedRoute,
+//         trafficSummary,
 //         loadArrangement: loadArr,
 //         sampledRoutePoints: sampledCoords
 //       });
@@ -581,20 +811,6 @@
 //   return { allocations, totalCost, unallocated: unallocatedPackages };
 // }
 
-// async function getPackagesByIds(packageIDs) {
-//   const ph = packageIDs.map(_ => '?').join(',');
-//   const [rows] = await db.query(`
-//     SELECT * FROM packages WHERE pack_ID IN (${ph})`, packageIDs);
-//   if (!rows.length) throw new Error('No matching packages');
-//   return rows.map(r => ({
-//     pack_ID: r.pack_ID,
-//     ship_from: r.ship_from,
-//     ship_to: r.ship_to,
-//     products: safeJsonParse(r.product_ID),
-//     pickup_date_time: r.pickup_date_time
-//   }));
-// }
-
 // /* ------------------- dimension + 3D placement ------------------- */
 // function parseDimension(str = '') {
 //   if (typeof str === 'number') return +str || 0;
@@ -604,7 +820,6 @@
 //   return /cm/i.test(str) ? val / 100 : val;
 // }
 // function r3(n) { return Math.round(n * 1000) / 1000; }
-
 // function buildColorMapByProdPkg(packageInfoDetails) {
 //   const palette = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f43f5e', '#0ea5e9', '#6366f1', '#22c55e'];
 //   const colorByKey = {};
@@ -666,7 +881,7 @@
 //   const stopsDesc = [...loadArrangement].sort((a, b) => b.stop - a.stop);
 
 //   const layers = Array.from({ length: maxLayers }, () => ({
-//     stripes: /** @type {{z0:number,width:number,xCursor:number,zCursor:number,rowMaxL:number}[]} */([]),
+//     stripes: [],
 //     zUsed: 0
 //   }));
 
@@ -714,9 +929,9 @@
 //       if (!boxes.length) return true;
 //     }
 
-//     while (boxes.length && layer.zUsed + EPS < truckW) {
+//     while (boxes.length && layer.zUsed + 1e-9 < truckW) {
 //       const availW = Math.max(0, truckW - layer.zUsed);
-//       if (availW <= EPS) break;
+//       if (availW <= 1e-9) break;
 
 //       const s = { z0: layer.zUsed, width: availW, xCursor: FRONT_GUTTER_X, zCursor: 0, rowMaxL: 0 };
 //       placeInStripe(layerIdx, s, boxes);
@@ -765,11 +980,7 @@
 //       for (const l of (p.lines || [])) {
 //         if (!l?.prod_ID) continue;
 //         const rec = (byProd[l.prod_ID] ||= {
-//           prod_ID: l.prod_ID,
-//           color: '#999',
-//           totalQty: 0,
-//           byPackage: {},
-//           byStop: {}
+//           prod_ID: l.prod_ID, color: '#999', totalQty: 0, byPackage: {}, byStop: {}
 //         });
 //         const q = Number(l.quantity || 0);
 //         rec.totalQty += q;
@@ -791,12 +1002,26 @@
 
 // /* -------------------------- ROUTES --------------------------- */
 
-// // Create order (allocations)
+// // Create order (allocations) with optional traffic + weather
 // router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
 //   const t0 = Date.now();
 //   try {
 //     const { packages: packageIDs, filters } = req.body;
 //     if (!packageIDs?.length) return res.status(400).json({ error: 'No packages provided.' });
+
+//     const includeTraffic = !!filters?.includeTraffic;
+//     const departureTimeEpoch = Number(filters?.traffic?.departureTimeEpoch || 0);
+
+//     // Default to true if a weather key exists (caller can disable by send includeWeather:false)
+//     const includeWeather = (typeof filters?.includeWeather === 'boolean')
+//       ? !!filters.includeWeather
+//       : !!OPENWEATHER_API_KEY;
+
+//     const weatherOpts = {
+//       units: (filters?.weather?.units || WEATHER_UNITS_DEFAULT),
+//       sampleEveryKm: Number(filters?.weather?.sampleEveryKm || WEATHER_SAMPLE_EVERY_KM_DEFAULT),
+//       maxPoints: Number(filters?.weather?.maxPoints || WEATHER_MAX_POINTS_DEFAULT)
+//     };
 
 //     // 1) fetch packages & validate same origin/date
 //     const packagesData = await getPackagesByIds(packageIDs);
@@ -896,13 +1121,22 @@
 //     // 6) origin coords
 //     const sourceLoc = await getLocationById(origin);
 
-//     // 7) allocate
+//     // 7) allocate (with toggles)
 //     const { allocations, totalCost, unallocated } = await allocatePackages(
-//       packagesData, fleet, sourceLoc, productMap, packagingInfoMap
+//       packagesData,
+//       fleet,
+//       sourceLoc,
+//       productMap,
+//       packagingInfoMap,
+//       {
+//         includeTraffic,
+//         departureTimeEpoch,
+//         weatherOpts
+//       }
 //     );
 
-//     // 8) enrich for FE
-//     const enriched = allocations.map(a => {
+//     // 8) enrich for FE (3D packing etc.)
+//     const enriched = await Promise.all(allocations.map(async a => {
 //       const v = fleet.find(x => x.vehicle_ID === a.vehicle_ID) || {};
 //       const caps = v.capacity || {};
 
@@ -1001,6 +1235,41 @@
 //       const boxPlacements = generatePackageBlocks(rawPlacements);
 //       const productLegend = buildProductLegend(a.loadArrangement, packageInfoDetails, colorByProdPkg);
 
+//       // Attach weather if requested
+//       let weatherAlongRoute = undefined;
+//       let weatherSummary = undefined;
+//       if (includeWeather) {
+//         if (!OPENWEATHER_API_KEY) {
+//           logger.warn('OPENWEATHER_API_KEY missing: skipping weather');
+//         } else if (a.sampledRoutePoints?.length) {
+//           const normalized = a.sampledRoutePoints.map(normalizePoint);
+//           const { pointsWeather, summary } = await getWeatherAlongRoute(
+//             normalized,
+//             { units: weatherOpts.units, maxPoints: weatherOpts.maxPoints }
+//           );
+//           weatherAlongRoute = pointsWeather;
+//           weatherSummary = summary;
+//         } else {
+//           weatherAlongRoute = [];
+//           weatherSummary = { minTemp: null, maxTemp: null, distinctConditions: [], points: 0 };
+//         }
+//       }
+
+//       // Compute traffic summary if route has traffic fields but summary missing
+//       let trafficSummary = a.trafficSummary || null;
+//       if (includeTraffic && !trafficSummary && Array.isArray(a.route)) {
+//         const delays = a.route.map(l => +l.trafficDelaySec || 0);
+//         const totalDelaySec = delays.reduce((s, n) => s + n, 0);
+//         const avgDelay = a.route.length ? Math.round(totalDelaySec / a.route.length) : 0;
+//         const congestion = totalDelaySec > 3600 ? 'high' : totalDelaySec > 900 ? 'medium' : 'low';
+//         trafficSummary = {
+//           trafficAt: normalizeDeparture(departureTimeEpoch),
+//           totalDelaySec,
+//           avgDelayPerLegSec: avgDelay,
+//           congestion
+//         };
+//       }
+
 //       return {
 //         ...a,
 //         boxPlacements,
@@ -1023,9 +1292,14 @@
 //           allowedBySF: globalSfCap,
 //           layersUsed,
 //           perLineLayers
-//         }
+//         },
+
+//         // new optional extras
+//         weatherAlongRoute,
+//         weatherSummary,
+//         trafficSummary
 //       };
-//     });
+//     }));
 
 //     // metrics + event
 //     const ms = Date.now() - t0;
@@ -1048,7 +1322,21 @@
 //   }
 // });
 
-// // Sample route (returns sampled polyline points)
+// /* ---- Sample route ---- */
+// async function getPackagesByIds(packageIDs) {
+//   const ph = packageIDs.map(_ => '?').join(',');
+//   const [rows] = await db.query(`
+//     SELECT * FROM packages WHERE pack_ID IN (${ph})`, packageIDs);
+//   if (!rows.length) throw new Error('No matching packages');
+//   return rows.map(r => ({
+//     pack_ID: r.pack_ID,
+//     ship_from: r.ship_from,
+//     ship_to: r.ship_to,
+//     products: safeJsonParse(r.product_ID),
+//     pickup_date_time: r.pickup_date_time
+//   }));
+// }
+
 // router.post('/sample-route', jwtAuth.verifyToken, async (req, res) => {
 //   const t0 = Date.now();
 //   try {
@@ -1060,15 +1348,107 @@
 //     const shipments = new Array(Math.max(0, locations.length - 1)).fill(0);
 //     const { sampledCoords } = await getOptimizedRouteWithLoad(locations, shipments);
 
-//     // log + emit
-//     await logApiPerf('/sample-route', Date.now() - t0, true);
-//     try { await emit('route.sampled', { points: sampledCoords, at: Date.now() }); } catch {}
+//     // respond first
+//     res.status(200).json({ sampledRoutePoints: sampledCoords });
 
-//     return res.status(200).json({ sampledRoutePoints: sampledCoords });
+//     // non-blocking telemetry
+//     noBlock(logApiPerf('/sample-route', Date.now() - t0, true), 'logApiPerf(/sample-route)');
+//     noBlock(emit('route.sampled', { points: sampledCoords, at: Date.now() }), 'emit(route.sampled)');
 //   } catch (err) {
-//     try { await logApiPerf('/sample-route', Date.now() - t0, false); } catch {}
+//     res.status(500).json({ error: err.message });
+//     noBlock(logApiPerf('/sample-route', Date.now() - t0, false), 'logApiPerf(/sample-route)');
 //     logger.error('Error sampling route:', err);
-//     return res.status(500).json({ error: err.message });
+//   }
+// });
+
+// /* ---------------- helper endpoints ---------------- */
+
+// // Traffic: returns legs + summary (Google only) — cached + non-blocking telemetry
+// router.post('/route/traffic', jwtAuth.verifyToken, async (req, res) => {
+//   const t0 = Date.now();
+//   try {
+//     const { locations, departureTimeEpoch = 0 } = req.body || {};
+//     if (!Array.isArray(locations) || locations.length < 2) {
+//       return res.status(400).json({ error: 'Provide at least origin and destination.' });
+//     }
+//     if (cfg.routingProvider !== 'google') {
+//       return res.status(400).json({ error: 'Traffic is supported only when ROUTING_PROVIDER=google' });
+//     }
+//     if (!GOOGLE_API_KEY) {
+//       return res.status(500).json({ error: 'Google API key missing' });
+//     }
+
+//     const depBucket = departureBucket(departureTimeEpoch);
+//     const keyLocs = dedupeConsecutiveLocations(locations);
+//     const cacheKey = `traffic:${cfg.routingProvider}:${depBucket}:${buildRouteKey(keyLocs)}`;
+
+//     const cached = await getJSON(cacheKey);
+//     if (cached) {
+//       res.status(200).json(cached);
+//       noBlock(logApiPerf('/route/traffic', Date.now() - t0, true), 'logApiPerf(/route/traffic)');
+//       return;
+//     }
+
+//     const { legs, trafficSummary } = await fetchRouteGoogle(keyLocs, {
+//       includeTraffic: true,
+//       departureTimeEpoch
+//     });
+
+//     const payload = { provider: 'google', legs, summary: trafficSummary };
+
+//     // respond immediately
+//     res.status(200).json(payload);
+
+//     // background cache + telemetry
+//     noBlock(setJSON(cacheKey, payload, TRAFFIC_CACHE_TTL), 'traffic cache set');
+//     noBlock(logApiPerf('/route/traffic', Date.now() - t0, true), 'logApiPerf(/route/traffic)');
+//     noBlock(emit('route.traffic', { legs, summary: trafficSummary, at: Date.now() }), 'emit(route.traffic)');
+//   } catch (err) {
+//     res.status(500).json({ error: err.message });
+//     noBlock(logApiPerf('/route/traffic', Date.now() - t0, false), 'logApiPerf(/route/traffic)');
+//     logger.error('Error on /route/traffic:', err);
+//   }
+// });
+
+// // Weather: accepts points[] or locations[] and samples along polyline
+// router.post('/route/weather', jwtAuth.verifyToken, async (req, res) => {
+//   const t0 = Date.now();
+//   try {
+//     if (!OPENWEATHER_API_KEY) {
+//       return res.status(500).json({ error: 'OPENWEATHER_API_KEY missing' });
+//     }
+//     const { points, locations, units = WEATHER_UNITS_DEFAULT, sampleEveryKm = WEATHER_SAMPLE_EVERY_KM_DEFAULT, maxPoints = WEATHER_MAX_POINTS_DEFAULT } = req.body || {};
+
+//     let usePoints = Array.isArray(points) ? points : null;
+//     if ((!usePoints || !usePoints.length) && Array.isArray(locations) && locations.length >= 2) {
+//       const shipments = new Array(Math.max(0, locations.length - 1)).fill(0);
+//       const { sampledCoords } = await getOptimizedRouteWithLoad(locations, shipments, {
+//         sampleEveryKm,
+//         maxSamplePoints: maxPoints
+//       });
+//       usePoints = sampledCoords;
+//     }
+
+//     if (!usePoints || !usePoints.length) {
+//       return res.status(400).json({ error: 'Provide points[] or locations[] (>=2)' });
+//     }
+
+//     // NEW: normalize potential {latitude,longitude} inputs to {lat,lng}
+//     const normalized = usePoints.map(normalizePoint);
+
+//     const { pointsWeather, summary } = await getWeatherAlongRoute(normalized, { units, maxPoints });
+
+//     // respond first
+//     const payload = { units, pointsWeather, summary };
+//     res.status(200).json(payload);
+
+//     // non-blocking telemetry
+//     noBlock(logApiPerf('/route/weather', Date.now() - t0, true), 'logApiPerf(/route/weather)');
+//     noBlock(emit('route.weather', { count: pointsWeather.length, at: Date.now() }), 'emit(route.weather)');
+//   } catch (err) {
+//     res.status(500).json({ error: err.message });
+//     noBlock(logApiPerf('/route/weather', Date.now() - t0, false), 'logApiPerf(/route/weather)');
+//     logger.error('Error on /route/weather:', err);
 //   }
 // });
 
@@ -1936,11 +2316,15 @@ function getMaxBoxHeight(packageInfoDetails) {
   }
   return h || 0.5;
 }
-function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimensions, opts = {}) {
-  const res = packStopBlocks(loadArrangement, packageInfoDetails, vehicleDimensions, opts);
-  return res;
-}
-function packStopBlocks(loadArrangement, packageInfoDetails, vehicleDimensions, opts = {}) {
+
+/**
+ * NEW core packer: stop-contiguous, vertical-first pillars.
+ * - Packs stops in ascending order from REAR→FRONT (stop 1 nearest door, last stop at the very front).
+ * - For each stop, creates contiguous rows along the truck length; within a row, fills across width.
+ * - At each (x,z) footprint, it stacks up to allowedLayers (respecting truck height).
+ * - Prevents side-by-side mixing across stops by fully finishing one stop segment before starting the next.
+ */
+function packStopsVerticalPillars(loadArrangement, packageInfoDetails, vehicleDimensions, opts = {}) {
   const truckL = vehicleDimensions.interiorLengthM || 0;
   const truckW = vehicleDimensions.interiorWidthM || 0;
   const truckH = vehicleDimensions.interiorHeightM || 0;
@@ -1950,95 +2334,161 @@ function packStopBlocks(loadArrangement, packageInfoDetails, vehicleDimensions, 
   const FRONT_GUTTER_X = opts.frontGutter ?? 0.0;
   const LAYER_GAP = opts.layerGap ?? 0.02;
 
-  const layerHeight = opts.layerHeight ?? getMaxBoxHeight(packageInfoDetails);
-  const maxLayers = Math.max(1, Math.min(opts.maxLayers || 1, layerHeight > 0 ? Math.floor(truckH / layerHeight) : 1));
-
   const colorByKey = buildColorMapByProdPkg(packageInfoDetails);
   const pkgMap = new Map(packageInfoDetails.map(p => [p.pkg_ID, p]));
 
-  const stopsDesc = [...loadArrangement].sort((a, b) => b.stop - a.stop);
+  // Process stops in ascending order so the earliest stop sits at the rear (door),
+  // and the last stop ends up at the very front.
+  const stopsAsc = [...loadArrangement].sort((a, b) => a.stop - b.stop);
 
-  const layers = Array.from({ length: maxLayers }, () => ({
-    stripes: [],
-    zUsed: 0
-  }));
-
+  let frontX = FRONT_GUTTER_X; // grows forward
+  let rearX = truckL;          // grows backward
   const placements = [];
-  let total = 0, placed = 0, highestLayerUsed = -1;
+  let total = 0, placed = 0;
+  let maxTopY = 0;
 
-  function placeInStripe(layerIdx, s, boxes) {
-    while (boxes.length) {
-      let pick = -1;
-      for (let i = 0; i < boxes.length; i++) {
-        if (boxes[i].W - s.width <= EPS) { pick = i; break; }
-      }
-      if (pick < 0) break;
-
-      const b = boxes[pick];
-      if (s.xCursor + b.L - truckL > EPS) break;
-
-      if (s.zCursor + b.W - s.width > EPS) {
-        if (s.rowMaxL <= EPS) break;
-        s.xCursor = Math.min(truckL, s.xCursor + s.rowMaxL);
-        s.zCursor = 0;
-        s.rowMaxL = 0;
-        if (s.xCursor + b.L - truckL > EPS) break;
-      }
-
-      placements.push({
-        pkg_ID: b.pkg_ID, prod_ID: b.prod_ID, color: b.color,
-        position: [r3(s.xCursor), r3(layerIdx * layerHeight + layerIdx * LAYER_GAP), r3(s.z0 + s.zCursor)],
-        dimensions: [r3(b.L), r3(b.H), r3(b.W)]
-      });
-      placed++;
-      highestLayerUsed = Math.max(highestLayerUsed, layerIdx);
-
-      s.zCursor += b.W + Z_GUTTER;
-      s.rowMaxL = Math.max(s.rowMaxL, b.L);
-      boxes.splice(pick, 1);
+  function compressBoxes(boxes) {
+    // Aggregate identical box shapes to manage counts & vertical stacking
+    const map = new Map();
+    for (const b of boxes) {
+      const key = `${b.pkg_ID}|${b.prod_ID}|${b.L}|${b.W}|${b.H}|${b.color}|${b.allowedLayers}`;
+      if (!map.has(key)) map.set(key, { ...b, count: 1 });
+      else map.get(key).count += 1;
     }
+    return Array.from(map.values());
   }
 
-  function placeIntoLayer(layerIdx, boxes) {
-    const layer = layers[layerIdx];
-
-    for (const s of layer.stripes) {
-      placeInStripe(layerIdx, s, boxes);
-      if (!boxes.length) return true;
-    }
-
-    while (boxes.length && layer.zUsed + 1e-9 < truckW) {
-      const availW = Math.max(0, truckW - layer.zUsed);
-      if (availW <= 1e-9) break;
-
-      const s = { z0: layer.zUsed, width: availW, xCursor: FRONT_GUTTER_X, zCursor: 0, rowMaxL: 0 };
-      placeInStripe(layerIdx, s, boxes);
-
-      layer.stripes.push(s);
-      layer.zUsed = Math.min(truckW, s.z0 + s.width);
-
-      if (!boxes.length) return true;
-      if (s.zCursor === 0 && s.rowMaxL === 0) break;
-    }
-    return boxes.length === 0;
-  }
-
-  for (const stop of stopsDesc) {
-    let boxes = [];
+  function collectStopBoxes(stop) {
+    const boxes = [];
     for (const pkgId of (stop.packages || [])) {
       const pkg = pkgMap.get(pkgId);
-      if (pkg) boxes.push(...explodePackage(pkg, colorByKey));
+      if (!pkg) continue;
+      const exploded = explodePackage(pkg, colorByKey);
+      boxes.push(...exploded);
+      total += exploded.length;
     }
-    boxes.sort((a, b) => b.L - a.L);
-    total += boxes.length;
+    // Bigger footprints first tends to produce nicer contiguous blocks
+    boxes.sort((a, b) => (b.L * b.W) - (a.L * a.W) || b.H - a.H);
+    return compressBoxes(boxes);
+  }
 
-    for (let layerIdx = 0; layerIdx < maxLayers && boxes.length; layerIdx++) {
-      placeIntoLayer(layerIdx, boxes);
+  function placeRowFromRear(items) {
+    // One row is a strip of constant depth (x direction) = rowDepth
+    // We keep placing rows until either we run out of items or length.
+    while (items.some(it => it.count > 0) && rearX - frontX > EPS) {
+      const availLen = rearX - frontX;
+      // Choose a seed item that fits the remaining length
+      const seedIdx = items.findIndex(it => it.count > 0 && it.L <= availLen + EPS);
+      if (seedIdx < 0) break;
+
+      const rowDepth = items[seedIdx].L;
+      const x0 = rearX - rowDepth;
+      let zCursor = 0;
+
+      while (zCursor < truckW - EPS) {
+        // Pick next that fits remaining width and current row depth
+        const idx = items.findIndex(it => it.count > 0 && it.L <= rowDepth + EPS && it.W <= (truckW - zCursor) + EPS);
+        if (idx < 0) break;
+
+        const it = items[idx];
+        const maxByHeight = Math.max(1, Math.floor(truckH / Math.max(it.H, EPS)));
+        const stackCount = Math.max(1, Math.min(it.allowedLayers || 1, it.count, maxByHeight));
+
+        let y = 0;
+        for (let i = 0; i < stackCount; i++) {
+          placements.push({
+            pkg_ID: it.pkg_ID,
+            prod_ID: it.prod_ID,
+            color: it.color,
+            position: [r3(x0), r3(y), r3(zCursor)],
+            dimensions: [r3(it.L), r3(it.H), r3(it.W)]
+          });
+          placed++;
+          y += it.H + LAYER_GAP;
+          maxTopY = Math.max(maxTopY, y);
+        }
+
+        it.count -= stackCount;
+        if (it.count <= 0) items.splice(idx, 1);
+        zCursor += it.W + Z_GUTTER;
+      }
+
+      rearX = x0; // commit the row at the rear
+      if (rearX - frontX <= EPS) break;
     }
   }
 
-  return { placements, total, placed, layersUsed: Math.max(0, highestLayerUsed + 1) };
+  function placeRowFromFront(items) {
+    while (items.some(it => it.count > 0) && rearX - frontX > EPS) {
+      const availLen = rearX - frontX;
+      const seedIdx = items.findIndex(it => it.count > 0 && it.L <= availLen + EPS);
+      if (seedIdx < 0) break;
+
+      const rowDepth = items[seedIdx].L;
+      const x0 = frontX;
+      let zCursor = 0;
+
+      while (zCursor < truckW - EPS) {
+        const idx = items.findIndex(it => it.count > 0 && it.L <= rowDepth + EPS && it.W <= (truckW - zCursor) + EPS);
+        if (idx < 0) break;
+
+        const it = items[idx];
+        const maxByHeight = Math.max(1, Math.floor(truckH / Math.max(it.H, EPS)));
+        const stackCount = Math.max(1, Math.min(it.allowedLayers || 1, it.count, maxByHeight));
+
+        let y = 0;
+        for (let i = 0; i < stackCount; i++) {
+          placements.push({
+            pkg_ID: it.pkg_ID,
+            prod_ID: it.prod_ID,
+            color: it.color,
+            position: [r3(x0), r3(y), r3(zCursor)],
+            dimensions: [r3(it.L), r3(it.H), r3(it.W)]
+          });
+          placed++;
+          y += it.H + LAYER_GAP;
+          maxTopY = Math.max(maxTopY, y);
+        }
+
+        it.count -= stackCount;
+        if (it.count <= 0) items.splice(idx, 1);
+        zCursor += it.W + Z_GUTTER;
+      }
+
+      frontX = x0 + rowDepth; // commit the row at the front
+      if (rearX - frontX <= EPS) break;
+    }
+  }
+
+  // Walk stops one by one; each stop forms a contiguous segment (no side-by-side mixing)
+  for (let sIdx = 0; sIdx < stopsAsc.length; sIdx++) {
+    const stop = stopsAsc[sIdx];
+    const items = collectStopBoxes(stop);
+
+    // All stops before the last are placed from the REAR forward (closest to the door first),
+    // the very last stop naturally ends up occupying the remaining FRONT space.
+    const isLastStop = (sIdx === stopsAsc.length - 1);
+    if (!isLastStop) {
+      placeRowFromRear(items);
+    } else {
+      // Last stop: fill the remaining space from the FRONT so it sits farthest from the door.
+      placeRowFromFront(items);
+    }
+  }
+
+  // Estimate how many "layers" were effectively used (normalized by tallest box + gap).
+  const tallest = getMaxBoxHeight(packageInfoDetails);
+  const denom = Math.max(tallest + LAYER_GAP, 0.0001);
+  const layersUsed = Math.max(1, Math.ceil(maxTopY / denom));
+
+  return { placements, total, placed, layersUsed };
 }
+
+function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimensions, opts = {}) {
+  // Use the new stop-contiguous, vertical-first packer
+  return packStopsVerticalPillars(loadArrangement, packageInfoDetails, vehicleDimensions, opts);
+}
+
 function generatePackageBlocks(boxPlacements) {
   return boxPlacements.map(b => ({
     pkg_ID: b.pkg_ID,

@@ -2318,13 +2318,13 @@ function getMaxBoxHeight(packageInfoDetails) {
 }
 
 /**
- * NEW core packer: stop-contiguous, vertical-first pillars.
- * - Packs stops in ascending order from REAR→FRONT (stop 1 nearest door, last stop at the very front).
- * - For each stop, creates contiguous rows along the truck length; within a row, fills across width.
- * - At each (x,z) footprint, it stacks up to allowedLayers (respecting truck height).
- * - Prevents side-by-side mixing across stops by fully finishing one stop segment before starting the next.
+ * FIXED packer: stop-contiguous, **sequential** (rear → front) with no middle gaps.
+ * - We complete one stop fully, then move the global x-cursor forward and start the next.
+ * - Within a stop we build rows of constant depth (seed by a box L), filling width each row.
+ * - At each (x,z) footprint we stack vertically up to allowedLayers / height.
+ * - No side-by-side mixing across different stops.
  */
-function packStopsVerticalPillars(loadArrangement, packageInfoDetails, vehicleDimensions, opts = {}) {
+function packStopsSequential(loadArrangement, packageInfoDetails, vehicleDimensions, opts = {}) {
   const truckL = vehicleDimensions.interiorLengthM || 0;
   const truckW = vehicleDimensions.interiorWidthM || 0;
   const truckH = vehicleDimensions.interiorHeightM || 0;
@@ -2337,18 +2337,15 @@ function packStopsVerticalPillars(loadArrangement, packageInfoDetails, vehicleDi
   const colorByKey = buildColorMapByProdPkg(packageInfoDetails);
   const pkgMap = new Map(packageInfoDetails.map(p => [p.pkg_ID, p]));
 
-  // Process stops in ascending order so the earliest stop sits at the rear (door),
-  // and the last stop ends up at the very front.
+  // stops in ascending order: stop 1 nearest door, then next, etc.
   const stopsAsc = [...loadArrangement].sort((a, b) => a.stop - b.stop);
 
-  let frontX = FRONT_GUTTER_X; // grows forward
-  let rearX = truckL;          // grows backward
+  let xCursor = FRONT_GUTTER_X; // grows towards the front
   const placements = [];
   let total = 0, placed = 0;
   let maxTopY = 0;
 
   function compressBoxes(boxes) {
-    // Aggregate identical box shapes to manage counts & vertical stacking
     const map = new Map();
     for (const b of boxes) {
       const key = `${b.pkg_ID}|${b.prod_ID}|${b.L}|${b.W}|${b.H}|${b.color}|${b.allowedLayers}`;
@@ -2367,27 +2364,40 @@ function packStopsVerticalPillars(loadArrangement, packageInfoDetails, vehicleDi
       boxes.push(...exploded);
       total += exploded.length;
     }
-    // Bigger footprints first tends to produce nicer contiguous blocks
+    // Prefer big footprints to reduce fragmentation
     boxes.sort((a, b) => (b.L * b.W) - (a.L * a.W) || b.H - a.H);
     return compressBoxes(boxes);
   }
 
-  function placeRowFromRear(items) {
-    // One row is a strip of constant depth (x direction) = rowDepth
-    // We keep placing rows until either we run out of items or length.
-    while (items.some(it => it.count > 0) && rearX - frontX > EPS) {
-      const availLen = rearX - frontX;
-      // Choose a seed item that fits the remaining length
-      const seedIdx = items.findIndex(it => it.count > 0 && it.L <= availLen + EPS);
+  function placeStop(items) {
+    let usedLen = 0;
+
+    while (items.some(it => it.count > 0) && xCursor + usedLen < truckL - EPS) {
+      const availLen = truckL - (xCursor + usedLen);
+
+      // pick a seed that fits the remaining length; prefer deeper (larger L)
+      let seedIdx = -1, seedL = 0;
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].count > 0 && items[i].L <= availLen + EPS) {
+          if (items[i].L > seedL) { seedL = items[i].L; seedIdx = i; }
+        }
+      }
       if (seedIdx < 0) break;
 
       const rowDepth = items[seedIdx].L;
-      const x0 = rearX - rowDepth;
+      const x0 = xCursor + usedLen;
       let zCursor = 0;
 
       while (zCursor < truckW - EPS) {
-        // Pick next that fits remaining width and current row depth
-        const idx = items.findIndex(it => it.count > 0 && it.L <= rowDepth + EPS && it.W <= (truckW - zCursor) + EPS);
+        // choose a box that fits width & this rowDepth; prefer wider to pack tight
+        let idx = -1, bestW = 0;
+        for (let i = 0; i < items.length; i++) {
+          const it = items[i];
+          if (it.count <= 0) continue;
+          if (it.L <= rowDepth + EPS && it.W <= (truckW - zCursor) + EPS) {
+            if (it.W > bestW) { bestW = it.W; idx = i; }
+          }
+        }
         if (idx < 0) break;
 
         const it = items[idx];
@@ -2410,73 +2420,22 @@ function packStopsVerticalPillars(loadArrangement, packageInfoDetails, vehicleDi
 
         it.count -= stackCount;
         if (it.count <= 0) items.splice(idx, 1);
-        zCursor += it.W + Z_GUTTER;
+        zCursor += bestW + Z_GUTTER;
       }
 
-      rearX = x0; // commit the row at the rear
-      if (rearX - frontX <= EPS) break;
+      usedLen += rowDepth;
+      if (xCursor + usedLen > truckL - EPS) break;
     }
+
+    xCursor += usedLen; // advance the global cursor — ensures no gap before next stop
   }
 
-  function placeRowFromFront(items) {
-    while (items.some(it => it.count > 0) && rearX - frontX > EPS) {
-      const availLen = rearX - frontX;
-      const seedIdx = items.findIndex(it => it.count > 0 && it.L <= availLen + EPS);
-      if (seedIdx < 0) break;
-
-      const rowDepth = items[seedIdx].L;
-      const x0 = frontX;
-      let zCursor = 0;
-
-      while (zCursor < truckW - EPS) {
-        const idx = items.findIndex(it => it.count > 0 && it.L <= rowDepth + EPS && it.W <= (truckW - zCursor) + EPS);
-        if (idx < 0) break;
-
-        const it = items[idx];
-        const maxByHeight = Math.max(1, Math.floor(truckH / Math.max(it.H, EPS)));
-        const stackCount = Math.max(1, Math.min(it.allowedLayers || 1, it.count, maxByHeight));
-
-        let y = 0;
-        for (let i = 0; i < stackCount; i++) {
-          placements.push({
-            pkg_ID: it.pkg_ID,
-            prod_ID: it.prod_ID,
-            color: it.color,
-            position: [r3(x0), r3(y), r3(zCursor)],
-            dimensions: [r3(it.L), r3(it.H), r3(it.W)]
-          });
-          placed++;
-          y += it.H + LAYER_GAP;
-          maxTopY = Math.max(maxTopY, y);
-        }
-
-        it.count -= stackCount;
-        if (it.count <= 0) items.splice(idx, 1);
-        zCursor += it.W + Z_GUTTER;
-      }
-
-      frontX = x0 + rowDepth; // commit the row at the front
-      if (rearX - frontX <= EPS) break;
-    }
-  }
-
-  // Walk stops one by one; each stop forms a contiguous segment (no side-by-side mixing)
-  for (let sIdx = 0; sIdx < stopsAsc.length; sIdx++) {
-    const stop = stopsAsc[sIdx];
+  for (const stop of stopsAsc) {
     const items = collectStopBoxes(stop);
-
-    // All stops before the last are placed from the REAR forward (closest to the door first),
-    // the very last stop naturally ends up occupying the remaining FRONT space.
-    const isLastStop = (sIdx === stopsAsc.length - 1);
-    if (!isLastStop) {
-      placeRowFromRear(items);
-    } else {
-      // Last stop: fill the remaining space from the FRONT so it sits farthest from the door.
-      placeRowFromFront(items);
-    }
+    placeStop(items);
+    if (xCursor >= truckL - EPS) break; // truck full
   }
 
-  // Estimate how many "layers" were effectively used (normalized by tallest box + gap).
   const tallest = getMaxBoxHeight(packageInfoDetails);
   const denom = Math.max(tallest + LAYER_GAP, 0.0001);
   const layersUsed = Math.max(1, Math.ceil(maxTopY / denom));
@@ -2485,8 +2444,8 @@ function packStopsVerticalPillars(loadArrangement, packageInfoDetails, vehicleDi
 }
 
 function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimensions, opts = {}) {
-  // Use the new stop-contiguous, vertical-first packer
-  return packStopsVerticalPillars(loadArrangement, packageInfoDetails, vehicleDimensions, opts);
+  // Use the new **sequential** stop packer to eliminate gaps
+  return packStopsSequential(loadArrangement, packageInfoDetails, vehicleDimensions, opts);
 }
 
 function generatePackageBlocks(boxPlacements) {

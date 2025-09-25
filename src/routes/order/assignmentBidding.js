@@ -422,7 +422,7 @@ router.post('/initiate-open-bidding', jwtAuth.verifyToken, async (req, res) => {
 
 /* =========================================================
    Active bids for a carrier
-   - exclude cancelled & finalised
+   - exclude cancelled & closed/finalised
    - must not be ended and must be within bid_closing_time
    ========================================================= */
 router.get('/active-bids', jwtAuth.verifyToken, async (req, res) => {
@@ -568,7 +568,7 @@ router.get('/bids-order-id', jwtAuth.verifyToken, async (req, res) => {
 
 /* =========================================================
    Finalised bids for a carrier
-   - ensure bid_status='finalised'
+   - treat 'closed' as finalised (keep 'finalised' for back-compat)
    ========================================================= */
 router.get('/finalised-bids', jwtAuth.verifyToken, async (req, res) => {
   try {
@@ -580,7 +580,7 @@ router.get('/finalised-bids', jwtAuth.verifyToken, async (req, res) => {
       FROM assignment_bidding ab
       JOIN orders o ON ab.order_ID = o.order_ID
       WHERE JSON_EXTRACT(ab.finalised_bid, '$.finalised_for') = ?
-        AND ab.bid_status = 'finalised'
+        AND ab.bid_status IN ('closed','finalised')
     `, [carrier_ID]);
     if (!results.length) return res.status(404).json({ message: 'No finalised bids found for this carrier.' });
 
@@ -600,175 +600,193 @@ router.get('/finalised-bids', jwtAuth.verifyToken, async (req, res) => {
   }
 });
 
-/* =========================================================
-   PUT /edit-bid  (no bid_value here)
-   - Query: order_ID
-   - Allowed: bid_start_time, bid_closing_time, bid_reqs
-   - Only when bid_status='open'
-   ========================================================= */
 router.put('/edit-bid', jwtAuth.verifyToken, async (req, res) => {
   try {
     const { order_ID } = req.query;
-    if (!order_ID) return res.status(400).json({ message: 'Missing required query parameter: order_ID' });
+    if (!order_ID) {
+      return res.status(400).json({ message: 'Missing required query parameter: order_ID' });
+    }
 
+    // Always work on the latest non-cancelled bid row for this order
     const row = await getLatestNonCancelledBid(order_ID);
-    if (!row) return res.status(404).json({ message: 'Bidding row not found for order_ID.' });
-    if (row.bid_status !== 'open') return res.status(403).json({ message: 'Only open bids can be edited.' });
-    if (row.bid_end_time) return res.status(403).json({ message: 'Bidding already ended.' });
+    if (!row) {
+      return res.status(404).json({ message: 'Bidding row not found for order_ID.' });
+    }
+    if (row.bid_status !== 'open') {
+      return res.status(403).json({ message: 'Only open bids can be edited.' });
+    }
+    if (row.bid_end_time) {
+      return res.status(403).json({ message: 'Bidding already ended.' });
+    }
 
-    const { bid_start_time, bid_closing_time, bid_reqs } = req.body;
+    const {
+      bid_start_time,
+      bid_closing_time,
+      bid_reqs,
+      // NEW: allow bid_value update here (with strict checks)
+      bid_value
+    } = req.body;
 
     const updateFields = [];
     const values = [];
+    const changed = {};
 
-    if (bid_start_time) {
+    // Update bid_start_time (no special constraint beyond "open + not ended")
+    if (typeof bid_start_time !== 'undefined') {
       updateFields.push('bid_start_time = ?');
       values.push(bid_start_time);
+      changed.bid_start_time = bid_start_time;
     }
-    if (bid_closing_time) {
+
+    // Update bid_closing_time — cannot be set in the past
+    if (typeof bid_closing_time !== 'undefined') {
       if (isBeforeNow(bid_closing_time)) {
         return res.status(400).json({ message: 'bid_closing_time cannot be in the past.' });
       }
       updateFields.push('bid_closing_time = ?');
       values.push(bid_closing_time);
-    }
-    if (bid_reqs) {
-      updateFields.push('bid_reqs = ?');
-      values.push(JSON.stringify(bid_reqs));
+      changed.bid_closing_time = bid_closing_time;
     }
 
-    if (!updateFields.length) return res.status(400).json({ message: 'No fields provided for update.' });
+    // Update bid_reqs (array of carrier_IDs)
+    if (typeof bid_reqs !== 'undefined') {
+      updateFields.push('bid_reqs = ?');
+      values.push(JSON.stringify(bid_reqs));
+      changed.bid_reqs = bid_reqs;
+    }
+
+    // Update bid_value — allowed only if:
+    //  - bid_status is 'open' (already checked)
+    //  - bidding not ended (already checked)
+    //  - bid_closing_time not passed
+    //  - NO bids placed yet (all_bids empty or null)
+    if (typeof bid_value !== 'undefined') {
+      if (bid_value === null || bid_value === '') {
+        return res.status(400).json({ message: 'bid_value cannot be empty.' });
+      }
+      if (row.bid_closing_time && isBeforeNow(row.bid_closing_time)) {
+        return res.status(403).json({ message: 'Cannot update bid_value: bidding window is closed.' });
+      }
+      const existing = parseJSONSafe(row.all_bids, []);
+      if (Array.isArray(existing) && existing.length > 0) {
+        return res.status(400).json({ message: 'Cannot update bid_value: one or more bids already placed.' });
+      }
+
+      updateFields.push('bid_value = ?');
+      values.push(bid_value);
+      changed.bid_value = bid_value;
+    }
+
+    if (!updateFields.length) {
+      return res.status(400).json({ message: 'No fields provided for update.' });
+    }
 
     values.push(row.bid_id, order_ID);
     const q = `UPDATE assignment_bidding SET ${updateFields.join(', ')} WHERE bid_id = ? AND order_ID = ?`;
     await db.query(q, values);
 
-    return res.status(200).json({ message: 'Bid updated successfully.', order_ID, bid_id: row.bid_id });
+    return res.status(200).json({
+      message: 'Bid updated successfully.',
+      order_ID,
+      bid_id: row.bid_id,
+      updated: changed
+    });
   } catch (error) {
     logger.error('Error updating bid:', error);
     return res.status(500).json({ message: 'Server error.', error: error.message });
   }
 });
 
-/* =========================================================
-   PUT /update-bid-value
-   - Only when bid_status='open', not ended, window not closed
-   - Only if no bids yet
-   ========================================================= */
-router.put('/update-bid-value', jwtAuth.verifyToken, async (req, res) => {
-  try {
-    const { order_ID } = req.query;
-    const { bid_value } = req.body;
 
-    if (!order_ID) return res.status(400).json({ message: 'Missing required query parameter: order_ID' });
-    if (!bid_value) return res.status(400).json({ message: 'bid_value is required in body.' });
+/* =========================================================
+   POST /cancel-bid
+   - Body: { order_ID }
+   - Only when bid_status='open'
+   - Sets bid_status='cancelled', bid_end_time=now
+   - Updates orders.order_status='assignment pending'
+   ========================================================= */
+router.post('/cancel-bid', jwtAuth.verifyToken, async (req, res) => {
+  try {
+    const { order_ID } = req.body;
+    if (!order_ID) return res.status(400).json({ message: 'order_ID is required in body.' });
 
     const row = await getLatestNonCancelledBid(order_ID);
     if (!row) return res.status(404).json({ message: 'Bidding row not found for order_ID.' });
 
-    const { bid_id, all_bids, bid_end_time, bid_closing_time, bid_status } = row;
+    if (row.bid_end_time) return res.status(409).json({ message: 'Bidding already ended.' });
+    if (row.bid_status !== 'open') return res.status(409).json({ message: `Bidding already ${row.bid_status}.` });
 
-    if (bid_status !== 'open') return res.status(403).json({ message: 'Cannot update bid_value on non-open bids.' });
-    if (bid_end_time) return res.status(403).json({ message: 'Cannot update bid_value after bidding has ended.' });
-    if (bid_closing_time && isBeforeNow(bid_closing_time)) {
-      return res.status(403).json({ message: 'Cannot update bid_value: bidding window is closed.' });
-    }
+    await db.query(`
+      UPDATE assignment_bidding
+      SET bid_status = 'cancelled', bid_end_time = ?, finalised_bid = NULL
+      WHERE bid_id = ? AND order_ID = ?
+    `, [nowISO(), row.bid_id, order_ID]);
 
-    const bids = parseJSONSafe(all_bids, []);
-    if (Array.isArray(bids) && bids.length > 0) {
-      return res.status(400).json({ message: 'Cannot update bid_value: one or more bids already placed.' });
-    }
+    await db.query(`UPDATE orders SET order_status = 'assignment pending' WHERE order_ID = ?`, [order_ID]);
 
-    await db.query(`UPDATE assignment_bidding SET bid_value = ? WHERE bid_id = ? AND order_ID = ?`,
-      [bid_value, bid_id, order_ID]);
-
-    return res.status(200).json({ message: 'bid_value updated successfully.', order_ID, bid_id, bid_value });
+    return res.status(200).json({
+      message: 'Bid cancelled successfully.',
+      order_ID,
+      bid_id: row.bid_id,
+      bid_status: 'cancelled'
+    });
   } catch (error) {
-    logger.error('Error updating bid_value:', error);
+    logger.error('Error cancelling bid:', error);
     return res.status(500).json({ message: 'Server error.', error: error.message });
   }
 });
 
 /* =========================================================
-   POST /close-bid   (Cancel OR Finalise)
-   Body:
-     - order_ID (required)
-     - bid_status: 'cancelled' OR 'finalised' (required)
-     - If finalising: finalised_for (carrier_ID), finalised_bid (string/number)
-     - If cancelling only: finalised_bid should be null (ignored)
-   Effects:
-     - Sets bid_end_time = now
-     - Updates bid_status accordingly
-     - Updates orders.order_status accordingly
+   POST /close-bid  (auto-finalise lowest bid)
+   - Body: { order_ID }
+   - Only when bid_status='open'
+   - Picks lowest bid from all_bids; tie-break: earliest bid_placed_at
+   - Sets bid_status='closed', finalised_bid JSON, bid_end_time=now
+   - Updates orders.order_status='bidding finalised'
    ========================================================= */
 router.post('/close-bid', jwtAuth.verifyToken, async (req, res) => {
   try {
-    const { order_ID, bid_status, finalised_for, finalised_bid } = req.body;
-
-    if (!order_ID || !bid_status) {
-      return res.status(400).json({ message: 'order_ID and bid_status are required in body.' });
-    }
-    if (!['cancelled', 'finalised'].includes(bid_status)) {
-      return res.status(400).json({ message: "bid_status must be either 'cancelled' or 'finalised'." });
-    }
+    const { order_ID } = req.body;
+    if (!order_ID) return res.status(400).json({ message: 'order_ID is required in body.' });
 
     const row = await getLatestNonCancelledBid(order_ID);
     if (!row) return res.status(404).json({ message: 'Bidding row not found for order_ID.' });
 
-    if (row.bid_end_time) {
-      return res.status(409).json({ message: 'Bidding already ended.' });
-    }
-    if (row.bid_status !== 'open') {
-      // if it’s already cancelled/finalised, getLatestNonCancelledBid would have skipped cancelled,
-      // finalised will still be returned, so block here:
-      return res.status(409).json({ message: `Bidding already ${row.bid_status}.` });
+    if (row.bid_end_time) return res.status(409).json({ message: 'Bidding already ended.' });
+    if (row.bid_status !== 'open') return res.status(409).json({ message: `Bidding already ${row.bid_status}.` });
+
+    const bids = parseJSONSafe(row.all_bids, []);
+    if (!Array.isArray(bids) || bids.length === 0) {
+      return res.status(400).json({ message: 'No bids available to close.' });
     }
 
-    let finalisedObj = null;
-    let orderStatus = 'bidding cancelled';
-
-    if (bid_status === 'finalised') {
-      if (!finalised_for) {
-        return res.status(400).json({ message: 'finalised_for is required when bid_status is finalised.' });
+    // choose lowest; tie-break: earliest bid_placed_at
+    let lowest = null;
+    for (const b of bids) {
+      const amt = Number(b.bid_amount);
+      if (!Number.isFinite(amt)) continue;
+      if (!lowest || amt < lowest._amt ||
+         (amt === lowest._amt && Date.parse(b.bid_placed_at || '') < Date.parse(lowest.bid_placed_at || ''))) {
+        lowest = { ...b, _amt: amt };
       }
-      let amount = finalised_bid;
-
-      if (amount == null) {
-        // fallback to lowest amount for that carrier (or lowest overall if not found)
-        const bids = parseJSONSafe(row.all_bids, []);
-        const byCarrier = bids.filter(b => b.bid_from === finalised_for);
-        if (byCarrier.length) {
-          amount = Math.min(...byCarrier.map(b => Number(b.bid_amount)));
-        } else if (bids.length) {
-          amount = Math.min(...bids.map(b => Number(b.bid_amount)));
-        } else {
-          return res.status(400).json({ message: 'No bids available to finalise.' });
-        }
-      }
-
-      finalisedObj = { finalised_bid: String(amount), finalised_for };
-      orderStatus = 'bidding finalised';
     }
+    if (!lowest) return res.status(400).json({ message: 'No valid numeric bids to close.' });
+
+    const finalisedObj = { finalised_bid: String(lowest._amt), finalised_for: lowest.bid_from };
 
     await db.query(`
       UPDATE assignment_bidding
-      SET bid_status = ?, bid_end_time = ?, finalised_bid = ?
+      SET bid_status = 'closed', bid_end_time = ?, finalised_bid = ?
       WHERE bid_id = ? AND order_ID = ?
-    `, [
-      bid_status,
-      nowISO(),
-      finalisedObj ? JSON.stringify(finalisedObj) : null,
-      row.bid_id,
-      order_ID
-    ]);
+    `, [nowISO(), JSON.stringify(finalisedObj), row.bid_id, order_ID]);
 
-    await db.query(`UPDATE orders SET order_status = ? WHERE order_ID = ?`, [orderStatus, order_ID]);
+    await db.query(`UPDATE orders SET order_status = 'bidding finalised' WHERE order_ID = ?`, [order_ID]);
 
     return res.status(200).json({
-      message: (bid_status === 'cancelled') ? 'Bid cancelled successfully.' : 'Bid finalised successfully.',
+      message: 'Bid closed successfully.',
       order_ID,
       bid_id: row.bid_id,
-      bid_status,
+      bid_status: 'closed',
       finalised: finalisedObj
     });
   } catch (error) {

@@ -1486,6 +1486,8 @@ const WEATHER_CONCURRENCY = Number(cfg.weatherConcurrency || process.env.WEATHER
 
 // Traffic cache TTL (seconds)
 const TRAFFIC_CACHE_TTL = Number(cfg.trafficCacheTtl || process.env.TRAFFIC_CACHE_TTL || 120);
+// Route result cache TTL (seconds) for polyline + legs
+const ROUTE_CACHE_TTL = Number(cfg.routeCacheTtl || process.env.ROUTE_CACHE_TTL || 600);
 
 /* ---------------------- helpers ---------------------- */
 function buildRouteKey(locations) {
@@ -1577,7 +1579,6 @@ function departureBucket(epoch, minutes = 15) {
 }
 
 /* ---------------- WEATHER HELPERS (OpenWeather) ---------------- */
-// hardened: validate numbers so toFixed never gets undefined
 function wKey(lat, lng, units) {
   const la = Number(lat), lo = Number(lng);
   if (!Number.isFinite(la) || !Number.isFinite(lo)) throw new Error('Invalid lat/lng for weather key');
@@ -1589,7 +1590,6 @@ async function fetchWeatherPoint(lat, lng, units = WEATHER_UNITS_DEFAULT) {
   const cached = await getJSON(key);
   if (cached) return cached;
 
-  // NOTE: OpenWeather expects "lon", not "lng"
   const url = `https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lng}&appid=${OPENWEATHER_API_KEY}&units=${units}`;
   const resp = await axios.get(url, { timeout: AXIOS_TIMEOUT_MS });
   const d = resp.data || {};
@@ -1620,7 +1620,6 @@ async function getWeatherAlongRoute(points, { units = WEATHER_UNITS_DEFAULT, max
 
   const results = await runInBatches(use, WEATHER_CONCURRENCY, async (p) => {
     try {
-      // p is already normalized to {lat,lng} by callers that accept mixed shapes
       return await fetchWeatherPoint(p.lat, p.lng, units);
     } catch (e) {
       logger.warn('weather fetch failed at point', {
@@ -1647,7 +1646,6 @@ async function getWeatherAlongRoute(points, { units = WEATHER_UNITS_DEFAULT, max
 
 /* ------------------ ROUTING (Google / OSRM) ------------------ */
 async function fetchRouteGoogle(locations, { includeTraffic = false, departureTimeEpoch = 0 } = {}) {
-  // ensure no consecutive dupes to avoid zero-length legs
   locations = dedupeConsecutiveLocations(locations);
 
   const origin = locations[0];
@@ -1664,12 +1662,11 @@ async function fetchRouteGoogle(locations, { includeTraffic = false, departureTi
     `key=${GOOGLE_API_KEY}`
   ];
 
-  // request traffic metrics when asked
   if (includeTraffic) {
     const dep = normalizeDeparture(departureTimeEpoch);
-    params.push('region=IN'); // helps with routing in India; harmless elsewhere
+    params.push('region=IN');
     params.push('departure_time=' + dep);
-    params.push('traffic_model=best_guess'); // requires "departure_time" for duration_in_traffic
+    params.push('traffic_model=best_guess');
   }
 
   const url = `https://maps.googleapis.com/maps/api/directions/json?${params.filter(Boolean).join('&')}`;
@@ -1677,7 +1674,6 @@ async function fetchRouteGoogle(locations, { includeTraffic = false, departureTi
   const data = resp?.data || {};
   if (data.status !== 'OK') {
     const err = new Error(`Google error: ${data.status}${data.error_message ? ` - ${data.error_message}` : ''}`);
-    // log diagnostics
     logger.error('Google Directions failed', {
       status: data.status,
       error_message: data.error_message,
@@ -1723,14 +1719,12 @@ async function fetchRouteGoogle(locations, { includeTraffic = false, departureTi
     return base;
   });
 
-  // warn if traffic requested but missing (can happen on tiny/zero legs; we de-dupe to reduce this)
   if (includeTraffic && legs.some(l => l?.duration_in_traffic?.value == null)) {
     logger.warn('Google: duration_in_traffic missing for some legs', {
       legCount: legs.length
     });
   }
 
-  // route-level traffic summary if requested
   let trafficSummary = null;
   if (includeTraffic) {
     const delays = mappedLegs.map(l => +l.trafficDelaySec || 0);
@@ -1749,7 +1743,6 @@ async function fetchRouteGoogle(locations, { includeTraffic = false, departureTi
 }
 
 async function fetchRouteOSRM(locations) {
-  // de-dupe to keep parity with Google path
   locations = dedupeConsecutiveLocations(locations);
 
   const coords = locations.map(p => `${p.longitude},${p.latitude}`).join(';');
@@ -1797,18 +1790,14 @@ async function getOptimizedRouteWithLoad(locations, shipmentLoads, {
     throw new Error('Need at least origin and destination');
   }
 
-  // NEW: de-dupe consecutive identical coords to avoid zero legs
   locations = dedupeConsecutiveLocations(locations);
 
-  // cache key includes provider + traffic toggle + DEPARTURE BUCKET + coordinates
-  // also include sampling params only for fallback; we'll resample if 'shape' is cached.
   const depBucket = includeTraffic ? departureBucket(departureTimeEpoch) : 0;
   const cacheKey = `route:${cfg.routingProvider}:${includeTraffic ? 'T' : 'N'}:${depBucket}:${buildRouteKey(locations)}:${sampleEveryKm}:${maxSamplePoints}`;
   const cached = await getJSON(cacheKey);
   let optimizedRoute, sampledCoords, trafficSummary, shape;
 
   if (cached) {
-    // Backward compatibility if old cache had no 'shape'
     optimizedRoute = cached.optimizedRoute;
     trafficSummary = cached.trafficSummary || null;
     shape = cached.shape || null;
@@ -1825,7 +1814,6 @@ async function getOptimizedRouteWithLoad(locations, shipmentLoads, {
       ({ legs, shape: shapeLocal, trafficSummary: trafficSummaryLocal } = await fetchRouteGoogle(locations, { includeTraffic, departureTimeEpoch }));
     }
 
-    // Build optimizedRoute while computing cumulative load
     const builtRoute = [];
     let currentLoad = 0;
     legs.forEach((leg, i) => {
@@ -1844,11 +1832,9 @@ async function getOptimizedRouteWithLoad(locations, shipmentLoads, {
     sampledCoords = sampleRoutePoints(shape, sampleEveryKm, maxSamplePoints);
     trafficSummary = trafficSummaryLocal;
 
-    // Store 'shape' so future callers can resample differently
-    await setJSON(cacheKey, { optimizedRoute, shape, trafficSummary }, cfg.redisTTL);
+    await setJSON(cacheKey, { optimizedRoute, shape, trafficSummary }, ROUTE_CACHE_TTL);
   }
 
-  // Recompute loadAfterStop for the caller's shipments (in case cache came from different loads)
   let currentLoad = 0;
   const recomputed = optimizedRoute.map((leg, i) => {
     currentLoad += (shipmentLoads[i] || 0);
@@ -1970,7 +1956,14 @@ function checkPackageVehicleCompatibility(pkgF, vehF) {
   return true;
 }
 
-/* ---------- packaging helpers (ONLY from master_products) --------- */
+/* ---------- packaging helpers (ONLY master_products.packaging_type) --------- */
+function normalizePacId(pac) {
+  if (!pac) return null;
+  const s = String(pac).trim();
+  const m = s.match(/^PKG(\d+)$/i);
+  if (!m) return s;
+  return 'PKG' + m[1].padStart(6, '0');
+}
 function resolvePacIdsFromProduct(prodRow) {
   if (!prodRow) return [];
   let pt = prodRow.packaging_type;
@@ -1978,7 +1971,10 @@ function resolvePacIdsFromProduct(prodRow) {
     try { pt = JSON.parse(pt); } catch { pt = null; }
   }
   if (!Array.isArray(pt)) return [];
-  return pt.filter(x => x && x.pac_ID).map(x => x.pac_ID);
+  return pt
+    .filter(x => x && x.pac_ID)
+    .map(x => normalizePacId(x.pac_ID))
+  .filter(Boolean);
 }
 async function loadAllPackageInfo(pacIDs) {
   if (!pacIDs.length) return {};
@@ -1990,9 +1986,9 @@ async function loadAllPackageInfo(pacIDs) {
 function collectAllPacIDs(packagesData, productMap) {
   const ids = new Set();
   for (const pkg of packagesData) {
-    for (const line of pkg.products) {
+    for (const line of (pkg.products || [])) {
       const pacIds = resolvePacIdsFromProduct(productMap[line.prod_ID]);
-      pacIds.forEach(id => ids.add(id));
+      pacIds.forEach(id => id && ids.add(id));
     }
   }
   return [...ids];
@@ -2003,10 +1999,15 @@ async function sumPackageWeightVolume(pkg, productMap, pkgInfoMap) {
     const prod = productMap[line.prod_ID];
     if (!prod) continue;
     totalW += parseWeightAndUOM(prod.weight, prod.weight_uom) * line.quantity;
+
     const pacIds = resolvePacIdsFromProduct(prod);
-    if (pacIds.length) {
-      const info = pkgInfoMap[pacIds[0]];
-      if (info) totalV += parseVolumeAndUOM(info.pack_volume, info.pack_volume_uom) * line.quantity;
+    let info = pacIds.length ? (pkgInfoMap[pacIds[0]] || null) : null;
+    if (info) {
+      totalV += parseVolumeAndUOM(info.pack_volume, info.pack_volume_uom) * line.quantity;
+    } else {
+      // fallback: derive from product volume so we never drop items
+      const vol = parseVolumeAndUOM(prod.volume, prod.volume_uom);
+      if (vol > 0) totalV += vol * line.quantity;
     }
   }
   return { totalW, totalV };
@@ -2079,7 +2080,6 @@ async function findMinCostArrangement(cluster, vehicles, sourceLoc) {
       const locs = [sourceLoc, ...chosen.map(x => x.destination)];
       const shipments = new Array(chosen.length).fill(1);
 
-      // traffic off in solver recursion for speed/cost
       const { optimizedRoute, sampledCoords } = await getOptimizedRouteWithLoad(locs, shipments);
 
       const totalDist = optimizedRoute.reduce((s, leg) => s + parseDistanceText(leg.distance), 0);
@@ -2295,7 +2295,14 @@ function buildColorMapByProdPkg(packageInfoDetails) {
   return colorByKey;
 }
 
-/** tallest pack height helper (kept — sometimes used for UI summaries) */
+/** derive a cube from per-unit volume (m³) when no packaging dims exist */
+function deriveDimsFromVolumeM3(volM3) {
+  if (!volM3 || volM3 <= 0) return null;
+  const side = Math.cbrt(Number(volM3));
+  return { lengthM: side, widthM: side, heightM: side };
+}
+
+/** tallest pack height helper */
 function getMaxBoxHeight(packageInfoDetails) {
   let h = 0;
   for (const p of packageInfoDetails) {
@@ -2308,33 +2315,7 @@ function getMaxBoxHeight(packageInfoDetails) {
   return h || 0.5;
 }
 
-/** (legacy helper not used by new algorithm — safe to keep) */
-function explodePackage(pkgRecord, colorByKey) {
-  const out = [];
-  for (const l of (pkgRecord.lines || [])) {
-    const d = l.packagingDimensions;
-    if (!d) continue;
-    const L = +d.lengthM || 0, W = +d.widthM || 0, H = +d.heightM || 0;
-    const q = Number(l.quantity || 0);
-    const color = colorByKey[`${l.prod_ID}|${pkgRecord.pkg_ID}`] || '#999';
-    const allowedLayers = Math.max(1, Number(l.allowedLayers || 1));
-    for (let i = 0; i < q; i++) out.push({ pkg_ID: pkgRecord.pkg_ID, prod_ID: l.prod_ID, L, W, H, color, allowedLayers });
-  }
-  return out;
-}
-
-/* ========= NEW: stop-wise, vertical-first stacking algorithm =========
-   Axes assumption (consistent with your renderer):
-     X → along truck length (tailgate → cab)
-     Y → vertical (stacking)
-     Z → across truck width
-   For each stop (FILO: last stop placed first at small X):
-     • iterate items (biggest footprint first)
-     • at each floor slot, stack up to per-line maxLayers (min of truck height,
-       line stacking factor, and global allowedLayers), then move to next slot.
-     • advance Z across width; when out of width, reset Z and advance X by the
-       deepest L used in that Z-row (sliceDepth).
-   This prevents the flat “carpet” and keeps stops contiguous. */
+/* ========= 3D placement ========= */
 function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimensions, opts = {}) {
   const truck = {
     interiorWidthM: Number(vehicleDimensions?.interiorWidthM || 0),
@@ -2345,17 +2326,30 @@ function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimens
   const FRONT_GUTTER_X = Number(opts.frontGutter ?? 0.0);
   const LAYER_GAP = Number(opts.layerGap ?? 0.02);
 
-  // Global layer cap from vehicle (already derived from height & SF earlier)
   const allowedGlobalLayers = Math.max(1, Number(opts.maxLayers || 1));
 
   const colorByKey = buildColorMapByProdPkg(packageInfoDetails);
   const pkgMap = new Map(packageInfoDetails.map(p => [p.pkg_ID, p]));
 
-  // FILO: place highest stop number first (goes deepest at small X)
   const stopsDesc = [...loadArrangement].sort((a, b) => b.stop - a.stop);
 
-  // Helpers
+  const placements = [];
+  let globalLayersUsed = 0;
+
+  const Wmax = truck.interiorWidthM;
+  const Lmax = truck.interiorLengthM;
+
+  let cursorX = FRONT_GUTTER_X;
+  let cursorZ = 0;
+  let sliceDepth = 0;
+
   const colorFor = (prod_ID, pkg_ID) => colorByKey[`${prod_ID}|${pkg_ID}`] || '#999';
+
+  function advanceToNextSlice() {
+    cursorZ = 0;
+    cursorX = Math.min(Lmax, r3(cursorX + sliceDepth + FRONT_GUTTER_X));
+    sliceDepth = 0;
+  }
 
   function expandStopLines(stop) {
     const items = [];
@@ -2363,14 +2357,13 @@ function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimens
       const pkg = pkgMap.get(pkgId);
       if (!pkg) continue;
       for (const line of (pkg.lines || [])) {
-        const dims = line.packagingDimensions || {};
-        const L = +dims.lengthM || 0;
-        const W = +dims.widthM || 0;
-        const H = +dims.heightM || 0;
+        const dims = line.packagingDimensions || null;
+        if (!dims || !(+dims.lengthM > 0 && +dims.widthM > 0 && +dims.heightM > 0)) continue;
+
+        const L = +dims.lengthM, W = +dims.widthM, H = +dims.heightM;
         const qty = Number(line.quantity || 0);
         if (!(L > 0 && W > 0 && H > 0) || qty <= 0) continue;
 
-        // per-line layer cap: min(vehicle global cap, height cap, stacking factor cap)
         const heightCap = (truck.interiorHeightM > 0 && H > 0)
           ? Math.max(1, Math.floor(truck.interiorHeightM / H))
           : 1;
@@ -2387,7 +2380,6 @@ function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimens
         });
       }
     }
-    // Sort: bigger footprint first to avoid slivers; tie by height then prod
     items.sort((a, b) => {
       const va = a.L * a.W * a.H;
       const vb = b.L * b.W * b.H;
@@ -2398,28 +2390,9 @@ function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimens
     return items;
   }
 
-  const placements = [];
-  let globalLayersUsed = 0;
-
-  // Truck cursors
-  const Wmax = truck.interiorWidthM;
-  const Lmax = truck.interiorLengthM;
-
-  let cursorX = FRONT_GUTTER_X; // along length
-  let cursorZ = 0;              // across width
-  let sliceDepth = 0;           // deepest L used in current Z-row
-
-  function advanceToNextSlice() {
-    cursorZ = 0;
-    cursorX = Math.min(Lmax, r3(cursorX + sliceDepth + FRONT_GUTTER_X));
-    sliceDepth = 0;
-  }
-
-  // Iterate stops (FILO)
   for (const stop of stopsDesc) {
     const items = expandStopLines(stop);
     if (!items.length) {
-      // still start a new slice for a stop boundary (keeps bays separate)
       advanceToNextSlice();
       continue;
     }
@@ -2428,17 +2401,13 @@ function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimens
       let remaining = it.qty;
 
       while (remaining > 0) {
-        // width wrap
         if (cursorZ + it.W > Wmax + 1e-9) {
           advanceToNextSlice();
         }
-        // length overflow => truck full; stop placing further items
         if (cursorX + it.L > Lmax + 1e-9) {
           remaining = 0;
           break;
         }
-
-        // Build one vertical stack at this floor slot
         const layersHere = Math.min(it.maxLayers, remaining);
         for (let h = 0; h < layersHere; h++) {
           placements.push({
@@ -2452,15 +2421,12 @@ function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimens
         globalLayersUsed = Math.max(globalLayersUsed, layersHere);
         remaining -= layersHere;
 
-        // Update row bookkeeping
         sliceDepth = Math.max(sliceDepth, it.L);
         cursorZ = r3(cursorZ + it.W + Z_GUTTER);
       }
     }
-
-    // After finishing a stop, start a fresh X slice so stops don't interleave
     advanceToNextSlice();
-    if (cursorX >= Lmax - 1e-9) break; // truck full in length
+    if (cursorX >= Lmax - 1e-9) break;
   }
 
   return {
@@ -2481,6 +2447,7 @@ function generatePackageBlocks(boxPlacements) {
   }));
 }
 
+/** legend with correct top-level color */
 function buildProductLegend(loadArrangement, packageInfoDetails, colorByProdPkg) {
   const byProd = {};
   for (const stopEntry of loadArrangement) {
@@ -2490,13 +2457,16 @@ function buildProductLegend(loadArrangement, packageInfoDetails, colorByProdPkg)
       if (!p) continue;
       for (const l of (p.lines || [])) {
         if (!l?.prod_ID) continue;
+        const key = `${l.prod_ID}|${pkg_ID}`;
+        const lineColor = colorByProdPkg[key] || '#999';
         const rec = (byProd[l.prod_ID] ||= {
-          prod_ID: l.prod_ID, color: '#999', totalQty: 0, byPackage: {}, byStop: {}
+          prod_ID: l.prod_ID, color: lineColor, totalQty: 0, byPackage: {}, byStop: {}
         });
+        if (rec.color === '#999' && lineColor !== '#999') rec.color = lineColor;
+
         const q = Number(l.quantity || 0);
         rec.totalQty += q;
-        const key = `${l.prod_ID}|${pkg_ID}`;
-        const prev = rec.byPackage[pkg_ID] || { qty: 0, color: colorByProdPkg[key] || '#999' };
+        const prev = rec.byPackage[pkg_ID] || { qty: 0, color: lineColor };
         rec.byPackage[pkg_ID] = { qty: prev.qty + q, color: prev.color };
         rec.byStop[stop] = (rec.byStop[stop] || 0) + q;
       }
@@ -2511,6 +2481,41 @@ function buildProductLegend(loadArrangement, packageInfoDetails, colorByProdPkg)
   }));
 }
 
+/** Build expected counts and compare with placements (sanity) */
+function buildPlacementAudit(packagesData, allocationBoxPlacements, packageIDs) {
+  const expect = new Map(); // key: pack|prod -> qty
+  const wantPacks = new Set(packageIDs || packagesData.map(p => p.pack_ID));
+  for (const pkg of packagesData) {
+    if (!wantPacks.has(pkg.pack_ID)) continue;
+    for (const line of (pkg.products || [])) {
+      const k = `${pkg.pack_ID}|${line.prod_ID}`;
+      expect.set(k, (expect.get(k) || 0) + Number(line.quantity || 0));
+    }
+  }
+  const got = new Map();
+  for (const b of allocationBoxPlacements || []) {
+    const k = `${b.pkg_ID}|${b.prod_ID}`;
+    got.set(k, (got.get(k) || 0) + 1);
+  }
+  const missing = [];
+  const extra = [];
+  for (const [k, q] of expect.entries()) {
+    const g = got.get(k) || 0;
+    if (g < q) {
+      const [pack_ID, prod_ID] = k.split('|');
+      missing.push({ pack_ID, prod_ID, expected: q, placed: g, delta: q - g });
+    }
+  }
+  for (const [k, g] of got.entries()) {
+    const q = expect.get(k) || 0;
+    if (g > q) {
+      const [pack_ID, prod_ID] = k.split('|');
+      extra.push({ pack_ID, prod_ID, expected: q, placed: g, delta: g - q });
+    }
+  }
+  return { missing, extra };
+}
+
 /* -------------------------- ROUTES --------------------------- */
 
 // Create order (allocations) with optional traffic + weather
@@ -2523,7 +2528,6 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
     const includeTraffic = !!filters?.includeTraffic;
     const departureTimeEpoch = Number(filters?.traffic?.departureTimeEpoch || 0);
 
-    // Default to true if a weather key exists (caller can disable by send includeWeather:false)
     const includeWeather = (typeof filters?.includeWeather === 'boolean')
       ? !!filters.includeWeather
       : !!OPENWEATHER_API_KEY;
@@ -2560,20 +2564,24 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
     );
     const productMap = prodRows.reduce((m, r) => (m[r.product_ID] = r, m), {});
 
-    // 3) packaging info
+    // 3) packaging info (STRICTLY from master_products.packaging_type)
     const allPacIDs = collectAllPacIDs(packagesData, productMap);
     const packagingInfoMap = await loadAllPackageInfo(allPacIDs);
 
-    // tallest package height
+    // tallest package height from product packaging_type (fallback to derived cube if needed)
     const heights = allLines.map(l => {
       const prod = productMap[l.prod_ID];
       const pacIds = resolvePacIdsFromProduct(prod);
       const info = pacIds[0] ? packagingInfoMap[pacIds[0]] : null;
-      return info ? parseDimension(`${info.pack_height} ${info.dimensions_uom}`) : 0;
+      if (info) return parseDimension(`${info.pack_height} ${info.dimensions_uom}`);
+      // derived cube from product volume
+      const vol = parseVolumeAndUOM(prod.volume, prod.volume_uom);
+      const cube = deriveDimsFromVolumeM3(vol);
+      return cube?.heightM || 0;
     }).filter(Boolean);
     const maxPkgH = heights.length ? Math.max(...heights) : 0;
 
-    // global stacking factor cap
+    // global stacking factor cap (from master_products.stacking_factor)
     const sfCaps = allLines.map(l => {
       const raw = productMap[l.prod_ID]?.stacking_factor;
       if (raw === null || raw === undefined || raw === '') return 1;
@@ -2599,7 +2607,7 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
 
       const maxLayersByHeight = (maxPkgH > 0 && H > 0) ? Math.max(1, Math.floor(H / maxPkgH)) : 1;
       const truckAllowedLayers = Math.min(maxLayersByHeight, globalSfCap);
-      const oneLayerM3 = (maxPkgH > 0) ? (W * L * maxPkgH) : 0;
+      const oneLayerM3 = (maxPkgH > 0 && W > 0 && L > 0) ? (W * L * maxPkgH) : 0;
       const usableVol = oneLayerM3 * truckAllowedLayers;
 
       const weightCapKg = parseWeightAndUOM(caps.payload_weight, caps.payload_weight_unit);
@@ -2659,20 +2667,30 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
         const pkgRecord = packagesData.find(p => p.pack_ID === pkgID);
         const lines = (pkgRecord?.products || []).map(line => {
           const prod = productMap[line.prod_ID];
-          const pacIds = resolvePacIdsFromProduct(prod);
-          const firstPac = pacIds[0] || null;
-          const packInfo = firstPac ? packagingInfoMap[firstPac] : null;
+
+          // CHOOSE PAC STRICTLY FROM master_products.packaging_type
+          const prodPacList = resolvePacIdsFromProduct(prod);
+          const chosenPac = prodPacList.find(pac => packagingInfoMap[pac]) || prodPacList[0] || null;
+          const packInfo = chosenPac ? packagingInfoMap[chosenPac] : null;
 
           const sfRaw = prod?.stacking_factor;
           const stacking_factor = (sfRaw === '' ? null : sfRaw);
           const sfNum = Number(stacking_factor);
           const sfCap = (!sfNum || isNaN(sfNum) || sfNum <= 1) ? 1 : sfNum;
 
-          const dims = packInfo ? {
-            lengthM: parseDimension(`${packInfo.pack_length} ${packInfo.dimensions_uom}`),
-            widthM: parseDimension(`${packInfo.pack_width}  ${packInfo.dimensions_uom}`),
-            heightM: parseDimension(`${packInfo.pack_height} ${packInfo.dimensions_uom}`)
-          } : null;
+          let dims = null;
+          if (packInfo) {
+            dims = {
+              lengthM: parseDimension(`${packInfo.pack_length} ${packInfo.dimensions_uom}`),
+              widthM:  parseDimension(`${packInfo.pack_width}  ${packInfo.dimensions_uom}`),
+              heightM: parseDimension(`${packInfo.pack_height} ${packInfo.dimensions_uom}`)
+            };
+          } else {
+            // fallback from product volume (cube) — prevents skipping
+            const vol = parseVolumeAndUOM(prod.volume, prod.volume_uom);
+            const derived = deriveDimsFromVolumeM3(vol);
+            if (derived) dims = derived;
+          }
 
           let allowedLayers = 1;
           if (dims?.heightM && heightM) {
@@ -2683,7 +2701,7 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
           return {
             prod_ID: line.prod_ID,
             quantity: line.quantity,
-            pac_ID: firstPac,
+            pac_ID: chosenPac,
             stacking_factor,
             sfCap,
             package_info: packInfo,
@@ -2695,6 +2713,7 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
         return { pkg_ID: pkgID, lines };
       });
 
+      // layer caps summary
       const perLineLayers = [];
       packageInfoDetails.forEach(p => {
         (p.lines || []).forEach(l => {
@@ -2735,16 +2754,23 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
         packageInfoDetails,
         { interiorWidthM: widthM, interiorLengthM: lengthM, interiorHeightM: heightM },
         {
-          maxLayers: Math.max(1, v.allowedLayers || 1), // global per-truck cap
+          maxLayers: Math.max(1, v.allowedLayers || 1),
           zGutter: 0.0,
           frontGutter: 0.0,
           layerGap: 0.02,
-          layerHeight: tallestH // not used by the algorithm but harmless to pass
+          layerHeight: tallestH
         }
       );
 
       const boxPlacements = generatePackageBlocks(rawPlacements);
       const productLegend = buildProductLegend(a.loadArrangement, packageInfoDetails, colorByProdPkg);
+
+      // audit: verify no missing items in placements
+      const placementAudit = buildPlacementAudit(
+        packagesData.filter(p => a.packages.includes(p.pack_ID)),
+        boxPlacements,
+        a.packages
+      );
 
       // Attach weather if requested
       let weatherAlongRoute = undefined;
@@ -2766,7 +2792,6 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
         }
       }
 
-      // Compute traffic summary if route has traffic fields but summary missing
       let trafficSummary = a.trafficSummary || null;
       if (includeTraffic && !trafficSummary && Array.isArray(a.route)) {
         const delays = a.route.map(l => +l.trafficDelaySec || 0);
@@ -2784,6 +2809,7 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
       return {
         ...a,
         boxPlacements,
+        placementAudit,
         vehicleDimensions: { interiorWidthM: widthM, interiorLengthM: lengthM, interiorHeightM: heightM },
         packageInfoDetails,
 
@@ -2805,7 +2831,6 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
           perLineLayers
         },
 
-        // new optional extras
         weatherAlongRoute,
         weatherSummary,
         trafficSummary
@@ -2859,10 +2884,8 @@ router.post('/sample-route', jwtAuth.verifyToken, async (req, res) => {
     const shipments = new Array(Math.max(0, locations.length - 1)).fill(0);
     const { sampledCoords } = await getOptimizedRouteWithLoad(locations, shipments);
 
-    // respond first
     res.status(200).json({ sampledRoutePoints: sampledCoords });
 
-    // non-blocking telemetry
     noBlock(logApiPerf('/sample-route', Date.now() - t0, true), 'logApiPerf(/sample-route)');
     noBlock(emit('route.sampled', { points: sampledCoords, at: Date.now() }), 'emit(route.sampled)');
   } catch (err) {
@@ -2874,7 +2897,7 @@ router.post('/sample-route', jwtAuth.verifyToken, async (req, res) => {
 
 /* ---------------- helper endpoints ---------------- */
 
-// Traffic: returns legs + summary (Google only) — cached + non-blocking telemetry
+// Traffic: returns legs + summary (Google only)
 router.post('/route/traffic', jwtAuth.verifyToken, async (req, res) => {
   const t0 = Date.now();
   try {
@@ -2907,10 +2930,8 @@ router.post('/route/traffic', jwtAuth.verifyToken, async (req, res) => {
 
     const payload = { provider: 'google', legs, summary: trafficSummary };
 
-    // respond immediately
     res.status(200).json(payload);
 
-    // background cache + telemetry
     noBlock(setJSON(cacheKey, payload, TRAFFIC_CACHE_TTL), 'traffic cache set');
     noBlock(logApiPerf('/route/traffic', Date.now() - t0, true), 'logApiPerf(/route/traffic)');
     noBlock(emit('route.traffic', { legs, summary: trafficSummary, at: Date.now() }), 'emit(route.traffic)');
@@ -2944,16 +2965,13 @@ router.post('/route/weather', jwtAuth.verifyToken, async (req, res) => {
       return res.status(400).json({ error: 'Provide points[] or locations[] (>=2)' });
     }
 
-    // NEW: normalize potential {latitude,longitude} inputs to {lat,lng}
     const normalized = usePoints.map(normalizePoint);
 
     const { pointsWeather, summary } = await getWeatherAlongRoute(normalized, { units, maxPoints });
 
-    // respond first
     const payload = { units, pointsWeather, summary };
     res.status(200).json(payload);
 
-    // non-blocking telemetry
     noBlock(logApiPerf('/route/weather', Date.now() - t0, true), 'logApiPerf(/route/weather)');
     noBlock(emit('route.weather', { count: pointsWeather.length, at: Date.now() }), 'emit(route.weather)');
   } catch (err) {

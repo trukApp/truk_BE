@@ -707,7 +707,7 @@ router.put('/edit-bid', jwtAuth.verifyToken, async (req, res) => {
    ========================================================= */
 router.post('/cancel-bid', jwtAuth.verifyToken, async (req, res) => {
   try {
-    const { order_ID } = req.body;
+    const { order_ID } = req.query;
     if (!order_ID) return res.status(400).json({ message: 'order_ID is required in body.' });
 
     const row = await getLatestNonCancelledBid(order_ID);

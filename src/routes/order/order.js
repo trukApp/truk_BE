@@ -2156,6 +2156,80 @@ function generateUnallocationReason(pkgInfo, vehicles) {
 }
 
 /* ---------------- allocation orchestration ---------------- */
+
+/** helper to build packageInfoDetails (lines with dims & per-line layer caps) */
+function buildPackageInfoDetailsFor(packIDs, packagesData, productMap, packagingInfoMap, vehicleHeightM) {
+  const list = [];
+  for (const pkgID of packIDs) {
+    const pkgRecord = packagesData.find(p => p.pack_ID === pkgID);
+    if (!pkgRecord) continue;
+    const lines = (pkgRecord.products || []).map(line => {
+      const prod = productMap[line.prod_ID];
+      const prodPacList = resolvePacIdsFromProduct(prod);
+      const chosenPac = prodPacList.find(pac => packagingInfoMap[pac]) || prodPacList[0] || null;
+      const packInfo = chosenPac ? packagingInfoMap[chosenPac] : null;
+
+      const sfRaw = prod?.stacking_factor;
+      const stacking_factor = (sfRaw === '' ? null : sfRaw);
+      const sfNum = Number(stacking_factor);
+      const sfCap = (!sfNum || isNaN(sfNum) || sfNum <= 1) ? 1 : sfNum;
+
+      let dims = null;
+      if (packInfo) {
+        dims = {
+          lengthM: parseDimension(`${packInfo.pack_length} ${packInfo.dimensions_uom}`),
+          widthM:  parseDimension(`${packInfo.pack_width}  ${packInfo.dimensions_uom}`),
+          heightM: parseDimension(`${packInfo.pack_height} ${packInfo.dimensions_uom}`)
+        };
+      } else {
+        const vol = parseVolumeAndUOM(prod.volume, prod.volume_uom);
+        const derived = deriveDimsFromVolumeM3(vol);
+        if (derived) dims = derived;
+      }
+
+      let allowedLayers = 1;
+      if (dims?.heightM && vehicleHeightM) {
+        const heightCap = Math.max(1, Math.floor(vehicleHeightM / dims.heightM));
+        allowedLayers = Math.min(heightCap, sfCap);
+      }
+
+      return {
+        prod_ID: line.prod_ID,
+        quantity: line.quantity,
+        pac_ID: chosenPac,
+        stacking_factor,
+        sfCap,
+        package_info: packInfo,
+        packagingDimensions: dims,
+        allowedLayers
+      };
+    });
+    list.push({ pkg_ID: pkgID, lines });
+  }
+  return list;
+}
+
+/** minimal validator: does a placement cover all expected units? */
+function placementCoversAll(packIDs, packagesData, placements) {
+  const expect = new Map();
+  for (const pkg of packagesData) {
+    if (!packIDs.includes(pkg.pack_ID)) continue;
+    for (const line of (pkg.products || [])) {
+      const k = `${pkg.pack_ID}|${line.prod_ID}`;
+      expect.set(k, (expect.get(k) || 0) + Number(line.quantity || 0));
+    }
+  }
+  const got = new Map();
+  for (const b of placements || []) {
+    const k = `${b.pkg_ID}|${b.prod_ID}`;
+    got.set(k, (got.get(k) || 0) + 1);
+  }
+  for (const [k, q] of expect.entries()) {
+    if ((got.get(k) || 0) < q) return false;
+  }
+  return true;
+}
+
 async function allocatePackages(packagesData, vehicles, sourceLocation, productMap, packagingInfoMap, extra = {}) {
   const {
     includeTraffic = false,
@@ -2167,8 +2241,12 @@ async function allocatePackages(packagesData, vehicles, sourceLocation, productM
   let totalCost = 0;
   const pkgInfos = [];
 
+  // quick lookup for per-package volume (used later during splitting)
+  const pkgVolumeById = new Map();
+
   for (const pkg of packagesData) {
     const { totalW, totalV } = await sumPackageWeightVolume(pkg, productMap, packagingInfoMap);
+    pkgVolumeById.set(pkg.pack_ID, totalV);
     const destLoc = await getLocationById(pkg.ship_to);
     const bearing = getBearing(sourceLocation.latitude, sourceLocation.longitude, destLoc.latitude, destLoc.longitude);
     const dir8 = getDirection8(bearing);
@@ -2186,6 +2264,63 @@ async function allocatePackages(packagesData, vehicles, sourceLocation, productM
   }
 
   const groups = groupPackagesByDirection(pkgInfos);
+
+  /** helper to build a single allocation for a given subset */
+  const buildAllocationForSubset = async (subset, vehicle) => {
+    const sumW = subset.reduce((s, g) => s + g.totalWeight, 0);
+    const sumV = subset.reduce((s, g) => s + g.totalVolume, 0);
+
+    subset.sort((a, b) => a.distFromSource - b.distFromSource);
+    const routeLocs = [sourceLocation, ...subset.map(g => g.destination)];
+    const shipments = new Array(subset.length).fill(1);
+
+    const { optimizedRoute, sampledCoords, trafficSummary } =
+      await getOptimizedRouteWithLoad(routeLocs, shipments, {
+        includeTraffic,
+        departureTimeEpoch,
+        sampleEveryKm: weatherOpts.sampleEveryKm || WEATHER_SAMPLE_EVERY_KM_DEFAULT,
+        maxSamplePoints: weatherOpts.maxPoints || WEATHER_MAX_POINTS_DEFAULT
+      });
+
+    const totalDist = optimizedRoute.reduce((s, leg) => s + parseDistanceText(leg.distance), 0);
+    const tons = sumW / 1000;
+    const cost = tons * vehicle.cost_per_ton * totalDist;
+
+    let loadArr = [], remainIDs = subset.map(g => g.pack_ID);
+    optimizedRoute.forEach((leg, i) => {
+      const stop = i + 1, using = [];
+      remainIDs.forEach(id => {
+        const pkg = subset.find(g => g.pack_ID === id);
+        if (pkg &&
+            pkg.destination.latitude === leg.end.latitude &&
+            pkg.destination.longitude === leg.end.longitude) {
+          using.push(id);
+        }
+      });
+      if (using.length) {
+        using.forEach(id => remainIDs.splice(remainIDs.indexOf(id), 1));
+        loadArr.push({ stop, location: leg.end.address, packages: using });
+      }
+    });
+
+    return {
+      vehicle_ID: vehicle.vehicle_ID,
+      totalWeightCapacity: vehicle.totalWeightCapacity,
+      totalVolumeCapacity: vehicle.totalVolumeCapacity,
+      occupiedWeight: sumW,
+      occupiedVolume: sumV,
+      leftoverWeight: vehicle.weightCapKg - sumW,
+      leftoverVolume: vehicle.volumeCapM3 - sumV,
+      cost,
+      packages: subset.map(g => g.pack_ID),
+      pkgVolumes: subset.map(g => g.totalVolume),
+      route: optimizedRoute,
+      trafficSummary,
+      loadArrangement: loadArr,
+      sampledRoutePoints: sampledCoords
+    };
+  };
+
   for (const group of groups) {
     const sumW = group.reduce((s, g) => s + g.totalWeight, 0);
     const sumV = group.reduce((s, g) => s + g.totalVolume, 0);
@@ -2206,58 +2341,78 @@ async function allocatePackages(packagesData, vehicles, sourceLocation, productM
       feasible.sort((a, b) => a.cost_per_ton - b.cost_per_ton);
       const chosen = feasible[0];
 
-      group.sort((a, b) => a.distFromSource - b.distFromSource);
-      const routeLocs = [sourceLocation, ...group.map(g => g.destination)];
-      const shipments = new Array(group.length).fill(1);
+      // First: build single-vehicle allocation
+      const alloc = await buildAllocationForSubset(group, chosen);
 
-      const { optimizedRoute, sampledCoords, trafficSummary } =
-        await getOptimizedRouteWithLoad(routeLocs, shipments, {
-          includeTraffic,
-          departureTimeEpoch,
-          sampleEveryKm: weatherOpts.sampleEveryKm || WEATHER_SAMPLE_EVERY_KM_DEFAULT,
-          maxSamplePoints: weatherOpts.maxPoints || WEATHER_MAX_POINTS_DEFAULT
-        });
+      // Validate with geometry (FILO + SF aware). If not all units get placed, split into 2 vehicles.
+      let needsSplit = false;
+      try {
+        const widthM  = chosen.interiorWidthM;
+        const lengthM = chosen.interiorLengthM;
+        const heightM = chosen.interiorHeightM;
 
-      const totalDist = optimizedRoute.reduce((s, leg) => s + parseDistanceText(leg.distance), 0);
-      const tons = sumW / 1000;
-      const cost = tons * chosen.cost_per_ton * totalDist;
-      totalCost += cost;
+        const packageInfoDetails = buildPackageInfoDetailsFor(
+          alloc.packages,
+          packagesData,
+          productMap,
+          packagingInfoMap,
+          heightM
+        );
 
-      let loadArr = [], remainIDs = group.map(g => g.pack_ID);
-      optimizedRoute.forEach((leg, i) => {
-        const stop = i + 1, using = [];
-        remainIDs.forEach(id => {
-          const pkg = group.find(g => g.pack_ID === id);
-          if (pkg &&
-              pkg.destination.latitude === leg.end.latitude &&
-              pkg.destination.longitude === leg.end.longitude) {
-            using.push(id);
+        const { placements } = computeBoxPlacements(
+          alloc.loadArrangement,
+          packageInfoDetails,
+          { interiorWidthM: widthM, interiorLengthM: lengthM, interiorHeightM: heightM },
+          {
+            maxLayers: Math.max(1, chosen.allowedLayers || 1),
+            zGutter: 0.0,
+            frontGutter: 0.0,
+            layerGap: 0.02
           }
-        });
-        if (using.length) {
-          using.forEach(id => remainIDs.splice(remainIDs.indexOf(id), 1));
-          loadArr.push({ stop, location: leg.end.address, packages: using });
-        }
-      });
+        );
 
-      allocations.push({
-        vehicle_ID: chosen.vehicle_ID,
-        totalWeightCapacity: chosen.totalWeightCapacity,
-        totalVolumeCapacity: chosen.totalVolumeCapacity,
-        occupiedWeight: sumW,
-        occupiedVolume: group.reduce((s, g) => s + g.totalVolume, 0),
-        leftoverWeight: chosen.weightCapKg - sumW,
-        leftoverVolume: chosen.volumeCapM3 - group.reduce((s, g) => s + g.totalVolume, 0),
-        cost,
-        packages: group.map(g => g.pack_ID),
-        pkgVolumes: group.map(g => g.totalVolume),
-        route: optimizedRoute,
-        trafficSummary,
-        loadArrangement: loadArr,
-        sampledRoutePoints: sampledCoords
-      });
+        if (!placementCoversAll(alloc.packages, packagesData, placements)) {
+          needsSplit = true;
+        }
+      } catch (e) {
+        // if validator throws, fall back to split attempt (safer)
+        needsSplit = true;
+      }
+
+      if (!needsSplit) {
+        allocations.push(alloc);
+        totalCost += alloc.cost;
+      } else {
+        // Try a simple split: early stops in vehicle A, later stops in vehicle B
+        // Get packages in route order (by stops)
+        const orderedPkgIDs = [];
+        alloc.loadArrangement.sort((a, b) => a.stop - b.stop).forEach(s => {
+          (s.packages || []).forEach(id => { if (!orderedPkgIDs.includes(id)) orderedPkgIDs.push(id); });
+        });
+        const half = Math.ceil(orderedPkgIDs.length / 2);
+        const setA = new Set(orderedPkgIDs.slice(0, half));
+        const subsetA = group.filter(g => setA.has(g.pack_ID));
+        const subsetB = group.filter(g => !setA.has(g.pack_ID));
+
+        // choose second vehicle (next cheapest feasible) or reuse chosen if none
+        const second = feasible[1] || chosen;
+
+        const allocA = subsetA.length ? await buildAllocationForSubset(subsetA, chosen) : null;
+        const allocB = subsetB.length ? await buildAllocationForSubset(subsetB, second) : null;
+
+        // push whichever exist
+        if (allocA) { allocations.push(allocA); totalCost += allocA.cost; }
+        if (allocB) { allocations.push(allocB); totalCost += allocB.cost; }
+
+        // If still nothing (shouldn't happen), fall back to original alloc
+        if (!allocA && !allocB) {
+          allocations.push(alloc);
+          totalCost += alloc.cost;
+        }
+      }
 
     } else {
+      // fall back to multi-vehicle backtracking (existing logic)
       const { cost, allocations: subAllocs, unallocated } =
         await findMinCostArrangement(group, vehicles, sourceLocation);
       totalCost += cost;
@@ -2354,11 +2509,19 @@ function getMaxBoxHeight(packageInfoDetails) {
   return h || 0.5;
 }
 
-/* ========= FIXED: 3D placement (FILO, row-by-row, SF-aware) =========
-   - Packs each stop in a "slice" of truck length.
-   - Fills rows across width (Z). Only advances X when a stop is done.
-   - Respects per-line stacking factor and truck height.
-   - position = [x, y, z]; dimensions = [length, height, width]
+/* ========= 3D placement (FILO, row-by-row, SF-aware) with viewer-axis mapping =========
+   INTERNAL solver axes:
+     - xLen: length from BULKHEAD (deep) toward the DOOR
+     - zWid: width (left -> right)
+     - y:    up
+   VIEWER axes (FE expects):
+     - X = width
+     - Z = length from the DOOR toward the BULKHEAD
+     - Y = up
+   Mapping when emitting:
+     viewerX = zWid
+     viewerZ = truckLen - (xLen + blockLen)
+     dims    = [length, height, width]
 */
 function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimensions, opts = {}) {
   const truck = {
@@ -2382,11 +2545,12 @@ function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimens
   const placements = [];
   let maxLayersUsed = 1;
 
-  const W = truck.interiorWidthM;
-  const L = truck.interiorLengthM;
-  const H = truck.interiorHeightM;
+  const W = truck.interiorWidthM;   // width
+  const L = truck.interiorLengthM;  // length
+  const H = truck.interiorHeightM;  // height
 
-  let cursorX = 0; // front-to-back (0 is deepest), door is near L
+  // solver cursor along LENGTH from BULKHEAD (deep) toward DOOR
+  let cursorX = 0;
 
   function expandStopLines(stop) {
     const items = [];
@@ -2401,7 +2565,6 @@ function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimens
         const qty = Number(line.quantity || 0);
         if (!(Lp > 0 && Wp > 0 && Hp > 0) || qty <= 0) continue;
 
-        // vertical layers allowed by truck height & product SF
         const hCap = Math.max(1, Math.floor(H / Hp));
         const lineSfCap = Math.max(1, Number(line.sfCap || line.stacking_factor || line.allowedLayers || 1));
         const perStackMax = Math.min(hCap, lineSfCap, allowedGlobalLayers);
@@ -2410,96 +2573,89 @@ function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimens
           pkg_ID: pkgId,
           prod_ID: line.prod_ID,
           qty,
-          L: Lp,
-          W: Wp,
-          H: Hp,
+          L: Lp, W: Wp, H: Hp,
           perStackMax,
           color: colorByKey[`${line.prod_ID}|${pkgId}`] || '#999'
         });
       }
     }
-
-    // pack largest footprints first (then taller)
+    // larger footprint first, then taller
     items.sort((a, b) => {
       const fa = a.L * a.W, fb = b.L * b.W;
       if (fb !== fa) return fb - fa;
       if (b.H !== a.H) return b.H - a.H;
       return String(a.prod_ID).localeCompare(String(b.prod_ID));
     });
-
     return items;
   }
 
-  function placeStopSlice(items) {
-    // Row-based packing across Z; track deepest length used by any row in this stop.
-    let rowZ = 0;
-    let rowWidthUsed = 0;
-    let sliceDepthX = 0; // how much length this stop consumes
-    let rows = 0;
+  function emitPlacement(xLen, y, zWid, len, ht, wid) {
+    const viewerX = r3(Math.max(0, Math.min(W - wid, zWid)));
+    const viewerZ = r3(Math.max(0, Math.min(L - len, L - (xLen + len))));
+    return {
+      position: [viewerX, y, viewerZ],
+      dimensions: [r3(len), r3(ht), r3(wid)]
+    };
+  }
 
-    // helper to start a new row within current stop slice
-    function newRow() {
-      rowZ = 0;
-      rowWidthUsed = 0;
-      rows += 1;
-    }
+  function placeStopSlice(items) {
+    let rowZ = 0;             // width cursor within this slice
+    let rowWidthUsed = 0;
+    let sliceDepthX = 0;      // length consumed by this stop slice
+    function newRow() { rowZ = 0; rowWidthUsed = 0; }
+
     newRow();
 
     for (const it of items) {
       let remaining = it.qty;
 
       while (remaining > 0) {
-        // prefer orientation that uses less length (helps keep slice shallow)
         const o1 = { l: it.L, w: it.W };
         const o2 = { l: it.W, w: it.L };
         const candidates = [o1, o2].sort((a, b) => a.l - b.l);
 
         let chosen = null;
-        // Try to fit in current row; if width overflow, start a new row and retry
+
+        // try in current row; if width full, start a new row and retry once
         for (let attempt = 0; attempt < 2 && !chosen; attempt++) {
-          if (rowWidthUsed + Math.min(o1.w, o2.w) > W + EPS) {
-            // width is full -> start a new row in same slice
-            newRow();
-          }
+          if (rowWidthUsed + Math.min(o1.w, o2.w) > W + EPS) newRow();
           for (const o of candidates) {
-            const nextRowLen = Math.max(sliceDepthX, o.l);
-            // Check width fit and length headroom
-            if (rowWidthUsed + o.w <= W + EPS && cursorX + nextRowLen <= L + EPS) {
-              chosen = o;
-              break;
+            const nextDepth = Math.max(sliceDepthX, o.l);
+            if (rowWidthUsed + o.w <= W + EPS && cursorX + nextDepth <= L + EPS) {
+              chosen = o; break;
             }
           }
         }
+        if (!chosen) return { placedAll: false, sliceDepthX };
 
-        if (!chosen) {
-          // No orientation could fit within remaining truck length -> stop packing this stop
-          return { placedAll: false, sliceDepthX };
-        }
-
-        // number of units we can stack here vertically
         const stackCount = Math.min(it.perStackMax, remaining);
 
-        // place the stack
         for (let h = 0; h < stackCount; h++) {
+          const p = emitPlacement(
+            cursorX,
+            r3(h * (it.H + LAYER_GAP)),
+            rowZ,
+            chosen.l,
+            it.H,
+            chosen.w
+          );
           placements.push({
             pkg_ID: it.pkg_ID,
             prod_ID: it.prod_ID,
             color: it.color,
-            position: [r3(cursorX), r3(h * (it.H + LAYER_GAP)), r3(rowZ)],
-            dimensions: [r3(chosen.l), r3(it.H), r3(chosen.w)]
+            position: p.position,
+            dimensions: p.dimensions
           });
         }
         maxLayersUsed = Math.max(maxLayersUsed, stackCount);
 
-        // advance row Z and update depth used by this stop-slice
         rowZ = r3(rowZ + chosen.w + Z_GUTTER);
-        rowWidthUsed = rowZ; // since rowZ starts at 0, rowWidthUsed mirrors it (plus gutter)
+        rowWidthUsed = rowZ;
         sliceDepthX = Math.max(sliceDepthX, chosen.l);
 
         remaining -= stackCount;
       }
     }
-
     return { placedAll: true, sliceDepthX };
   }
 
@@ -2508,10 +2664,9 @@ function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimens
     if (!items.length) continue;
 
     const { placedAll, sliceDepthX } = placeStopSlice(items);
-    // advance X for next (earlier) stop
+    // move our LENGTH cursor toward the DOOR for the next (earlier) stop
     cursorX = r3(cursorX + FRONT_GUTTER_X + sliceDepthX);
 
-    // If we already ran out of length, we can't place further stops
     if (cursorX > L + EPS || !placedAll) break;
   }
 
@@ -2712,6 +2867,9 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
         maxLayersByHeight,
         maxLayers: maxLayersByHeight,
         allowedLayers: truckAllowedLayers,
+        interiorWidthM: W,
+        interiorLengthM: L,
+        interiorHeightM: H,
         cost_per_ton: +safeJsonParse(v.additional_details, {}).cost_per_ton || 0
       };
     });
@@ -2745,9 +2903,9 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
       const v = fleet.find(x => x.vehicle_ID === a.vehicle_ID) || {};
       const caps = v.capacity || {};
 
-      const widthM = parseDimension(caps.interior_width);
-      const lengthM = parseDimension(caps.interior_length);
-      const heightM = parseDimension(caps.interior_height);
+      const widthM = parseDimension(caps.interior_width) || v.interiorWidthM;
+      const lengthM = parseDimension(caps.interior_length) || v.interiorLengthM;
+      const heightM = parseDimension(caps.interior_height) || v.interiorHeightM;
 
       const packageInfoDetails = a.packages.map(pkgID => {
         const pkgRecord = packagesData.find(p => p.pack_ID === pkgID);

@@ -1523,9 +1523,14 @@ function sampleRoutePoints(coords, intervalKm = 20, maxPoints = Infinity) {
   }
   return sampled;
 }
-function parseDistanceText(txt) {
-  return parseFloat(txt.replace(/[^\d.]/g, '')) || 0;
+function parseDistanceText(txt = '') {
+  if (!txt) return 0;
+  const num = parseFloat(String(txt).replace(/[^\d.]/g, '')) || 0;
+  if (/km/i.test(txt)) return num;        // already in km
+  if (/\bm\b/i.test(txt)) return num / 1000; // meters -> km
+  return num; // assume km if unit missing
 }
+
 const kmText = m => `${(m / 1000).toFixed(1)} km`;
 const minText = s => `${Math.round(s / 60)} mins`;
 
@@ -1848,8 +1853,9 @@ async function getOptimizedRouteWithLoad(locations, shipmentLoads, {
 function getBearing(lat1, lon1, lat2, lon2) {
   const toRad = d => d * Math.PI / 180;
   const y = Math.sin(toRad(lon2 - lon1)) * Math.cos(toRad(lat2));
-  const x = Math.cos(toRad(lat1)) * Math.sin(toRad(lat2)) -
-    Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(toRad(lon2 - lon1));
+  const x = Math.cos(to1(lat1)) * Math.sin(to1(lat2)) -
+    Math.sin(to1(lat1)) * Math.cos(to1(lat2)) * Math.cos(toRad(lon2 - lon1));
+  function to1(d){return d*Math.PI/180}
   return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
 }
 function getDirection8(b) {
@@ -2279,17 +2285,50 @@ function parseDimension(str = '') {
 }
 function r3(n) { return Math.round(n * 1000) / 1000; }
 
+/* ---------- deterministic color (hash-based) so legend === 3D ---------- */
+function _fnv1a32(str) {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+function _hslToRgbHex(h, s, l) {
+  s /= 100; l /= 100;
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = l - c / 2;
+  let r = 0, g = 0, b = 0;
+  if (h < 60) [r, g, b] = [c, x, 0];
+  else if (h < 120) [r, g, b] = [x, c, 0];
+  else if (h < 180) [r, g, b] = [0, c, x];
+  else if (h < 240) [r, g, b] = [0, x, c];
+  else if (h < 300) [r, g, b] = [x, 0, c];
+  else [r, g, b] = [c, 0, x];
+  const toHex = v => {
+    const n = Math.round((v + m) * 255);
+    return n.toString(16).padStart(2, '0');
+  };
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+function colorHexForKey(key) {
+  const h = _fnv1a32(String(key));
+  const hue = h % 360;
+  const sat = 60 + ((h >> 3) % 20);
+  const light = 45 + ((h >> 7) % 20);
+  return _hslToRgbHex(hue, sat, light);
+}
+
 /** color map keyed by "prod|pkg" so legend colors match placements */
 function buildColorMapByProdPkg(packageInfoDetails) {
-  const palette = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f43f5e', '#0ea5e9', '#6366f1', '#22c55e'];
   const colorByKey = {};
-  let i = 0;
   for (const p of packageInfoDetails) {
     const pkg_ID = p.pkg_ID;
     for (const l of (p.lines || [])) {
       if (!l?.prod_ID) continue;
       const key = `${l.prod_ID}|${pkg_ID}`;
-      if (!colorByKey[key]) colorByKey[key] = palette[i++ % palette.length];
+      if (!colorByKey[key]) colorByKey[key] = colorHexForKey(key);
     }
   }
   return colorByKey;
@@ -2315,41 +2354,39 @@ function getMaxBoxHeight(packageInfoDetails) {
   return h || 0.5;
 }
 
-/* ========= 3D placement ========= */
+/* ========= FIXED: 3D placement (FILO, row-by-row, SF-aware) =========
+   - Packs each stop in a "slice" of truck length.
+   - Fills rows across width (Z). Only advances X when a stop is done.
+   - Respects per-line stacking factor and truck height.
+   - position = [x, y, z]; dimensions = [length, height, width]
+*/
 function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimensions, opts = {}) {
   const truck = {
     interiorWidthM: Number(vehicleDimensions?.interiorWidthM || 0),
     interiorLengthM: Number(vehicleDimensions?.interiorLengthM || 0),
     interiorHeightM: Number(vehicleDimensions?.interiorHeightM || 0)
   };
+
   const Z_GUTTER = Number(opts.zGutter ?? 0.0);
   const FRONT_GUTTER_X = Number(opts.frontGutter ?? 0.0);
   const LAYER_GAP = Number(opts.layerGap ?? 0.02);
-
   const allowedGlobalLayers = Math.max(1, Number(opts.maxLayers || 1));
+  const EPS = 1e-9;
 
-  const colorByKey = buildColorMapByProdPkg(packageInfoDetails);
+  const colorByKey = opts.colorByProdPkg || buildColorMapByProdPkg(packageInfoDetails);
   const pkgMap = new Map(packageInfoDetails.map(p => [p.pkg_ID, p]));
 
+  // FILO: last drop (highest stop) packed first (deepest)
   const stopsDesc = [...loadArrangement].sort((a, b) => b.stop - a.stop);
 
   const placements = [];
-  let globalLayersUsed = 0;
+  let maxLayersUsed = 1;
 
-  const Wmax = truck.interiorWidthM;
-  const Lmax = truck.interiorLengthM;
+  const W = truck.interiorWidthM;
+  const L = truck.interiorLengthM;
+  const H = truck.interiorHeightM;
 
-  let cursorX = FRONT_GUTTER_X;
-  let cursorZ = 0;
-  let sliceDepth = 0;
-
-  const colorFor = (prod_ID, pkg_ID) => colorByKey[`${prod_ID}|${pkg_ID}`] || '#999';
-
-  function advanceToNextSlice() {
-    cursorZ = 0;
-    cursorX = Math.min(Lmax, r3(cursorX + sliceDepth + FRONT_GUTTER_X));
-    sliceDepth = 0;
-  }
+  let cursorX = 0; // front-to-back (0 is deepest), door is near L
 
   function expandStopLines(stop) {
     const items = [];
@@ -2360,80 +2397,129 @@ function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimens
         const dims = line.packagingDimensions || null;
         if (!dims || !(+dims.lengthM > 0 && +dims.widthM > 0 && +dims.heightM > 0)) continue;
 
-        const L = +dims.lengthM, W = +dims.widthM, H = +dims.heightM;
+        const Lp = +dims.lengthM, Wp = +dims.widthM, Hp = +dims.heightM;
         const qty = Number(line.quantity || 0);
-        if (!(L > 0 && W > 0 && H > 0) || qty <= 0) continue;
+        if (!(Lp > 0 && Wp > 0 && Hp > 0) || qty <= 0) continue;
 
-        const heightCap = (truck.interiorHeightM > 0 && H > 0)
-          ? Math.max(1, Math.floor(truck.interiorHeightM / H))
-          : 1;
+        // vertical layers allowed by truck height & product SF
+        const hCap = Math.max(1, Math.floor(H / Hp));
         const lineSfCap = Math.max(1, Number(line.sfCap || line.stacking_factor || line.allowedLayers || 1));
-        const perLineCap = Math.max(1, Math.min(heightCap, lineSfCap, allowedGlobalLayers));
+        const perStackMax = Math.min(hCap, lineSfCap, allowedGlobalLayers);
 
         items.push({
           pkg_ID: pkgId,
           prod_ID: line.prod_ID,
           qty,
-          L, W, H,
-          maxLayers: perLineCap,
-          color: colorFor(line.prod_ID, pkgId)
+          L: Lp,
+          W: Wp,
+          H: Hp,
+          perStackMax,
+          color: colorByKey[`${line.prod_ID}|${pkgId}`] || '#999'
         });
       }
     }
+
+    // pack largest footprints first (then taller)
     items.sort((a, b) => {
-      const va = a.L * a.W * a.H;
-      const vb = b.L * b.W * b.H;
-      if (vb !== va) return vb - va;
+      const fa = a.L * a.W, fb = b.L * b.W;
+      if (fb !== fa) return fb - fa;
       if (b.H !== a.H) return b.H - a.H;
       return String(a.prod_ID).localeCompare(String(b.prod_ID));
     });
+
     return items;
   }
 
-  for (const stop of stopsDesc) {
-    const items = expandStopLines(stop);
-    if (!items.length) {
-      advanceToNextSlice();
-      continue;
+  function placeStopSlice(items) {
+    // Row-based packing across Z; track deepest length used by any row in this stop.
+    let rowZ = 0;
+    let rowWidthUsed = 0;
+    let sliceDepthX = 0; // how much length this stop consumes
+    let rows = 0;
+
+    // helper to start a new row within current stop slice
+    function newRow() {
+      rowZ = 0;
+      rowWidthUsed = 0;
+      rows += 1;
     }
+    newRow();
 
     for (const it of items) {
       let remaining = it.qty;
 
       while (remaining > 0) {
-        if (cursorZ + it.W > Wmax + 1e-9) {
-          advanceToNextSlice();
+        // prefer orientation that uses less length (helps keep slice shallow)
+        const o1 = { l: it.L, w: it.W };
+        const o2 = { l: it.W, w: it.L };
+        const candidates = [o1, o2].sort((a, b) => a.l - b.l);
+
+        let chosen = null;
+        // Try to fit in current row; if width overflow, start a new row and retry
+        for (let attempt = 0; attempt < 2 && !chosen; attempt++) {
+          if (rowWidthUsed + Math.min(o1.w, o2.w) > W + EPS) {
+            // width is full -> start a new row in same slice
+            newRow();
+          }
+          for (const o of candidates) {
+            const nextRowLen = Math.max(sliceDepthX, o.l);
+            // Check width fit and length headroom
+            if (rowWidthUsed + o.w <= W + EPS && cursorX + nextRowLen <= L + EPS) {
+              chosen = o;
+              break;
+            }
+          }
         }
-        if (cursorX + it.L > Lmax + 1e-9) {
-          remaining = 0;
-          break;
+
+        if (!chosen) {
+          // No orientation could fit within remaining truck length -> stop packing this stop
+          return { placedAll: false, sliceDepthX };
         }
-        const layersHere = Math.min(it.maxLayers, remaining);
-        for (let h = 0; h < layersHere; h++) {
+
+        // number of units we can stack here vertically
+        const stackCount = Math.min(it.perStackMax, remaining);
+
+        // place the stack
+        for (let h = 0; h < stackCount; h++) {
           placements.push({
             pkg_ID: it.pkg_ID,
             prod_ID: it.prod_ID,
             color: it.color,
-            position: [r3(cursorX), r3(h * (it.H + LAYER_GAP)), r3(cursorZ)],
-            dimensions: [r3(it.L), r3(it.H), r3(it.W)]
+            position: [r3(cursorX), r3(h * (it.H + LAYER_GAP)), r3(rowZ)],
+            dimensions: [r3(chosen.l), r3(it.H), r3(chosen.w)]
           });
         }
-        globalLayersUsed = Math.max(globalLayersUsed, layersHere);
-        remaining -= layersHere;
+        maxLayersUsed = Math.max(maxLayersUsed, stackCount);
 
-        sliceDepth = Math.max(sliceDepth, it.L);
-        cursorZ = r3(cursorZ + it.W + Z_GUTTER);
+        // advance row Z and update depth used by this stop-slice
+        rowZ = r3(rowZ + chosen.w + Z_GUTTER);
+        rowWidthUsed = rowZ; // since rowZ starts at 0, rowWidthUsed mirrors it (plus gutter)
+        sliceDepthX = Math.max(sliceDepthX, chosen.l);
+
+        remaining -= stackCount;
       }
     }
-    advanceToNextSlice();
-    if (cursorX >= Lmax - 1e-9) break;
+
+    return { placedAll: true, sliceDepthX };
+  }
+
+  for (const stop of stopsDesc) {
+    const items = expandStopLines(stop);
+    if (!items.length) continue;
+
+    const { placedAll, sliceDepthX } = placeStopSlice(items);
+    // advance X for next (earlier) stop
+    cursorX = r3(cursorX + FRONT_GUTTER_X + sliceDepthX);
+
+    // If we already ran out of length, we can't place further stops
+    if (cursorX > L + EPS || !placedAll) break;
   }
 
   return {
     placements,
     total: placements.length,
     placed: placements.length,
-    layersUsed: Math.max(1, globalLayersUsed)
+    layersUsed: Math.max(1, maxLayersUsed)
   };
 }
 
@@ -2746,6 +2832,7 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
         };
       });
 
+      // one true color map, order-independent
       const colorByProdPkg = buildColorMapByProdPkg(packageInfoDetails);
       const tallestH = getMaxBoxHeight(packageInfoDetails);
 
@@ -2758,7 +2845,9 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
           zGutter: 0.0,
           frontGutter: 0.0,
           layerGap: 0.02,
-          layerHeight: tallestH
+          layerHeight: tallestH,
+          // pass the shared color map so legend == 3D
+          colorByProdPkg
         }
       );
 

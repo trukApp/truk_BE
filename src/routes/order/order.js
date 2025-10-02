@@ -2963,4 +2963,5 @@ router.post('/route/weather', jwtAuth.verifyToken, async (req, res) => {
   }
 });
 
+
 module.exports = router;

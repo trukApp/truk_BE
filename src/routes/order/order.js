@@ -2323,18 +2323,25 @@ function explodePackage(pkgRecord, colorByKey) {
   return out;
 }
 
-/* ========= NEW: stop-wise, vertical-first stacking algorithm =========
+/* ====== NEW: guaranteed-dimensions fallback (never drop a line) ====== */
+function deriveDimsFromFallback(prodRow, truckHeightM) {
+  // Try product.volume first
+  const volM3 = parseVolumeAndUOM(prodRow?.volume, prodRow?.volume_uom) || 0;
+  if (volM3 > 0) {
+    const H = Math.min(Math.max(0.2, Math.cbrt(volM3)), Math.max(0.2, truckHeightM || 0.6));
+    const base = Math.sqrt(Math.max(volM3 / H, 0.04)); // >= 0.2m x 0.2m
+    return { lengthM: r3(base), widthM: r3(base), heightM: r3(H) };
+  }
+  // Last resort tiny placeholder – so the box/color still appears
+  return { lengthM: 0.25, widthM: 0.25, heightM: Math.min(0.25, Math.max(0.2, truckHeightM || 0.6)) };
+}
+
+/* ========= stop-wise, vertical-first stacking algorithm =========
    Axes assumption (consistent with your renderer):
      X → along truck length (tailgate → cab)
      Y → vertical (stacking)
      Z → across truck width
-   For each stop (FILO: last stop placed first at small X):
-     • iterate items (biggest footprint first)
-     • at each floor slot, stack up to per-line maxLayers (min of truck height,
-       line stacking factor, and global allowedLayers), then move to next slot.
-     • advance Z across width; when out of width, reset Z and advance X by the
-       deepest L used in that Z-row (sliceDepth).
-   This prevents the flat “carpet” and keeps stops contiguous. */
+   FILO: last stop placed first at small X. */
 function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimensions, opts = {}) {
   const truck = {
     interiorWidthM: Number(vehicleDimensions?.interiorWidthM || 0),
@@ -2344,6 +2351,7 @@ function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimens
   const Z_GUTTER = Number(opts.zGutter ?? 0.0);
   const FRONT_GUTTER_X = Number(opts.frontGutter ?? 0.0);
   const LAYER_GAP = Number(opts.layerGap ?? 0.02);
+  const EPS = 1e-9;
 
   // Global layer cap from vehicle (already derived from height & SF earlier)
   const allowedGlobalLayers = Math.max(1, Number(opts.maxLayers || 1));
@@ -2354,7 +2362,6 @@ function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimens
   // FILO: place highest stop number first (goes deepest at small X)
   const stopsDesc = [...loadArrangement].sort((a, b) => b.stop - a.stop);
 
-  // Helpers
   const colorFor = (prod_ID, pkg_ID) => colorByKey[`${prod_ID}|${pkg_ID}`] || '#999';
 
   function expandStopLines(stop) {
@@ -2419,8 +2426,7 @@ function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimens
   for (const stop of stopsDesc) {
     const items = expandStopLines(stop);
     if (!items.length) {
-      // still start a new slice for a stop boundary (keeps bays separate)
-      advanceToNextSlice();
+      advanceToNextSlice(); // keep bays separate per stop
       continue;
     }
 
@@ -2428,12 +2434,21 @@ function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimens
       let remaining = it.qty;
 
       while (remaining > 0) {
-        // width wrap
-        if (cursorZ + it.W > Wmax + 1e-9) {
+        // remaining row width
+        const remWidth = Wmax - cursorZ;
+
+        // try floor-plane rotation if it helps
+        let placeL = it.L, placeW = it.W;
+        if (placeW > remWidth + EPS && placeL <= remWidth + EPS && placeL <= Wmax + EPS) {
+          const tmp = placeL; placeL = it.W; placeW = it.L;
+        }
+
+        // width wrap after rotation attempt
+        if (cursorZ + placeW > Wmax + EPS) {
           advanceToNextSlice();
         }
-        // length overflow => truck full; stop placing further items
-        if (cursorX + it.L > Lmax + 1e-9) {
+        // length overflow => stop placing further items
+        if (cursorX + placeL > Lmax + EPS) {
           remaining = 0;
           break;
         }
@@ -2446,15 +2461,15 @@ function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimens
             prod_ID: it.prod_ID,
             color: it.color,
             position: [r3(cursorX), r3(h * (it.H + LAYER_GAP)), r3(cursorZ)],
-            dimensions: [r3(it.L), r3(it.H), r3(it.W)]
+            dimensions: [r3(placeL), r3(it.H), r3(placeW)]
           });
         }
         globalLayersUsed = Math.max(globalLayersUsed, layersHere);
         remaining -= layersHere;
 
         // Update row bookkeeping
-        sliceDepth = Math.max(sliceDepth, it.L);
-        cursorZ = r3(cursorZ + it.W + Z_GUTTER);
+        sliceDepth = Math.max(sliceDepth, placeL);
+        cursorZ = r3(cursorZ + placeW + Z_GUTTER);
       }
     }
 
@@ -2655,29 +2670,37 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
       const lengthM = parseDimension(caps.interior_length);
       const heightM = parseDimension(caps.interior_height);
 
-      const packageInfoDetails = a.packages.map(pkgID => {
+      const packageInfoDetails = a.packages.map((pkgID) => {
         const pkgRecord = packagesData.find(p => p.pack_ID === pkgID);
+
         const lines = (pkgRecord?.products || []).map(line => {
           const prod = productMap[line.prod_ID];
           const pacIds = resolvePacIdsFromProduct(prod);
           const firstPac = pacIds[0] || null;
           const packInfo = firstPac ? packagingInfoMap[firstPac] : null;
 
+          let dims;
+          if (packInfo && packInfo.pack_length && packInfo.pack_width && packInfo.pack_height) {
+            dims = {
+              lengthM: parseDimension(`${packInfo.pack_length} ${packInfo.dimensions_uom}`),
+              widthM:  parseDimension(`${packInfo.pack_width}  ${packInfo.dimensions_uom}`),
+              heightM: parseDimension(`${packInfo.pack_height} ${packInfo.dimensions_uom}`)
+            };
+          } else {
+            // ✅ guaranteed – never drop the line
+            dims = deriveDimsFromFallback(prod, heightM);
+            logger.warn('Using fallback dims for product line', { prod_ID: line.prod_ID, pack_ID: pkgRecord?.pack_ID });
+          }
+
           const sfRaw = prod?.stacking_factor;
           const stacking_factor = (sfRaw === '' ? null : sfRaw);
           const sfNum = Number(stacking_factor);
           const sfCap = (!sfNum || isNaN(sfNum) || sfNum <= 1) ? 1 : sfNum;
 
-          const dims = packInfo ? {
-            lengthM: parseDimension(`${packInfo.pack_length} ${packInfo.dimensions_uom}`),
-            widthM: parseDimension(`${packInfo.pack_width}  ${packInfo.dimensions_uom}`),
-            heightM: parseDimension(`${packInfo.pack_height} ${packInfo.dimensions_uom}`)
-          } : null;
-
           let allowedLayers = 1;
           if (dims?.heightM && heightM) {
             const heightCap = Math.max(1, Math.floor(heightM / dims.heightM));
-            allowedLayers = Math.min(heightCap, sfCap);
+            allowedLayers = Math.min(heightCap, Math.max(1, v.allowedLayers || 1), sfCap);
           }
 
           return {
@@ -2687,7 +2710,7 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
             stacking_factor,
             sfCap,
             package_info: packInfo,
-            packagingDimensions: dims,
+            packagingDimensions: dims, // ✅ always present
             allowedLayers
           };
         });
@@ -2739,11 +2762,26 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
           zGutter: 0.0,
           frontGutter: 0.0,
           layerGap: 0.02,
-          layerHeight: tallestH // not used by the algorithm but harmless to pass
+          layerHeight: tallestH
         }
       );
 
       const boxPlacements = generatePackageBlocks(rawPlacements);
+
+      // ✅ sanity: input vs output count
+      const expectedCount = packageInfoDetails.reduce((s,p)=>
+        s + (p.lines||[]).reduce((ss,l)=> ss + Number(l.quantity||0), 0), 0
+      );
+      const actualCount = boxPlacements.length;
+      if (expectedCount !== actualCount) {
+        logger.warn('Box placement count mismatch', {
+          vehicle_ID: v.vehicle_ID,
+          expected: expectedCount,
+          actual: actualCount,
+          stops: a.loadArrangement?.length || 0
+        });
+      }
+
       const productLegend = buildProductLegend(a.loadArrangement, packageInfoDetails, colorByProdPkg);
 
       // Attach weather if requested

@@ -1580,15 +1580,17 @@ const WEATHER_CONCURRENCY = Number(cfg.weatherConcurrency || process.env.WEATHER
 // Traffic cache TTL (seconds)
 const TRAFFIC_CACHE_TTL = Number(cfg.trafficCacheTtl || process.env.TRAFFIC_CACHE_TTL || 120);
 
-// Conservative floor packing density
+// NEW: floor packing density — conservative fill ratio for ground plane
 const FLOOR_PACKING_DENSITY = Number(cfg.floorPackingDensity || process.env.FLOOR_PACKING_DENSITY || 0.9);
 
-// Layer gap in meters (used everywhere for consistent height math)
+// NEW: single source of truth for per-layer gap (also used in stack caps)
 const LAYER_GAP_M = Number(cfg.layerGapM || process.env.LAYER_GAP_M || 0.02);
 
 /* ---------------------- helpers ---------------------- */
-function buildRouteKey(locs) { return locs.map(l => `${l.latitude},${l.longitude}`).join('|'); }
-function toRadians(d) { return d * Math.PI / 180; }
+function buildRouteKey(locations) {
+  return locations.map(loc => `${loc.latitude},${loc.longitude}`).join('|');
+}
+function toRadians(deg) { return deg * Math.PI / 180; }
 function distanceBetweenCoords(lat1, lon1, lat2, lon2) {
   const R = 6371;
   const dLat = toRadians(lat2 - lat1);
@@ -1618,15 +1620,21 @@ function sampleRoutePoints(coords, intervalKm = 20, maxPoints = Infinity) {
   }
   return sampled;
 }
-function parseDistanceText(txt) { return parseFloat(txt.replace(/[^\d.]/g, '')) || 0; }
+function parseDistanceText(txt) {
+  return parseFloat(txt.replace(/[^\d.]/g, '')) || 0;
+}
 const kmText = m => `${(m / 1000).toFixed(1)} km`;
 const minText = s => `${Math.round(s / 60)} mins`;
 
+// Fire-and-forget so telemetry never blocks a response
 function noBlock(promise, label, ms = 400) {
-  Promise.race([promise, new Promise(r => setTimeout(r, ms))])
-    .catch(e => logger && logger.warn && logger.warn(`${label} failed`, { msg: e.message }));
+  Promise.race([
+    promise,
+    new Promise(resolve => setTimeout(resolve, ms))
+  ]).catch(e => logger && logger.warn && logger.warn(`${label} failed`, { msg: e.message }));
 }
 
+// simple batching helper (limits concurrent promises)
 async function runInBatches(items, batchSize, worker) {
   const out = [];
   for (let i = 0; i < items.length; i += batchSize) {
@@ -1658,8 +1666,8 @@ function dedupeConsecutiveLocations(locs) {
 /* --------- normalize departure & cache bucket helpers --------- */
 function normalizeDeparture(epoch) {
   const now = Math.floor(Date.now() / 1000);
-  if (!epoch || epoch < now - 600) return now;
-  const maxAhead = 24 * 3600;
+  if (!epoch || epoch < now - 600) return now;        // clamp past to "now"
+  const maxAhead = 24 * 3600;                         // cap future to 24h
   return Math.min(epoch, now + maxAhead);
 }
 function departureBucket(epoch, minutes = 15) {
@@ -1683,10 +1691,17 @@ async function fetchWeatherPoint(lat, lng, units = WEATHER_UNITS_DEFAULT) {
   const resp = await axios.get(url, { timeout: AXIOS_TIMEOUT_MS });
   const d = resp.data || {};
   const out = {
-    lat: +lat, lng: +lng, at: Math.floor(Date.now() / 1000), units,
-    temp: d.main?.temp ?? null, feelsLike: d.main?.feels_like ?? null, humidity: d.main?.humidity ?? null,
-    windSpeed: d.wind?.speed ?? null, windDir: d.wind?.deg ?? null,
-    condition: (d.weather && d.weather[0]?.main) || null, icon: (d.weather && d.weather[0]?.icon) || null,
+    lat: +lat,
+    lng: +lng,
+    at: Math.floor(Date.now() / 1000),
+    units,
+    temp: d.main?.temp ?? null,
+    feelsLike: d.main?.feels_like ?? null,
+    humidity: d.main?.humidity ?? null,
+    windSpeed: d.wind?.speed ?? null,
+    windDir: d.wind?.deg ?? null,
+    condition: (d.weather && d.weather[0]?.main) || null,
+    icon: (d.weather && d.weather[0]?.icon) || null,
     precip1h: (d.rain && (d.rain['1h'] || 0)) || (d.snow && (d.snow['1h'] || 0)) || 0
   };
   await setJSON(key, out, WEATHER_CACHE_TTL);
@@ -1700,10 +1715,14 @@ async function getWeatherAlongRoute(points, { units = WEATHER_UNITS_DEFAULT, max
   }
 
   const results = await runInBatches(use, WEATHER_CONCURRENCY, async (p) => {
-    try { return await fetchWeatherPoint(p.lat, p.lng, units); }
-    catch (e) {
+    try {
+      return await fetchWeatherPoint(p.lat, p.lng, units);
+    } catch (e) {
       logger.warn('weather fetch failed at point', {
-        point: p, status: e?.response?.status, data: e?.response?.data, msg: e?.message || String(e)
+        point: p,
+        status: e?.response?.status,
+        data: e?.response?.data,
+        msg: e?.message || String(e)
       });
       return null;
     }
@@ -1752,8 +1771,11 @@ async function fetchRouteGoogle(locations, { includeTraffic = false, departureTi
   if (data.status !== 'OK') {
     const err = new Error(`Google error: ${data.status}${data.error_message ? ` - ${data.error_message}` : ''}`);
     logger.error('Google Directions failed', {
-      status: data.status, error_message: data.error_message,
-      waypointCount: locations.length, includeTraffic, departureTimeEpoch
+      status: data.status,
+      error_message: data.error_message,
+      waypointCount: locations.length,
+      includeTraffic,
+      departureTimeEpoch
     });
     throw err;
   }
@@ -1764,23 +1786,39 @@ async function fetchRouteGoogle(locations, { includeTraffic = false, departureTi
 
   const mappedLegs = legs.map((leg, i) => {
     const base = {
-      start: { address: leg.start_address, latitude: locations[i].latitude, longitude: locations[i].longitude },
-      end: { address: leg.end_address, latitude: locations[i + 1].latitude, longitude: locations[i + 1].longitude },
+      start: {
+        address: leg.start_address,
+        latitude: locations[i].latitude,
+        longitude: locations[i].longitude
+      },
+      end: {
+        address: leg.end_address,
+        latitude: locations[i + 1].latitude,
+        longitude: locations[i + 1].longitude
+      },
       distance: leg.distance?.text || '',
       duration: leg.duration?.text || ''
     };
+
     if (includeTraffic && leg.duration_in_traffic?.value != null) {
       const normalSec = leg.duration?.value || 0;
       const trafficSec = leg.duration_in_traffic.value;
       base.durationInTraffic = leg.duration_in_traffic?.text || base.duration;
       base.trafficDelaySec = Math.max(0, trafficSec - normalSec);
-      base.traffic = { durationInTrafficSec: trafficSec, normalDurationSec: normalSec, delaySec: Math.max(0, trafficSec - normalSec) };
+      base.traffic = {
+        durationInTrafficSec: trafficSec,
+        normalDurationSec: normalSec,
+        delaySec: Math.max(0, trafficSec - normalSec)
+      };
     }
+
     return base;
   });
 
   if (includeTraffic && legs.some(l => l?.duration_in_traffic?.value == null)) {
-    logger.warn('Google: duration_in_traffic missing for some legs', { legCount: legs.length });
+    logger.warn('Google: duration_in_traffic missing for some legs', {
+      legCount: legs.length
+    });
   }
 
   let trafficSummary = null;
@@ -1789,7 +1827,12 @@ async function fetchRouteGoogle(locations, { includeTraffic = false, departureTi
     const totalDelaySec = delays.reduce((s, n) => s + n, 0);
     const avgDelay = mappedLegs.length ? Math.round(totalDelaySec / mappedLegs.length) : 0;
     const congestion = totalDelaySec > 3600 ? 'high' : totalDelaySec > 900 ? 'medium' : 'low';
-    trafficSummary = { trafficAt: normalizeDeparture(departureTimeEpoch), totalDelaySec, avgDelayPerLegSec: avgDelay, congestion };
+    trafficSummary = {
+      trafficAt: normalizeDeparture(departureTimeEpoch),
+      totalDelaySec,
+      avgDelayPerLegSec: avgDelay,
+      congestion
+    };
   }
 
   return { legs: mappedLegs, shape: decoded, trafficSummary };
@@ -1801,13 +1844,24 @@ async function fetchRouteOSRM(locations) {
   const coords = locations.map(p => `${p.longitude},${p.latitude}`).join(';');
   const url = `${cfg.osrmBaseUrl}/route/v1/driving/${coords}?overview=full&geometries=polyline`;
   const resp = await axios.get(url, { timeout: AXIOS_TIMEOUT_MS });
-  if (resp.data.code !== 'Ok') throw new Error(`OSRM error: ${resp.data.code}`);
+  if (resp.data.code !== 'Ok') {
+    throw new Error(`OSRM error: ${resp.data.code}`);
+  }
   const route = resp.data.routes[0];
-  const decoded = polyline.decode(route.geometry).map(([lat, lng]) => ({ lat, lng }));
+  const decoded = polyline.decode(route.geometry)
+    .map(([lat, lng]) => ({ lat, lng }));
 
   const legs = (route.legs || []).map((leg, i) => ({
-    start: { address: '', latitude: locations[i].latitude, longitude: locations[i].longitude },
-    end: { address: '', latitude: locations[i + 1].latitude, longitude: locations[i + 1].longitude },
+    start: {
+      address: '',
+      latitude: locations[i].latitude,
+      longitude: locations[i].longitude
+    },
+    end: {
+      address: '',
+      latitude: locations[i + 1].latitude,
+      longitude: locations[i + 1].longitude
+    },
     distance: kmText(leg.distance || 0),
     duration: minText(leg.duration || 0)
   }));
@@ -1816,7 +1870,10 @@ async function fetchRouteOSRM(locations) {
 }
 
 /**
- * Cached route + sampled points
+ * Core helper that:
+ *  - checks Redis cache
+ *  - fetches route
+ *  - computes sampled points
  */
 async function getOptimizedRouteWithLoad(locations, shipmentLoads, {
   includeTraffic = false,
@@ -1839,8 +1896,11 @@ async function getOptimizedRouteWithLoad(locations, shipmentLoads, {
     optimizedRoute = cached.optimizedRoute;
     trafficSummary = cached.trafficSummary || null;
     shape = cached.shape || null;
-    sampledCoords = shape && Array.isArray(shape) ? sampleRoutePoints(shape, sampleEveryKm, maxSamplePoints)
-                                                  : (cached.sampledCoords || []);
+    if (shape && Array.isArray(shape)) {
+      sampledCoords = sampleRoutePoints(shape, sampleEveryKm, maxSamplePoints);
+    } else {
+      sampledCoords = cached.sampledCoords || [];
+    }
   } else {
     let legs, trafficSummaryLocal = null, shapeLocal = [];
     if (cfg.routingProvider === 'osrm') {
@@ -1854,7 +1914,10 @@ async function getOptimizedRouteWithLoad(locations, shipmentLoads, {
     legs.forEach((leg, i) => {
       const load = shipmentLoads[i] || 0;
       currentLoad += load;
-      if (leg.start.latitude !== leg.end.latitude || leg.start.longitude !== leg.end.longitude) {
+      if (
+        leg.start.latitude !== leg.end.latitude ||
+        leg.start.longitude !== leg.end.longitude
+      ) {
         builtRoute.push({ ...leg, loadAfterStop: currentLoad });
       }
     });
@@ -1912,7 +1975,9 @@ function groupPackagesByDirection(pkgs) {
       const idx = queue.shift();
       for (let j = 0; j < pkgs.length; j++) {
         if (!visited.has(j) && isDirectionCompatible(pkgs[idx].direction8, pkgs[j].direction8)) {
-          visited.add(j); queue.push(j); cluster.push(pkgs[j]);
+          visited.add(j);
+          queue.push(j);
+          cluster.push(pkgs[j]);
         }
       }
     }
@@ -1935,7 +2000,9 @@ function isVehicleDown(v) {
   return now >= s && now <= e;
 }
 async function getLocationById(loc_ID) {
-  const [rows] = await db.query(`SELECT latitude, longitude, loc_desc FROM master_locations WHERE loc_ID=?`, [loc_ID]);
+  const [rows] = await db.query(`
+    SELECT latitude, longitude, loc_desc
+    FROM master_locations WHERE loc_ID=?`, [loc_ID]);
   if (!rows.length) throw new Error(`Location not found: ${loc_ID}`);
   return {
     latitude: parseFloat(rows[0].latitude) || 0,
@@ -1944,7 +2011,9 @@ async function getLocationById(loc_ID) {
   };
 }
 function safeJsonParse(val, def = []) {
-  if (typeof val === 'string') { try { return JSON.parse(val); } catch { return def; } }
+  if (typeof val === 'string') {
+    try { return JSON.parse(val); } catch { return def; }
+  }
   return val || def;
 }
 function getPackageSpecialFlags(pkg, productMap) {
@@ -1970,7 +2039,10 @@ function getVehicleSpecialFlags(v) {
 function checkPackageVehicleCompatibility(pkgF, vehF) {
   const pkgIsNormal = !pkgF.fragile && !pkgF.dangerous && !pkgF.hazardous && !pkgF.tempCtrl;
   if (pkgIsNormal) {
-    return !vehF.fragile_vehicle && !vehF.danger_proof && !vehF.hazardous_proof && !vehF.temp_controlled_vehicle;
+    return !vehF.fragile_vehicle &&
+      !vehF.danger_proof &&
+      !vehF.hazardous_proof &&
+      !vehF.temp_controlled_vehicle;
   }
   if (pkgF.fragile && !vehF.fragile_vehicle) return false;
   if (pkgF.dangerous && !vehF.danger_proof) return false;
@@ -1983,14 +2055,17 @@ function checkPackageVehicleCompatibility(pkgF, vehF) {
 function resolvePacIdsFromProduct(prodRow) {
   if (!prodRow) return [];
   let pt = prodRow.packaging_type;
-  if (typeof pt === 'string') { try { pt = JSON.parse(pt); } catch { pt = null; } }
+  if (typeof pt === 'string') {
+    try { pt = JSON.parse(pt); } catch { pt = null; }
+  }
   if (!Array.isArray(pt)) return [];
   return pt.filter(x => x && x.pac_ID).map(x => x.pac_ID);
 }
 async function loadAllPackageInfo(pacIDs) {
   if (!pacIDs.length) return {};
   const ph = pacIDs.map(_ => '?').join(',');
-  const [rows] = await db.query(`SELECT * FROM master_package_info WHERE pac_ID IN (${ph})`, pacIDs);
+  const [rows] = await db.query(`
+    SELECT * FROM master_package_info WHERE pac_ID IN (${ph})`, pacIDs);
   return rows.reduce((m, r) => { m[r.pac_ID] = r; return m; }, {});
 }
 function collectAllPacIDs(packagesData, productMap) {
@@ -2028,11 +2103,20 @@ function parseDimension(str = '') {
 }
 function r3(n) { return Math.round(n * 1000) / 1000; }
 
-// Interpret SF: <=0 / null / '' => Infinity (unlimited), else finite positive
-function parseSfCap(raw) {
-  if (raw === null || raw === undefined || raw === '' || Number(raw) <= 0) return Infinity;
-  const n = Number(raw);
-  return (!Number.isFinite(n) || n < 1) ? Infinity : Math.floor(n);
+// NEW: SF interpreter — 0/null/'' => Infinity (unbounded by SF)
+function parseSfCap(sfRaw) {
+  if (sfRaw === undefined || sfRaw === null || sfRaw === '' ) return Infinity;
+  const n = Number(sfRaw);
+  if (!Number.isFinite(n) || n === 0) return Infinity;
+  if (n < 0) return Infinity;
+  return n;
+}
+
+// NEW: correct layer cap that includes the layer gap so we never poke above the roof
+function layerCapByHeight(truckHeightM, boxHeightM, gapM = LAYER_GAP_M) {
+  if (!(truckHeightM > 0) || !(boxHeightM > 0)) return 1;
+  // k layers take k*H + (k-1)*gap <= truckHeight  => floor((H+gap + truckHeight) / (H+gap))
+  return Math.max(1, Math.floor((truckHeightM + gapM) / (boxHeightM + gapM)));
 }
 
 function deriveDimsFromFallback(prodRow, truckHeightM) {
@@ -2053,7 +2137,7 @@ function getTruckDimsFromVehicle(v) {
   return { widthM, lengthM, heightM, floorAreaM2: (widthM || 0) * (lengthM || 0) };
 }
 
-// per-line dims + cap for a given truck (height-aware with gap, SF unlimited supported)
+// per-line dims + cap for a given truck
 function getLineDimsAndCap(prod, packInfo, truckHeightM, truckAllowedLayers, globalSfCap) {
   let dims;
   if (packInfo && packInfo.pack_length && packInfo.pack_width && packInfo.pack_height) {
@@ -2066,28 +2150,27 @@ function getLineDimsAndCap(prod, packInfo, truckHeightM, truckAllowedLayers, glo
     dims = deriveDimsFromFallback(prod, truckHeightM);
   }
 
-  const sfCap = parseSfCap(prod?.stacking_factor); // Infinity if 0/null/''
+  const sfCap = parseSfCap(prod?.stacking_factor);
 
-  // Cap by height using gap-aware math: n*H + (n-1)*gap <= truckH
-  let heightCap = 1;
+  let allowedLayers = 1;
   if (dims?.heightM && truckHeightM) {
-    heightCap = Math.max(1, Math.floor((truckHeightM + LAYER_GAP_M) / (dims.heightM + LAYER_GAP_M)));
+    const heightCap = layerCapByHeight(truckHeightM, dims.heightM, LAYER_GAP_M);
+    // NOTE: truckAllowedLayers/globalSfCap may be Infinity; preserve per-line SF <= sfCap
+    const withTruck = Number.isFinite(truckAllowedLayers) ? Math.min(heightCap, Math.max(1, truckAllowedLayers)) : heightCap;
+    const withGlobal = Number.isFinite(globalSfCap) ? Math.min(withTruck, Math.max(1, globalSfCap)) : withTruck;
+    allowedLayers = Math.min(withGlobal, sfCap);
   }
-
-  // Respect truck/global caps, but SF Infinity won't restrict
-  const allowedLayers = Math.max(1, Math.min(heightCap, Math.max(1, truckAllowedLayers || 1), globalSfCap, sfCap));
-
   return { dims, allowedLayers, sfCap };
 }
 
-// can the rectangle fit (consider rotation)?
+// quick physical fit check with rotation
 function canRectFitInTruck(L, W, truck) {
   const { widthM, lengthM } = truck;
-  if (!widthM || !lengthM) return true;
+  if (!widthM || !lengthM) return true; // if unknown, don't block
   return (L <= lengthM && W <= widthM) || (W <= lengthM && L <= widthM);
 }
 
-// Estimate ground area required for a whole *package* on this truck
+// estimate floor area for a package on this truck (no DP, O(lines))
 function estimatePackageFloorArea(pkg, productMap, packagingInfoMap, truck, truckAllowedLayers, globalSfCap) {
   let area = 0;
   let fitsPhysically = true;
@@ -2100,9 +2183,14 @@ function estimatePackageFloorArea(pkg, productMap, packagingInfoMap, truck, truc
     const packInfo = firstPac ? packagingInfoMap[firstPac] : null;
 
     const { dims, allowedLayers } = getLineDimsAndCap(
-      prod, packInfo, truck.heightM, truckAllowedLayers, globalSfCap
+      prod,
+      packInfo,
+      truck.heightM,
+      truckAllowedLayers,
+      globalSfCap
     );
 
+    // any line that cannot fit (even rotated) => package can't go on this truck
     if (!canRectFitInTruck(dims.lengthM, dims.widthM, truck)) {
       fitsPhysically = false;
     }
@@ -2127,6 +2215,7 @@ function unionFlags(a, b) {
   };
 }
 
+// Greedy binning of packages into multiple allocations for one truck
 function greedyBinsForTruck(group, vehicle, {
   truckDims,
   weightCapKg,
@@ -2137,8 +2226,9 @@ function greedyBinsForTruck(group, vehicle, {
   globalSfCap
 }) {
   const bins = [];
-  const remaining = [...group];
+  const remaining = [...group]; // shallow copies of pkg info objects
 
+  // track per-bin pack
   while (remaining.length) {
     let bin = {
       pkgs: [],
@@ -2148,21 +2238,31 @@ function greedyBinsForTruck(group, vehicle, {
       flags: { fragile: 0, dangerous: 0, hazardous: 0, tempCtrl: 0 },
     };
 
-    for (let i = 0; i < remaining.length;) {
+    // single pass, try to add in order
+    for (let i = 0; i < remaining.length; ) {
       const pkg = remaining[i];
 
+      // precompute per-package area for this truck (no DP)
       const { areaM2, fitsPhysically } = estimatePackageFloorArea(
-        pkg, productMap, packagingInfoMap, truckDims, vehicle.allowedLayers, globalSfCap
+        pkg, productMap, packagingInfoMap, truckDims,
+        vehicle.allowedLayers, globalSfCap
       );
-      if (!fitsPhysically) { i++; continue; }
+      if (!fitsPhysically) { i++; continue; } // try later with a larger truck
 
       const newArea = bin.sumArea + areaM2;
       const newWeight = bin.sumWeight + pkg.totalWeight;
       const newVolume = bin.sumVolume + pkg.totalVolume;
       const newFlags = unionFlags(bin.flags, pkg.specialFlags);
 
+      // check capacity + flags compatibility
       const flagsOk = checkPackageVehicleCompatibility(newFlags, getVehicleSpecialFlags(vehicle));
-      if (flagsOk && newWeight <= weightCapKg + 1e-6 && newVolume <= usableVolM3 + 1e-9 && newArea <= floorAreaBudgetM2 + 1e-9) {
+      if (
+        flagsOk &&
+        newWeight <= weightCapKg + 1e-6 &&
+        newVolume <= usableVolM3 + 1e-9 &&
+        newArea <= floorAreaBudgetM2 + 1e-9
+      ) {
+        // accept into bin
         bin.pkgs.push(pkg);
         bin.sumArea = newArea;
         bin.sumWeight = newWeight;
@@ -2174,18 +2274,26 @@ function greedyBinsForTruck(group, vehicle, {
       }
     }
 
-    if (!bin.pkgs.length) break;
+    if (!bin.pkgs.length) {
+      // nothing could fit in an empty bin — stop here; caller will try a larger vehicle
+      break;
+    }
     bins.push(bin);
   }
 
   return { bins, leftover: remaining };
 }
 
-/* ---------------- backtracking cost solver (unchanged) ---------------- */
+/* ---------------- backtracking cost solver (kept as last-resort) ---------------- */
 async function findMinCostArrangement(cluster, vehicles, sourceLoc) {
   vehicles = vehicles.slice().sort((a, b) => a.cost_per_ton - b.cost_per_ton);
 
-  let best = { cost: Infinity, allocations: [], unallocated: cluster.map(p => p.pack_ID), placedCount: 0 };
+  let best = {
+    cost: Infinity,
+    allocations: [],
+    unallocated: cluster.map(p => p.pack_ID),
+    placedCount: 0
+  };
 
   function snapshot(used, remaining) {
     return {
@@ -2199,12 +2307,14 @@ async function findMinCostArrangement(cluster, vehicles, sourceLoc) {
   async function backtrack(rem, iVeh, used) {
     if (!rem.length) {
       const shot = snapshot(used, rem);
-      if (shot.placedCount > best.placedCount || (shot.placedCount === best.placedCount && shot.cost < best.cost)) best = shot;
+      if (shot.placedCount > best.placedCount ||
+          (shot.placedCount === best.placedCount && shot.cost < best.cost)) best = shot;
       return;
     }
     if (iVeh >= vehicles.length) {
       const shot = snapshot(used, rem);
-      if (shot.placedCount > best.placedCount || (shot.placedCount === best.placedCount && shot.cost < best.cost)) best = shot;
+      if (shot.placedCount > best.placedCount ||
+          (shot.placedCount === best.placedCount && shot.cost < best.cost)) best = shot;
       return;
     }
 
@@ -2212,7 +2322,10 @@ async function findMinCostArrangement(cluster, vehicles, sourceLoc) {
     const subsets = [];
 
     function buildSub(idx, chosen, sumW, sumV, flags) {
-      if (idx === rem.length) { subsets.push({ chosen, sumW, sumV, flags }); return; }
+      if (idx === rem.length) {
+        subsets.push({ chosen, sumW, sumV, flags });
+        return;
+      }
       buildSub(idx + 1, chosen, sumW, sumV, flags);
       const pkg = rem[idx];
       const newW = sumW + pkg.totalWeight;
@@ -2302,6 +2415,75 @@ async function findMinCostArrangement(cluster, vehicles, sourceLoc) {
 }
 
 /* ---------------- allocation orchestration ---------------- */
+
+// Minimal reason generator to avoid undefined reference
+function generateUnallocationReason() {
+  return 'Package did not fit any available vehicle due to size/weight/volume/flags.';
+}
+
+// NEW: quick feasibility check against the renderer to guarantee "no skipped boxes"
+async function canPlaceAllInTruck(pkgs, veh, packagesData, productMap, packagingInfoMap, loadArrangement) {
+  const caps = veh.capacity || {};
+  const truckDims = {
+    interiorWidthM: parseDimension(caps.interior_width),
+    interiorLengthM: parseDimension(caps.interior_length),
+    interiorHeightM: parseDimension(caps.interior_height)
+  };
+
+  // Build the same packageInfoDetails used by the FE
+  const packageInfoDetails = pkgs.map(({ pack_ID }) => {
+    const pkgRecord = packagesData.find(p => p.pack_ID === pack_ID);
+    const lines = (pkgRecord?.products || []).map(line => {
+      const prod = productMap[line.prod_ID];
+      const pacIds = resolvePacIdsFromProduct(prod);
+      const firstPac = pacIds[0] || null;
+      const packInfo = firstPac ? packagingInfoMap[firstPac] : null;
+
+      let dims;
+      if (packInfo && packInfo.pack_length && packInfo.pack_width && packInfo.pack_height) {
+        dims = {
+          lengthM: parseDimension(`${packInfo.pack_length} ${packInfo.dimensions_uom}`),
+          widthM:  parseDimension(`${packInfo.pack_width} ${packInfo.dimensions_uom}`),
+          heightM: parseDimension(`${packInfo.pack_height} ${packInfo.dimensions_uom}`)
+        };
+      } else {
+        dims = deriveDimsFromFallback(prod, truckDims.interiorHeightM);
+      }
+
+      const sfCap = parseSfCap(prod?.stacking_factor);
+      const heightCap = layerCapByHeight(truckDims.interiorHeightM, dims.heightM, LAYER_GAP_M);
+      const allowedLayers = Math.min(
+        Number.isFinite(veh.allowedLayers) ? Math.max(1, veh.allowedLayers) : heightCap,
+        heightCap,
+        sfCap
+      );
+
+      return {
+        prod_ID: line.prod_ID,
+        quantity: line.quantity,
+        pac_ID: firstPac,
+        stacking_factor: prod?.stacking_factor,
+        sfCap,
+        packagingDimensions: dims,
+        allowedLayers
+      };
+    });
+    return { pkg_ID: pack_ID, lines };
+  });
+
+  const expected = packageInfoDetails.reduce((s,p)=>
+    s + (p.lines||[]).reduce((ss,l)=> ss + Number(l.quantity||0), 0), 0);
+
+  const { placements } = computeBoxPlacements(
+    loadArrangement,
+    packageInfoDetails,
+    truckDims,
+    { maxLayers: Math.max(1, veh.allowedLayers || 1), layerGap: LAYER_GAP_M }
+  );
+
+  return placements.length >= expected;
+}
+
 async function allocatePackages(packagesData, vehicles, sourceLocation, productMap, packagingInfoMap, extra = {}) {
   const {
     includeTraffic = false,
@@ -2313,6 +2495,7 @@ async function allocatePackages(packagesData, vehicles, sourceLocation, productM
   let totalCost = 0;
   const pkgInfos = [];
 
+  // build basic pkg infos (weight/volume/flags/direction)
   for (const pkg of packagesData) {
     const { totalW, totalV } = await sumPackageWeightVolume(pkg, productMap, packagingInfoMap);
     const destLoc = await getLocationById(pkg.ship_to);
@@ -2322,7 +2505,7 @@ async function allocatePackages(packagesData, vehicles, sourceLocation, productM
     const flags = getPackageSpecialFlags(pkg, productMap);
     pkgInfos.push({
       pack_ID: pkg.pack_ID,
-      products: pkg.products,
+      products: pkg.products, // keep lines for quick area calc
       totalWeight: totalW,
       totalVolume: totalV,
       destination: destLoc,
@@ -2334,6 +2517,7 @@ async function allocatePackages(packagesData, vehicles, sourceLocation, productM
 
   const groups = groupPackagesByDirection(pkgInfos);
 
+  // track available counts: use individual_resource if numeric; else 1; unlimited_usage => Infinity
   const capacityByVehicleId = {};
   for (const v of vehicles) {
     let count = 1;
@@ -2343,60 +2527,78 @@ async function allocatePackages(packagesData, vehicles, sourceLocation, productM
   }
 
   for (const group of groups) {
+    // sort near to far for nice route and FILO loading
     group.sort((a, b) => a.distFromSource - b.distFromSource);
 
+    // try vehicles cheapest first
     let remaining = [...group];
     for (const veh of vehicles) {
       if (!remaining.length) break;
+
+      // skip if no “units” left
       if (capacityByVehicleId[veh.vehicle_ID] === 0) continue;
 
+      // build truck dims + budgets
       const truckDims = getTruckDimsFromVehicle(veh);
       const floorAreaBudgetM2 = truckDims.floorAreaM2 * FLOOR_PACKING_DENSITY;
       const weightCapKg = veh.weightCapKg;
       const usableVolM3 = veh.usableVol;
 
+      // sanity: if any package can't physically fit even alone, we will try next vehicle
       const physicallyFittable = remaining.filter(pkg => {
         const { fitsPhysically } = estimatePackageFloorArea(
-          pkg, productMap, packagingInfoMap, truckDims, veh.allowedLayers, 1
+          pkg, productMap, packagingInfoMap, truckDims,
+          veh.allowedLayers, 1 // physical fit doesn't depend on SF
         );
         return fitsPhysically;
       });
       if (!physicallyFittable.length) continue;
 
+      // greedily bin packages into this vehicle's trips
       const { bins, leftover } = greedyBinsForTruck(remaining, veh, {
-        truckDims, weightCapKg, usableVolM3, floorAreaBudgetM2,
-        productMap, packagingInfoMap,
-        globalSfCap: Math.max(1, ...remaining.flatMap(p => (p.products||[]).map(l => parseSfCap(productMap[l.prod_ID]?.stacking_factor))))
+        truckDims,
+        weightCapKg,
+        usableVolM3,
+        floorAreaBudgetM2,
+        productMap,
+        packagingInfoMap,
+        globalSfCap:  // consider per-line SF; "∞" is propagated via parseSfCap
+          Math.max(1, ...remaining.flatMap(p=> (p.products||[]).map(l=>{
+            const cap = parseSfCap(productMap[l.prod_ID]?.stacking_factor);
+            return Number.isFinite(cap) ? cap : 1e9; // treat ∞ as a huge number for the global view
+          })))
       });
 
+      // how many trips/units of this vehicle can we use?
       let slots = capacityByVehicleId[veh.vehicle_ID];
       const useBins = bins.slice(0, Number.isFinite(slots) ? Math.max(0, slots) : bins.length);
 
+      // turn bins into actual allocations
       for (const bin of useBins) {
-        const pkgs = bin.pkgs;
+        // copy; we may peel some pkgs if renderer says "no fit"
+        const pkgs = bin.pkgs.slice();
         if (!pkgs.length) continue;
 
-        const routeLocs = [sourceLocation, ...pkgs.map(g => g.destination)];
-        const shipments = new Array(pkgs.length).fill(1);
+        // route & load arrangement
+        let routeLocs = [sourceLocation, ...pkgs.map(g => g.destination)];
+        let shipments = new Array(pkgs.length).fill(1);
 
-        const { optimizedRoute, sampledCoords, trafficSummary } =
+        let { optimizedRoute, sampledCoords, trafficSummary } =
           await getOptimizedRouteWithLoad(routeLocs, shipments, {
-            includeTraffic, departureTimeEpoch,
+            includeTraffic,
+            departureTimeEpoch,
             sampleEveryKm: weatherOpts.sampleEveryKm || WEATHER_SAMPLE_EVERY_KM_DEFAULT,
             maxSamplePoints: weatherOpts.maxPoints || WEATHER_MAX_POINTS_DEFAULT
           });
-
-        const totalDist = optimizedRoute.reduce((s, leg) => s + parseDistanceText(leg.distance), 0);
-        const tons = bin.sumWeight / 1000;
-        const cost = tons * veh.cost_per_ton * totalDist;
-        totalCost += cost;
 
         let loadArr = [], remainIDs = pkgs.map(g => g.pack_ID);
         optimizedRoute.forEach((leg, i) => {
           const stop = i + 1, using = [];
           remainIDs.forEach(id => {
             const pkg = pkgs.find(g => g.pack_ID === id);
-            if (pkg && pkg.destination.latitude === leg.end.latitude && pkg.destination.longitude === leg.end.longitude) {
+            if (pkg &&
+                pkg.destination.latitude === leg.end.latitude &&
+                pkg.destination.longitude === leg.end.longitude) {
               using.push(id);
             }
           });
@@ -2406,14 +2608,61 @@ async function allocatePackages(packagesData, vehicles, sourceLocation, productM
           }
         });
 
+        // --- GUARANTEE: no skipped boxes in 3D ---
+        let ok = await canPlaceAllInTruck(pkgs, veh, packagesData, productMap, packagingInfoMap, loadArr);
+        while (!ok && pkgs.length > 0) {
+          const kicked = pkgs.pop();                   // peel last package
+          remaining.unshift(kicked);                   // schedule it later
+
+          // recompute route & stops for the reduced bin
+          routeLocs = [sourceLocation, ...pkgs.map(g => g.destination)];
+          shipments = new Array(pkgs.length).fill(1);
+          ({ optimizedRoute, sampledCoords, trafficSummary } =
+            await getOptimizedRouteWithLoad(routeLocs, shipments, {
+              includeTraffic, departureTimeEpoch,
+              sampleEveryKm: weatherOpts.sampleEveryKm || WEATHER_SAMPLE_EVERY_KM_DEFAULT,
+              maxSamplePoints: weatherOpts.maxPoints || WEATHER_MAX_POINTS_DEFAULT
+            }));
+
+          loadArr = [];
+          remainIDs = pkgs.map(g => g.pack_ID);
+          optimizedRoute.forEach((leg, i) => {
+            const stop = i + 1, using = [];
+            remainIDs.forEach(id => {
+              const pkg = pkgs.find(g => g.pack_ID === id);
+              if (pkg &&
+                  pkg.destination.latitude === leg.end.latitude &&
+                  pkg.destination.longitude === leg.end.longitude) {
+                using.push(id);
+              }
+            });
+            if (using.length) {
+              using.forEach(id => remainIDs.splice(remainIDs.indexOf(id), 1));
+              loadArr.push({ stop, location: leg.end.address, packages: using });
+            }
+          });
+
+          ok = await canPlaceAllInTruck(pkgs, veh, packagesData, productMap, packagingInfoMap, loadArr);
+        }
+        if (!pkgs.length) continue;
+
+        // recompute sums for the (possibly trimmed) bin
+        const sumWeight = pkgs.reduce((s,p)=> s + p.totalWeight, 0);
+        const sumVolume = pkgs.reduce((s,p)=> s + p.totalVolume, 0);
+
+        const totalDist = optimizedRoute.reduce((s, leg) => s + parseDistanceText(leg.distance), 0);
+        const tons = sumWeight / 1000;
+        const cost = tons * veh.cost_per_ton * totalDist;
+        totalCost += cost;
+
         allocations.push({
           vehicle_ID: veh.vehicle_ID,
           totalWeightCapacity: veh.totalWeightCapacity,
           totalVolumeCapacity: veh.totalVolumeCapacity,
-          occupiedWeight: bin.sumWeight,
-          occupiedVolume: bin.sumVolume,
-          leftoverWeight: veh.weightCapKg - bin.sumWeight,
-          leftoverVolume: veh.volumeCapM3 - bin.sumVolume,
+          occupiedWeight: sumWeight,
+          occupiedVolume: sumVolume,
+          leftoverWeight: veh.weightCapKg - sumWeight,
+          leftoverVolume: veh.volumeCapM3 - sumVolume,
           cost,
           packages: pkgs.map(g => g.pack_ID),
           pkgVolumes: pkgs.map(g => g.totalVolume),
@@ -2424,14 +2673,18 @@ async function allocatePackages(packagesData, vehicles, sourceLocation, productM
         });
       }
 
+      // reduce capacity
       if (Number.isFinite(capacityByVehicleId[veh.vehicle_ID])) {
         capacityByVehicleId[veh.vehicle_ID] = Math.max(0, capacityByVehicleId[veh.vehicle_ID] - useBins.length);
       }
 
+      // update remaining packages: keep those that didn’t fit (either due to physical fit or budgets)
       remaining = leftover.concat(remaining.filter(p => !physicallyFittable.includes(p)));
+
       if (!remaining.length) break;
     }
 
+    // if still left, try last-resort small backtracking on the leftovers (bounded)
     if (remaining.length) {
       const { cost, allocations: subAllocs, unallocated } =
         await findMinCostArrangement(remaining, vehicles, sourceLocation);
@@ -2450,10 +2703,11 @@ async function allocatePackages(packagesData, vehicles, sourceLocation, productM
   return { allocations, totalCost, unallocated: unallocatedPackages };
 }
 
-/* ========= 3D placement (gap-aware height cap) ========= */
+/* ========= 3D placement ========= */
 function buildColorMapByProdPkg(packageInfoDetails) {
-  const palette = ['#10b981','#3b82f6','#f59e0b','#ef4444','#8b5cf6','#ec4899','#14b8a6','#f43f5e','#0ea5e9','#6366f1','#22c55e'];
-  const colorByKey = {}; let i = 0;
+  const palette = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f43f5e', '#0ea5e9', '#6366f1', '#22c55e'];
+  const colorByKey = {};
+  let i = 0;
   for (const p of packageInfoDetails) {
     const pkg_ID = p.pkg_ID;
     for (const l of (p.lines || [])) {
@@ -2468,7 +2722,9 @@ function getMaxBoxHeight(packageInfoDetails) {
   let h = 0;
   for (const p of packageInfoDetails) {
     for (const l of (p.lines || [])) {
-      if (l?.packagingDimensions?.heightM) h = Math.max(h, +l.packagingDimensions.heightM);
+      if (l?.packagingDimensions?.heightM) {
+        h = Math.max(h, +l.packagingDimensions.heightM);
+      }
     }
   }
   return h || 0.5;
@@ -2506,13 +2762,8 @@ function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimens
         const qty = Number(line.quantity || 0);
         if (!(L > 0 && W > 0 && H > 0) || qty <= 0) continue;
 
-        // GAP-AWARE height cap
-        const heightCap = (truck.interiorHeightM > 0 && H > 0)
-          ? Math.max(1, Math.floor((truck.interiorHeightM + LAYER_GAP) / (H + LAYER_GAP)))
-          : 1;
-
-        // Line SF (Infinity ok) + global
-        const lineSfCap = parseSfCap(line.stacking_factor ?? line.sfCap ?? line.allowedLayers ?? 1);
+        const heightCap = layerCapByHeight(truck.interiorHeightM, H, LAYER_GAP);
+        const lineSfCap = parseSfCap(line.sfCap ?? line.stacking_factor ?? line.allowedLayers);
         const perLineCap = Math.max(1, Math.min(heightCap, lineSfCap, allowedGlobalLayers));
 
         items.push({
@@ -2553,7 +2804,10 @@ function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimens
 
   for (const stop of stopsDesc) {
     const items = expandStopLines(stop);
-    if (!items.length) { advanceToNextSlice(); continue; }
+    if (!items.length) {
+      advanceToNextSlice();
+      continue;
+    }
 
     for (const it of items) {
       let remaining = it.qty;
@@ -2566,11 +2820,15 @@ function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimens
           const tmp = placeL; placeL = it.W; placeW = it.L;
         }
 
-        if (cursorZ + placeW > Wmax + EPS) { advanceToNextSlice(); }
-        if (cursorX + placeL > Lmax + EPS) { remaining = 0; break; }
+        if (cursorZ + placeW > Wmax + EPS) {
+          advanceToNextSlice();
+        }
+        if (cursorX + placeL > Lmax + EPS) {
+          remaining = 0;
+          break;
+        }
 
         const layersHere = Math.min(it.maxLayers, remaining);
-        // Visual placement uses the same gap -> cannot exceed the computed height cap
         for (let h = 0; h < layersHere; h++) {
           placements.push({
             pkg_ID: it.pkg_ID,
@@ -2602,8 +2860,11 @@ function computeBoxPlacements(loadArrangement, packageInfoDetails, vehicleDimens
 
 function generatePackageBlocks(boxPlacements) {
   return boxPlacements.map(b => ({
-    pkg_ID: b.pkg_ID, prod_ID: b.prod_ID, color: b.color || '#999',
-    position: b.position, dimensions: b.dimensions
+    pkg_ID: b.pkg_ID,
+    prod_ID: b.prod_ID,
+    color: b.color || '#999',
+    position: b.position,
+    dimensions: b.dimensions
   }));
 }
 
@@ -2616,7 +2877,9 @@ function buildProductLegend(loadArrangement, packageInfoDetails, colorByProdPkg)
       if (!p) continue;
       for (const l of (p.lines || [])) {
         if (!l?.prod_ID) continue;
-        const rec = (byProd[l.prod_ID] ||= { prod_ID: l.prod_ID, color: '#999', totalQty: 0, byPackage: {}, byStop: {} });
+        const rec = (byProd[l.prod_ID] ||= {
+          prod_ID: l.prod_ID, color: '#999', totalQty: 0, byPackage: {}, byStop: {}
+        });
         const q = Number(l.quantity || 0);
         rec.totalQty += q;
         const key = `${l.prod_ID}|${pkg_ID}`;
@@ -2627,7 +2890,9 @@ function buildProductLegend(loadArrangement, packageInfoDetails, colorByProdPkg)
     }
   }
   return Object.values(byProd).map(r => ({
-    prod_ID: r.prod_ID, color: r.color, totalQty: r.totalQty,
+    prod_ID: r.prod_ID,
+    color: r.color,
+    totalQty: r.totalQty,
     byPackage: Object.entries(r.byPackage).map(([pack_ID, v]) => ({ pack_ID, qty: v.qty, color: v.color })),
     byStop: Object.entries(r.byStop).map(([stop, qty]) => ({ stop: Number(stop), qty })).sort((a, b) => a.stop - b.stop)
   }));
@@ -2661,13 +2926,15 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
     const pickupDate = packagesData[0].pickup_date_time.split('T')[0];
     packagesData.forEach(p => {
       if (p.ship_from !== origin) throw new Error('All packages must share ship_from');
-      if (p.pickup_date_time.split('T')[0] !== pickupDate) throw new Error('All packages must share pickup date');
+      if (p.pickup_date_time.split('T')[0] !== pickupDate)
+        throw new Error('All packages must share pickup date');
     });
 
     // 2) products
     const allLines = packagesData.flatMap(p => p.products || []);
     const prodIDs = [...new Set(allLines.map(l => l.prod_ID))];
-    if (!prodIDs.length) return res.status(400).json({ error: 'No product lines in packages' });
+    if (!prodIDs.length)
+      return res.status(400).json({ error: 'No product lines in packages' });
 
     const [prodRows] = await db.query(
       `SELECT product_ID, weight, weight_uom, volume, volume_uom,
@@ -2692,9 +2959,15 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
     }).filter(Boolean);
     const maxPkgH = heights.length ? Math.max(...heights) : 0;
 
-    // global stacking factor cap (Infinity allowed)
-    const sfCaps = allLines.map(l => parseSfCap(productMap[l.prod_ID]?.stacking_factor));
-    const globalSfCap = sfCaps.length ? Math.max(...sfCaps) : Infinity;
+    // global stacking factor cap (∞ if any product has 0/null/'')
+    let hasInf = false;
+    let finiteMax = 1;
+    for (const l of allLines) {
+      const cap = parseSfCap(productMap[l.prod_ID]?.stacking_factor);
+      if (!Number.isFinite(cap)) { hasInf = true; }
+      else finiteMax = Math.max(finiteMax, cap);
+    }
+    const globalSfCap = hasInf ? Infinity : finiteMax;
 
     // 4) vehicles near origin
     const [dbVehicles] = await db.query(
@@ -2711,13 +2984,10 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
       const rawVolDims = (W && L && H) ? (W * L * H) : parseVolumeAndUOM(caps.cubic_capacity, caps.cubic_capacity_unit);
       const rawM3 = rawVolDims || 0;
 
-      // height-based global layer cap (gap-aware, using tallest box)
-      const maxLayersByHeight = (maxPkgH > 0 && H > 0)
-        ? Math.max(1, Math.floor((H + LAYER_GAP_M) / (maxPkgH + LAYER_GAP_M)))
-        : 1;
-
-      // If any line is unlimited, do not restrict via SF
-      const truckAllowedLayers = Math.min(maxLayersByHeight, Number.isFinite(globalSfCap) ? globalSfCap : maxLayersByHeight);
+      const maxLayersByHeight = (maxPkgH > 0 && H > 0) ? layerCapByHeight(H, maxPkgH, LAYER_GAP_M) : 1;
+      const truckAllowedLayers = Number.isFinite(globalSfCap)
+        ? Math.min(maxLayersByHeight, globalSfCap)
+        : maxLayersByHeight;
 
       const oneLayerM3 = (maxPkgH > 0) ? (W * L * maxPkgH) : 0;
       const usableVol = oneLayerM3 * truckAllowedLayers;
@@ -2752,10 +3022,18 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
     // 6) origin coords
     const sourceLoc = await getLocationById(origin);
 
-    // 7) allocate
+    // 7) allocate (fast path with splitter)
     const { allocations, totalCost, unallocated } = await allocatePackages(
-      packagesData, fleet, sourceLoc, productMap, packagingInfoMap,
-      { includeTraffic, departureTimeEpoch, weatherOpts }
+      packagesData,
+      fleet,
+      sourceLoc,
+      productMap,
+      packagingInfoMap,
+      {
+        includeTraffic,
+        departureTimeEpoch,
+        weatherOpts
+      }
     );
 
     // 8) enrich for FE (3D packing etc.)
@@ -2789,14 +3067,12 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
           }
 
           const sfCap = parseSfCap(prod?.stacking_factor);
-
-          // GAP-AWARE height cap at line level
-          let heightCap = 1;
-          if (dims?.heightM && heightM) {
-            heightCap = Math.max(1, Math.floor((heightM + LAYER_GAP_M) / (dims.heightM + LAYER_GAP_M)));
-          }
-
-          const allowedLayers = Math.max(1, Math.min(heightCap, Math.max(1, v.allowedLayers || 1), sfCap));
+          const heightCap = layerCapByHeight(heightM, dims.heightM, LAYER_GAP_M);
+          const allowedLayers = Math.min(
+            Number.isFinite(v.allowedLayers) ? Math.max(1, v.allowedLayers) : heightCap,
+            heightCap,
+            sfCap
+          );
 
           return {
             prod_ID: line.prod_ID,
@@ -2817,7 +3093,11 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
       packageInfoDetails.forEach(p => {
         (p.lines || []).forEach(l => {
           if (l.packagingDimensions) {
-            perLineLayers.push({ prod_ID: l.prod_ID, pac_ID: l.pac_ID, allowedLayers: l.allowedLayers });
+            perLineLayers.push({
+              prod_ID: l.prod_ID,
+              pac_ID: l.pac_ID,
+              allowedLayers: l.allowedLayers
+            });
           }
         });
       });
@@ -2831,9 +3111,14 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
 
       const packageDetails = a.packages.map((pkg_ID, idx) => {
         const vol = (a.pkgVolumes && a.pkgVolumes[idx]) || 0;
-        const percentOfTruck   = rawM3    ? +(vol / rawM3    * 100).toFixed(2) : 0;
-        const percentOfUsable  = usableM3 ? +(vol / usableM3 * 100).toFixed(2) : 0;
-        return { pkg_ID, volumeM3: vol, percentOfTruck, percentOfUsable };
+        const percentOfTruckRaw    = rawM3    ? +(vol / rawM3    * 100).toFixed(2) : 0;
+        const percentOfUsableRules = usableM3 ? +(vol / usableM3 * 100).toFixed(2) : 0;
+        return {
+          pkg_ID,
+          volumeM3: vol,
+          percentOfTruck: percentOfTruckRaw,
+          percentOfUsable: percentOfUsableRules
+        };
       });
 
       const colorByProdPkg = buildColorMapByProdPkg(packageInfoDetails);
@@ -2854,19 +3139,23 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
 
       const boxPlacements = generatePackageBlocks(rawPlacements);
 
+      // sanity: input vs output count
       const expectedCount = packageInfoDetails.reduce((s,p)=>
         s + (p.lines||[]).reduce((ss,l)=> ss + Number(l.quantity||0), 0), 0
       );
       const actualCount = boxPlacements.length;
       if (expectedCount !== actualCount) {
         logger.warn('Box placement count mismatch', {
-          vehicle_ID: v.vehicle_ID, expected: expectedCount, actual: actualCount, stops: a.loadArrangement?.length || 0
+          vehicle_ID: v.vehicle_ID,
+          expected: expectedCount,
+          actual: actualCount,
+          stops: a.loadArrangement?.length || 0
         });
       }
 
       const productLegend = buildProductLegend(a.loadArrangement, packageInfoDetails, colorByProdPkg);
 
-      // Weather
+      // Attach weather if requested
       let weatherAlongRoute = undefined;
       let weatherSummary = undefined;
       if (includeWeather) {
@@ -2875,22 +3164,30 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
         } else if (a.sampledRoutePoints?.length) {
           const normalized = a.sampledRoutePoints.map(normalizePoint);
           const { pointsWeather, summary } = await getWeatherAlongRoute(
-            normalized, { units: weatherOpts.units, maxPoints: weatherOpts.maxPoints }
+            normalized,
+            { units: weatherOpts.units, maxPoints: weatherOpts.maxPoints }
           );
-          weatherAlongRoute = pointsWeather; weatherSummary = summary;
+          weatherAlongRoute = pointsWeather;
+          weatherSummary = summary;
         } else {
-          weatherAlongRoute = []; weatherSummary = { minTemp: null, maxTemp: null, distinctConditions: [], points: 0 };
+          weatherAlongRoute = [];
+          weatherSummary = { minTemp: null, maxTemp: null, distinctConditions: [], points: 0 };
         }
       }
 
-      // Traffic summary (if missing)
+      // Ensure traffic summary exists if requested
       let trafficSummary = a.trafficSummary || null;
       if (includeTraffic && !trafficSummary && Array.isArray(a.route)) {
         const delays = a.route.map(l => +l.trafficDelaySec || 0);
         const totalDelaySec = delays.reduce((s, n) => s + n, 0);
         const avgDelay = a.route.length ? Math.round(totalDelaySec / a.route.length) : 0;
         const congestion = totalDelaySec > 3600 ? 'high' : totalDelaySec > 900 ? 'medium' : 'low';
-        trafficSummary = { trafficAt: normalizeDeparture(departureTimeEpoch), totalDelaySec, avgDelayPerLegSec: avgDelay, congestion };
+        trafficSummary = {
+          trafficAt: normalizeDeparture(departureTimeEpoch),
+          totalDelaySec,
+          avgDelayPerLegSec: avgDelay,
+          congestion
+        };
       }
 
       return {
@@ -2912,8 +3209,7 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
           maxLayersByHeight: v.maxLayersByHeight,
           allowedLayers: v.allowedLayers,
           allowedByHeight: v.maxLayersByHeight,
-          // null => unlimited SF (so FE won’t choke on Infinity)
-          allowedBySF: Number.isFinite(globalSfCap) ? globalSfCap : null,
+          allowedBySF: Number.isFinite(globalSfCap) ? globalSfCap : 'infinite',
           layersUsed,
           perLineLayers
         },
@@ -2924,6 +3220,7 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
       };
     }));
 
+    // metrics + event
     const ms = Date.now() - t0;
     await logApiPerf('/create-order', ms, true);
     await logSolverPerf(packagesData.length, fleet.length, ms, totalCost);
@@ -2947,7 +3244,8 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
 /* ---- Sample route ---- */
 async function getPackagesByIds(packageIDs) {
   const ph = packageIDs.map(_ => '?').join(',');
-  const [rows] = await db.query(`SELECT * FROM packages WHERE pack_ID IN (${ph})`, packageIDs);
+  const [rows] = await db.query(`
+    SELECT * FROM packages WHERE pack_ID IN (${ph})`, packageIDs);
   if (!rows.length) throw new Error('No matching packages');
   return rows.map(r => ({
     pack_ID: r.pack_ID,
@@ -3008,7 +3306,8 @@ router.post('/route/traffic', jwtAuth.verifyToken, async (req, res) => {
     }
 
     const { legs, trafficSummary } = await fetchRouteGoogle(keyLocs, {
-      includeTraffic: true, departureTimeEpoch
+      includeTraffic: true,
+      departureTimeEpoch
     });
 
     const payload = { provider: 'google', legs, summary: trafficSummary };
@@ -3037,7 +3336,8 @@ router.post('/route/weather', jwtAuth.verifyToken, async (req, res) => {
     if ((!usePoints || !usePoints.length) && Array.isArray(locations) && locations.length >= 2) {
       const shipments = new Array(Math.max(0, locations.length - 1)).fill(0);
       const { sampledCoords } = await getOptimizedRouteWithLoad(locations, shipments, {
-        sampleEveryKm, maxSamplePoints: maxPoints
+        sampleEveryKm,
+        maxSamplePoints: maxPoints
       });
       usePoints = sampledCoords;
     }

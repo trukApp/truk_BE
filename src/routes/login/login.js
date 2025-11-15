@@ -3,7 +3,7 @@ const router = express.Router();
 const db = require('../../../dbConnection');
 const jwtAuth = require('../../JWT/jwtAuth');
 const messages = require('../../responses/res_messages');
-const {logger} = require('../../logger/logger');
+const { logger } = require('../../logger/logger');
 const nodemailer = require('nodemailer');
 
 
@@ -21,43 +21,42 @@ router.post('/login', async (req, res) => {
 
 
   if ((!email && !mobile) || !password) {
-      return res.status(400).json({ message: 'Email/Mobile and password are required.' });
+    return res.status(400).json({ message: 'Email/Mobile and password are required.' });
   }
 
-
   try {
-      const [userResult] = await db.query(
-          'SELECT * FROM signup WHERE (email = ? OR mobile = ?)',
-          [email, mobile]
-      );
+    const [userResult] = await db.query(
+      'SELECT * FROM signup WHERE (email = ? OR mobile = ?)',
+      [email, mobile]
+    );
 
 
-      if (userResult.length === 0) {
-          return res.status(404).json({ message: 'User not found. Please sign up first.' });
-      }
+    if (userResult.length === 0) {
+      return res.status(404).json({ message: 'User not found. Please sign up first.' });
+    }
 
 
-      const user = userResult[0];
+    const user = userResult[0];
 
 
-      if (user.password !== password) {
-          return res.status(401).json({ message: 'Invalid password.' });
-      }
+    if (user.password !== password) {
+      return res.status(401).json({ message: 'Invalid password.' });
+    }
 
 
-      const accessToken = jwtAuth.generateToken(user.profile_id, user.user_type);
-      const refreshToken = jwtAuth.generateRefreshToken(user.profile_id, user.user_type);
+    const accessToken = jwtAuth.generateToken(user.profile_id, user.user_type);
+    const refreshToken = jwtAuth.generateRefreshToken(user.profile_id, user.user_type);
 
 
-      return res.status(200).json({
-          message: 'Login successful.',
-          accessToken,
-          refreshToken,
-         "profile_id": user.profile_id
-      });
+    return res.status(200).json({
+      message: 'Login successful.',
+      accessToken,
+      refreshToken,
+      "profile_id": user.profile_id
+    });
   } catch (error) {
-      logger.error('Login error:', error);
-      return res.status(500).json({ message: 'Server error. Please try again later.' });
+    logger.error('Login error:', error);
+    return res.status(500).json({ message: 'Server error. Please try again later.' });
   }
 });
 
@@ -108,27 +107,27 @@ router.post('/login', async (req, res) => {
 
 
 router.post('/logout', async (req, res) => {
-    try {
-        // const user = req.body.user_id;
-        // const sql = `SELECT external_id FROM onelove_v2.users WHERE user_id =?`;
-        // const [sqlResult] = await connection.query(sql, user);
-        // logger.info("sqlResult", sqlResult);
-        // const uuId = sqlResult[0].external_id;
-        // logger.info('external id', uuId);
+  try {
+    // const user = req.body.user_id;
+    // const sql = `SELECT external_id FROM onelove_v2.users WHERE user_id =?`;
+    // const [sqlResult] = await connection.query(sql, user);
+    // logger.info("sqlResult", sqlResult);
+    // const uuId = sqlResult[0].external_id;
+    // logger.info('external id', uuId);
 
 
-        const tokenHeader = req.headers.authorization;
-        if (tokenHeader) {
-            const token = tokenHeader.split(' ')[1];
-            jwtAuth.addToBlacklist(token);
-        }
-        return res.status(200).json({
-            message: messages.LOGOUT
-        });
-    } catch (err) {
-        logger.error("Error", err);
-        return res.status(400).json({ message: messages.LOGOUT_FAILED });
+    const tokenHeader = req.headers.authorization;
+    if (tokenHeader) {
+      const token = tokenHeader.split(' ')[1];
+      jwtAuth.addToBlacklist(token);
     }
+    return res.status(200).json({
+      message: messages.LOGOUT
+    });
+  } catch (err) {
+    logger.error("Error", err);
+    return res.status(400).json({ message: messages.LOGOUT_FAILED });
+  }
 });
 
 
@@ -139,10 +138,10 @@ router.post('/refresh-token', (req, res) => {
 
   const refreshTokenValue = req.body.refreshToken;
   jwtAuth.refreshToken(req, res, (err, newAccessToken) => {
-      if (err) {
-          return res.status(403).json({ message: messages.FORBID});
-      }
-      res.status(200).json({ accessToken: newAccessToken });
+    if (err) {
+      return res.status(403).json({ message: messages.FORBID });
+    }
+    res.status(200).json({ accessToken: newAccessToken });
   });
 });
 

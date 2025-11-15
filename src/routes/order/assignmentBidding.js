@@ -425,38 +425,135 @@ router.post('/initiate-open-bidding', jwtAuth.verifyToken, async (req, res) => {
    - exclude cancelled & closed/finalised
    - must not be ended and must be within bid_closing_time
    ========================================================= */
+
+
+
+// router.get('/active-bids', jwtAuth.verifyToken, async (req, res) => {
+//   try {
+//     const { carrier_ID } = req.query;
+//     if (!carrier_ID) return res.status(400).json({ message: 'carrier_ID is required in query.' });
+
+//     const [results] = await db.query(`
+//       SELECT ab.*, o.*
+//       FROM assignment_bidding ab
+//       JOIN orders o ON ab.order_ID = o.order_ID
+//       WHERE ab.bid_end_time IS NULL
+//         AND ab.bid_status = 'open'
+//         AND JSON_CONTAINS(ab.bid_reqs, JSON_QUOTE(?))
+//     `, [carrier_ID]);
+
+//     const filtered = results.filter(row => {
+//       const closing = row.bid_closing_time;
+//       return !closing || isAfterNow(closing);
+//     });
+
+//     if (!filtered.length) return res.status(404).json({ message: 'No active bids found for this carrier.' });
+
+//     const cleaned = filtered.map(row => {
+//       const { bid_reqs, total_cost, all_bids, finalised_bid, ...rest } = row;
+//       return rest;
+//     });
+
+//     res.status(200).json({ message: 'Active bids fetched successfully.', data: cleaned });
+//   } catch (error) {
+//     logger.error('Error fetching active bids for carrier:', error);
+//     res.status(500).json({ message: 'Internal Server Error', error: error.message });
+//   }
+// });
+
+
 router.get('/active-bids', jwtAuth.verifyToken, async (req, res) => {
   try {
     const { carrier_ID } = req.query;
-    if (!carrier_ID) return res.status(400).json({ message: 'carrier_ID is required in query.' });
+    if (!carrier_ID) {
+      return res.status(400).json({ message: 'carrier_ID is required in query.' });
+    }
 
-    const [results] = await db.query(`
+    // --- helpers ---
+    const parseJSON = (v, def = null) => {
+      if (v == null) return def;
+      try { return typeof v === 'string' ? JSON.parse(v) : v; } catch { return def; }
+    };
+
+    // bid_closing_time can be ISO or like "15 mins"
+    const closingAsDate = (row) => {
+      const raw = row.bid_closing_time;
+      if (!raw) return null;
+
+      // "N mins" pattern -> start + N minutes
+      const m = String(raw).match(/^\s*(\d+)\s*min/i);
+      if (m) {
+        const mins = parseInt(m[1], 10);
+        const start = row.bid_start_time ? new Date(row.bid_start_time) : null;
+        if (!start || Number.isNaN(start.getTime())) return null;
+        return new Date(start.getTime() + mins * 60 * 1000);
+      }
+
+      // ISO-ish
+      const d = new Date(raw);
+      return Number.isNaN(d.getTime()) ? null : d;
+    };
+
+    const isActiveNow = (row) => {
+      if (String(row.bid_status || '').toLowerCase() !== 'open') return false;
+      const closeAt = closingAsDate(row);
+      // If we can't parse closing, treat as active; otherwise require now < closeAt
+      const stillOpenByTime = !closeAt || Date.now() < closeAt.getTime();
+      // Ignore rows that have a terminal end timestamp
+      const ended = row.bid_end_time && !Number.isNaN(new Date(row.bid_end_time).getTime());
+      return stillOpenByTime && !ended;
+    };
+
+    const redactAllBids = (all_bids, carrierId) => {
+      const arr = parseJSON(all_bids, []);
+      if (!Array.isArray(arr) || arr.length === 0) return null;
+      const mine = arr.filter(b => String(b.bid_from) === String(carrierId));
+      return mine.length ? mine : null; // only my bids; null if I haven't bid yet
+    };
+
+    // --- query ---
+    // Keep the join; let code decide "active" so we handle both ISO and "N mins"
+    const [rows] = await db.query(
+      `
       SELECT ab.*, o.*
-      FROM assignment_bidding ab
-      JOIN orders o ON ab.order_ID = o.order_ID
-      WHERE ab.bid_end_time IS NULL
-        AND ab.bid_status = 'open'
-        AND JSON_CONTAINS(ab.bid_reqs, JSON_QUOTE(?))
-    `, [carrier_ID]);
+        FROM assignment_bidding ab
+        JOIN orders o ON ab.order_ID = o.order_ID
+       WHERE JSON_CONTAINS(ab.bid_reqs, JSON_QUOTE(?), '$')
+      `,
+      [carrier_ID]
+    );
 
-    const filtered = results.filter(row => {
-      const closing = row.bid_closing_time;
-      return !closing || isAfterNow(closing);
+    // Filter to active right now
+    const active = rows.filter(isActiveNow);
+    if (!active.length) {
+      return res.status(404).json({ message: 'No active bids found for this carrier.' });
+    }
+
+    // Shape + redact
+    const data = active.map(row => {
+      // Return everything, but transform JSON fields and redact all_bids
+      const bid_reqs = parseJSON(row.bid_reqs, []);
+      const finalised_bid = parseJSON(row.finalised_bid, null);
+      const all_bids = redactAllBids(row.all_bids, carrier_ID);
+
+      return {
+        ...row,
+        bid_reqs,
+        finalised_bid,
+        all_bids
+      };
     });
 
-    if (!filtered.length) return res.status(404).json({ message: 'No active bids found for this carrier.' });
-
-    const cleaned = filtered.map(row => {
-      const { bid_reqs, total_cost, all_bids, finalised_bid, ...rest } = row;
-      return rest;
+    return res.status(200).json({
+      message: 'Active bids fetched successfully.',
+      data
     });
-
-    res.status(200).json({ message: 'Active bids fetched successfully.', data: cleaned });
   } catch (error) {
     logger.error('Error fetching active bids for carrier:', error);
-    res.status(500).json({ message: 'Internal Server Error', error: error.message });
+    return res.status(500).json({ message: 'Internal Server Error', error: error.message });
   }
 });
+
 
 /* =========================================================
    Place bid
@@ -513,32 +610,101 @@ router.post('/place-bid', jwtAuth.verifyToken, async (req, res) => {
 /* =========================================================
    Carrier participation bids (history)
    ========================================================= */
+
+
+// router.get('/carrier-bids', jwtAuth.verifyToken, async (req, res) => {
+//   try {
+//     const { carrier_ID } = req.query;
+//     if (!carrier_ID) return res.status(400).json({ message: 'carrier_ID is required in query.' });
+
+//     const [results] = await db.query(`
+//       SELECT ab.*, o.*
+//       FROM assignment_bidding ab
+//       JOIN orders o ON ab.order_ID = o.order_ID
+//       WHERE JSON_CONTAINS(ab.all_bids, JSON_OBJECT('bid_from', ?))
+//     `, [carrier_ID]);
+//     if (!results.length) return res.status(404).json({ message: 'No bids found placed by this carrier.' });
+
+//     const cleaned = results.map(row => {
+//       const { bid_reqs, finalised_bid, ...rest } = row;
+//       return rest;
+//     });
+
+//     res.status(200).json({
+//       message: 'Carrier participation bids fetched successfully.',
+//       carrier_ID,
+//       data: cleaned
+//     });
+//   } catch (error) {
+//     logger.error('Error fetching carrier bids:', error);
+//     res.status(500).json({ message: 'Internal Server Error', error: error.message });
+//   }
+// });
+
+
+// Get ALL bids that involve this carrier (invited or bidding), regardless of status
 router.get('/carrier-bids', jwtAuth.verifyToken, async (req, res) => {
   try {
     const { carrier_ID } = req.query;
-    if (!carrier_ID) return res.status(400).json({ message: 'carrier_ID is required in query.' });
+    if (!carrier_ID) {
+      return res.status(400).json({ message: 'carrier_ID is required in query.' });
+    }
 
-    const [results] = await db.query(`
+    // helpers
+    const parseJSON = (v, def = null) => {
+      if (v == null) return def;
+      try { return typeof v === 'string' ? JSON.parse(v) : v; } catch { return def; }
+    };
+
+    const redactAllBids = (all_bids, carrierId) => {
+      const arr = parseJSON(all_bids, []);
+      if (!Array.isArray(arr) || arr.length === 0) return null;
+      const mine = arr.filter(b => String(b.bid_from) === String(carrierId));
+      return mine.length ? mine : null; // don't leak others; null if they haven't bid yet
+    };
+
+    // NOTE: we are NOT filtering by status/time here (open/closed/finalised/cancelled all included)
+    const [rows] = await db.query(
+      `
       SELECT ab.*, o.*
-      FROM assignment_bidding ab
-      JOIN orders o ON ab.order_ID = o.order_ID
-      WHERE JSON_CONTAINS(ab.all_bids, JSON_OBJECT('bid_from', ?))
-    `, [carrier_ID]);
-    if (!results.length) return res.status(404).json({ message: 'No bids found placed by this carrier.' });
+        FROM assignment_bidding ab
+        JOIN orders o ON ab.order_ID = o.order_ID
+       WHERE JSON_CONTAINS(ab.bid_reqs, JSON_QUOTE(?), '$')
+      `,
+      [carrier_ID]
+    );
 
-    const cleaned = results.map(row => {
-      const { bid_reqs, finalised_bid, ...rest } = row;
-      return rest;
+    if (!rows.length) {
+      return res.status(404).json({ message: 'No bids found for this carrier.' });
+    }
+
+    const data = rows.map(row => {
+      const bid_reqs     = parseJSON(row.bid_reqs, []);
+      const finalised_bid= parseJSON(row.finalised_bid, null);
+      const all_bids     = redactAllBids(row.all_bids, carrier_ID);
+
+      return {
+        ...row,
+        bid_reqs,
+        finalised_bid,
+        all_bids
+      };
     });
 
-    res.status(200).json({
-      message: 'Carrier participation bids fetched successfully.',
-      carrier_ID,
-      data: cleaned
+    // (Optional) sort newest first; comment out if you want DB-order
+    data.sort((a, b) => {
+      const at = new Date(a.bid_start_time).getTime() || 0;
+      const bt = new Date(b.bid_start_time).getTime() || 0;
+      return bt - at;
+    });
+
+    return res.status(200).json({
+      message: 'Carrier bids fetched successfully.',
+      data
     });
   } catch (error) {
-    logger.error('Error fetching carrier bids:', error);
-    res.status(500).json({ message: 'Internal Server Error', error: error.message });
+    logger.error('Error fetching bids for carrier:', error);
+    return res.status(500).json({ message: 'Internal Server Error', error: error.message });
   }
 });
 

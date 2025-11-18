@@ -8,6 +8,11 @@ const cors = require('cors');
 const fs = require('fs');
 const swaggerUi = require('swagger-ui-express');
 require('dotenv').config();
+const { logger, requestLogger } = require('./src/logger/logger'); // path looks right from your tree
+
+
+app.use(requestLogger);
+
 
 //Mongo
 // const uri="mongodb+srv://jaimptrust:R1c312qPF6CPTs96@jaimp-dev.k7qfi2a.mongodb.net/?retryWrites=true&w=majority&appName=jaiMP-dev";
@@ -27,8 +32,12 @@ require('dotenv').config();
 app.use(cors({
   origin: "*"
 }));
-app.use(bodyParser.urlencoded({ extended: false }));
-app.use(bodyParser.json());
+// app.use(bodyParser.urlencoded({ extended: false }));
+// app.use(bodyParser.json());
+
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb', parameterLimit: 100000 }));
+
 
 
 
@@ -151,6 +160,31 @@ app.use((err, req, res, next) => {
     detail: err.message
   });
 });
+
+// 404 forwarder (optional)
+app.use((req, res, next) => {
+  const err = new Error('Not Found');
+  err.status = 404;
+  next(err);
+});
+
+// Global error handling middleware
+app.use((err, req, res, next) => {
+  if (logger?.error) {
+    logger.error('Unhandled error', {
+      message: err.message,
+      stack: err.stack,
+      path: req.originalUrl,
+      method: req.method
+    });
+  } else {
+    console.error('Unhandled error', err);
+  }
+  res.status(err.status || 500).json({
+    message: err.message || 'Internal Server Error'
+  });
+});
+
 
 
 

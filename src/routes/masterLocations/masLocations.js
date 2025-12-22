@@ -24,7 +24,7 @@ router.post('/create-location', jwtAuth.verifyToken, async (req, res) => {
         locations.forEach(location => {
             const {
                 loc_desc, longitude, latitude, time_zone, city, state, country, pincode, loc_type,
-                gln_code, iata_code, address_1, address_2, contact_name, contact_phone_number, contact_email
+                gln_code, iata_code, gst_number, address_1, address_2, contact_name, contact_phone_number, contact_email
             } = location;
 
             if (!loc_desc || !longitude || !latitude || !city || !state || !country || !pincode || !loc_type || !contact_name || !contact_phone_number || !contact_email) {
@@ -36,12 +36,12 @@ router.post('/create-location', jwtAuth.verifyToken, async (req, res) => {
 
             insertValues.push([
                 lastLocID, loc_desc, longitude, latitude, time_zone, city, state, country, pincode, loc_type,
-                gln_code, iata_code, address_1 || null, address_2 || null, contact_name || null, contact_phone_number || null, contact_email || null
+                gln_code, iata_code, gst_number, address_1 || null, address_2 || null, contact_name || null, contact_phone_number || null, contact_email || null
             ]);
         });
 
         await db.query(
-            "INSERT INTO master_locations (loc_ID, loc_desc, longitude, latitude, time_zone, city, state, country, pincode, loc_type, gln_code, iata_code, address_1, address_2,  contact_name, contact_phone_number, contact_email) VALUES ?",
+            "INSERT INTO master_locations (loc_ID, loc_desc, longitude, latitude, time_zone, city, state, country, pincode, loc_type, gln_code, iata_code, gst_number, address_1, address_2,  contact_name, contact_phone_number, contact_email) VALUES ?",
             [insertValues]
         );
 
@@ -150,7 +150,7 @@ router.put('/edit-location', jwtAuth.verifyToken, async (req, res) => {
         const { id } = req.query;
         const {
             loc_desc, longitude, latitude, time_zone, city, state, country, pincode, loc_type,
-            gln_code, iata_code, address_1, address_2, contact_name, contact_email, contact_phone_number
+            gln_code, iata_code, gst_number, address_1, address_2, contact_name, contact_email, contact_phone_number
         } = req.body;
 
         if (!id) {
@@ -171,6 +171,7 @@ router.put('/edit-location', jwtAuth.verifyToken, async (req, res) => {
                 loc_type = COALESCE(?, loc_type), 
                 gln_code = COALESCE(?, gln_code), 
                 iata_code = COALESCE(?, iata_code),
+                gst_number = COALESCE(?, gst_number),
                 address_1 = COALESCE(?, address_1),
                 address_2 = COALESCE(?, address_2),
                 contact_name = COALESCE(?, contact_name),
@@ -180,7 +181,7 @@ router.put('/edit-location', jwtAuth.verifyToken, async (req, res) => {
             [
                 loc_desc || null, longitude || null, latitude || null, time_zone || null,
                 city || null, state || null, country || null, pincode || null, loc_type || null,
-                gln_code || null, iata_code || null, address_1 || null, address_2 || null,
+                gln_code || null, iata_code || null, gst_number || null, address_1 || null, address_2 || null,
                 contact_name || null, contact_phone_number || null, contact_email || null, id
             ]
         );

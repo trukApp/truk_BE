@@ -1280,19 +1280,79 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
       allocations: enriched,
       unallocatedPackages: unallocated
     });
-  } catch (err) {
-    const ms = Date.now() - t0;
-    try { await logApiPerf('/create-order', ms, false); } catch { }
-    logger.error('Error creating order:', err);
-    return res.status(500).json({ error: err.message });
+ } catch (err) {
+  const ms = Date.now() - t0;
+  try { await logApiPerf('/create-order', ms, false); } catch {}
+
+  // ✅ Business validation: packages already ordered
+  if (err?.code === 'PACKAGE_ALREADY_ORDERED') {
+    logger.warn('Create-order blocked: packages already ordered', {
+      orderedPackages: err.orderedPackages,
+      message: err.message
+    });
+
+    return res.status(409).json({
+      error: err.message,
+      orderedPackages: err.orderedPackages
+    });
   }
+
+  // ✅ Other validation errors (optional)
+  if (err?.message?.includes('All packages must share')) {
+    logger.warn('Create-order validation failed', { message: err.message });
+    return res.status(400).json({ error: err.message });
+  }
+
+  // ❌ Real server error
+  logger.error('Error creating order', {
+    message: err.message,
+    code: err.code,
+    stack: err.stack
+  });
+
+  return res.status(500).json({ error: 'Internal server error' });
+}
 });
 
 /* ---- Sample route ---- */
+// async function getPackagesByIds(packageIDs) {
+//   const ph = packageIDs.map(_ => '?').join(',');
+//   const [rows] = await db.query(`SELECT * FROM packages WHERE pack_ID IN (${ph})`, packageIDs);
+//   if (!rows.length) throw new Error('No matching packages');
+//   return rows.map(r => ({
+//     pack_ID: r.pack_ID,
+//     ship_from: r.ship_from,
+//     ship_to: r.ship_to,
+//     products: safeJsonParse(r.product_ID),
+//     pickup_date_time: r.pickup_date_time
+//   }));
+// }
+
 async function getPackagesByIds(packageIDs) {
   const ph = packageIDs.map(_ => '?').join(',');
-  const [rows] = await db.query(`SELECT * FROM packages WHERE pack_ID IN (${ph})`, packageIDs);
-  if (!rows.length) throw new Error('No matching packages');
+  const [rows] = await db.query(
+    `SELECT *
+       FROM packages
+      WHERE pack_ID IN (${ph})`,
+    packageIDs
+  );
+
+  if (!rows.length) {
+    throw new Error('No matching packages found');
+  }
+
+  // 🚨 NEW CHECK: already ordered packages
+  const alreadyOrdered = rows
+    .filter(r => String(r.package_status).toLowerCase() === 'ordered')
+    .map(r => r.pack_ID);
+
+  if (alreadyOrdered.length) {
+    const err = new Error('Some packages are already ordered');
+    err.code = 'PACKAGE_ALREADY_ORDERED';
+    err.orderedPackages = alreadyOrdered;
+    throw err;
+  }
+
   return rows.map(r => ({
     pack_ID: r.pack_ID,
     ship_from: r.ship_from,
@@ -1301,6 +1361,7 @@ async function getPackagesByIds(packageIDs) {
     pickup_date_time: r.pickup_date_time
   }));
 }
+
 
 router.post('/sample-route', jwtAuth.verifyToken, async (req, res) => {
   const t0 = Date.now();

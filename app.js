@@ -122,6 +122,8 @@ const assignmentBidding = require('./src/routes/order/assignmentBidding');
 const masDocks = require('./src/routes/masterLocations/masDocks');
 const healthRoutes = require('./src/routes/health');
 const ai = require('./src/routes/ai/index');
+const LOR = require('./src/routes/client/LOR');
+const invoice = require('./src/routes/client/invoice');
 
 app.use('/health', healthRoutes);
 app.use('/truk/reg', signup);
@@ -150,6 +152,8 @@ app.use('/truk/carrier-assignment', assignCarriers);
 app.use('/truk/assignment-bid', assignmentBidding);
 app.use('/truk/masterDock', masDocks)
 app.use('/truk/ai',ai);
+app.use('/truk/LOR',LOR);
+app.use('/truk/invoice',invoice);
 
 
 // Global error handling middleware

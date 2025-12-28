@@ -124,6 +124,7 @@ const healthRoutes = require('./src/routes/health');
 const ai = require('./src/routes/ai/index');
 const LOR = require('./src/routes/client/LOR');
 const invoice = require('./src/routes/client/invoice');
+const ordrs = require('./src/routes/client/ordrs');
 
 app.use('/health', healthRoutes);
 app.use('/truk/reg', signup);
@@ -154,6 +155,7 @@ app.use('/truk/masterDock', masDocks)
 app.use('/truk/ai',ai);
 app.use('/truk/LOR',LOR);
 app.use('/truk/invoice',invoice);
+app.use('/truk/ordrs',ordrs);
 
 
 // Global error handling middleware

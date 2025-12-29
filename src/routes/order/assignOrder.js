@@ -41,7 +41,7 @@ router.post('/assign-order', jwtAuth.verifyToken, async (req, res) => {
             `INSERT INTO assigning_orders (assign_ID, order_ID, assigned_vehicle_data, self_transport, pod, pod_doc)
              VALUES (?, ?, ?, ?, ?, ?)`,
             [assign_ID, order_ID, JSON.stringify(assigned_vehicle_data), self_transport, JSON.stringify(pod), pod_doc]
-        );  
+        );
 
         await db.query(
             `UPDATE orders SET order_status = ? WHERE order_ID = ?`,
@@ -174,7 +174,7 @@ router.get('/assigned-order', jwtAuth.verifyToken, async (req, res) => {
             SELECT 
                 ao.assigning_id, ao.assign_ID, ao.order_ID, ao.assigned_vehicle_data, ao.self_transport, ao.pod, ao.pod_doc,
                 o.scenario_label, o.total_cost, o.allocations, o.allocated_packages,
-                o.unallocated_packages, o.allocated_vehicles, o.created_at, o.updated_at, o.order_status, o.order_docs
+                o.unallocated_packages, o.allocated_vehicles, o.created_at, o.updated_at, o.order_status, o.order_docs, o.assigned_order_status
             FROM assigning_orders ao
             LEFT JOIN orders o ON ao.order_ID = o.order_ID
             WHERE ${condition}

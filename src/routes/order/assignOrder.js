@@ -142,7 +142,8 @@ router.get('/all-assigned-orders', jwtAuth.verifyToken, async (req, res) => {
         assign_ID: a.assign_ID,
         vehicles,
         pod: a.pod,
-        pod_doc: a.pod_doc
+        pod_doc: a.pod_doc,
+        a_order_status:a.assigned_order_status
       });
     });
 
@@ -260,7 +261,8 @@ router.get('/assigned-order-by-id', jwtAuth.verifyToken, async (req, res) => {
         assign_ID: a.assign_ID,
         vehicles,
         pod: a.pod,
-        pod_doc: a.pod_doc
+        pod_doc: a.pod_doc,
+        a_order_status:a.assigned_order_status
       });
     });
 
@@ -435,11 +437,11 @@ router.get('/assigned-order', jwtAuth.verifyToken, async (req, res) => {
 
 router.put('/update-assigned-order', jwtAuth.verifyToken, async (req, res) => {
     try {
-        const { assigning_id } = req.query;
-        const { order_ID, assigned_vehicle_data, self_transport, pod, pod_doc } = req.body;
+        const { assign_ID } = req.query;
+        const { order_ID, assigned_vehicle_data, self_transport, pod, pod_doc, assigned_order_status } = req.body;
 
-        if (!assigning_id) {
-            return res.status(400).json({ message: "assigning_id is required in query." });
+        if (!assign_ID) {
+            return res.status(400).json({ message: "assign_ID is required in query." });
         }
 
         let updateFields = [];
@@ -465,13 +467,17 @@ router.put('/update-assigned-order', jwtAuth.verifyToken, async (req, res) => {
             updateFields.push("pod_doc = ?");
             values.push(pod_doc);
         }
+         if (assigned_order_status) {
+            updateFields.push("assigned_order_status = ?");
+            values.push(assigned_order_status);
+        }
 
         if (updateFields.length === 0) {
             return res.status(400).json({ message: "No fields provided for update." });
         }
 
-        values.push(assigning_id);
-        const query = `UPDATE assigning_orders SET ${updateFields.join(", ")} WHERE assigning_id = ?`;
+        values.push(assign_ID);
+        const query = `UPDATE assigning_orders SET ${updateFields.join(", ")} WHERE assign_ID = ?`;
 
         await db.query(query, values);
         res.status(200).json({ message: "Assigned order updated successfully." });

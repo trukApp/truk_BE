@@ -294,7 +294,8 @@ async function getOptimizedRouteWithLoad(locations, shipmentLoads, {
 
     optimizedRoute = builtRoute;
     shape = shapeLocal || [];
-    sampledCoords = sampleRoutePoints(shape, sampleEveryKm, maxSamplePoints);
+    // sampledCoords = sampleRoutePoints(shape, sampleEveryKm, maxSamplePoints);
+    sampledCoords = shape;
     trafficSummary = trafficSummaryLocal;
     await setJSON(cacheKey, { optimizedRoute, shape, trafficSummary }, cfg.redisTTL);
   }
@@ -305,7 +306,13 @@ async function getOptimizedRouteWithLoad(locations, shipmentLoads, {
     return { ...leg, loadAfterStop: currentLoad };
   });
 
-  return { optimizedRoute: recomputed, sampledCoords, trafficSummary };
+  // return { optimizedRoute: recomputed, sampledCoords, trafficSummary };
+  return {
+  optimizedRoute: recomputed,
+  sampledCoords,       // now FULL route
+  trafficSummary
+};
+
 }
 
 /* ------------------- bearing / clustering ------------------- */

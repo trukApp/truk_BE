@@ -7,13 +7,13 @@ const jwtAuth = require('../../JWT/jwtAuth');
 
 
 function safeParseJSON(val) {
-  if (!val) return [];
-  if (Array.isArray(val)) return val;
-  try {
-    return JSON.parse(val);
-  } catch {
-    return [];
-  }
+    if (!val) return [];
+    if (Array.isArray(val)) return val;
+    try {
+        return JSON.parse(val);
+    } catch {
+        return [];
+    }
 }
 
 
@@ -87,232 +87,232 @@ router.get('/assigned-orders', jwtAuth.verifyToken, async (req, res) => {
 
 
 router.get('/all-assigned-orders', jwtAuth.verifyToken, async (req, res) => {
-  try {
-    const { page = 1, limit = 10 } = req.query;
-    const offset = (page - 1) * limit;
+    try {
+        const { page = 1, limit = 10 } = req.query;
+        const offset = (page - 1) * limit;
 
-    /* -----------------------------------------
-       1️⃣ FETCH SELF-ASSIGNED ORDERS
-    ----------------------------------------- */
-    const [orders] = await db.query(
-      `SELECT *
+        /* -----------------------------------------
+           1️⃣ FETCH SELF-ASSIGNED ORDERS
+        ----------------------------------------- */
+        const [orders] = await db.query(
+            `SELECT *
        FROM orders
        WHERE order_status = 'self assigned'
        ORDER BY created_at DESC
        LIMIT ? OFFSET ?`,
-      [Number(limit), Number(offset)]
-    );
+            [Number(limit), Number(offset)]
+        );
 
-    if (!orders.length) {
-      return res.status(404).json({
-        message: 'No self assigned orders found.'
-      });
-    }
+        if (!orders.length) {
+            return res.status(404).json({
+                message: 'No self assigned orders found.'
+            });
+        }
 
-    const orderIDs = orders.map(o => o.order_ID);
+        const orderIDs = orders.map(o => o.order_ID);
 
-    /* -----------------------------------------
-       2️⃣ FETCH ASSIGNMENTS
-    ----------------------------------------- */
-    const [assignments] = await db.query(
-      `SELECT *
+        /* -----------------------------------------
+           2️⃣ FETCH ASSIGNMENTS
+        ----------------------------------------- */
+        const [assignments] = await db.query(
+            `SELECT *
        FROM assigning_orders
        WHERE order_ID IN (?) AND self_transport = 1`,
-      [orderIDs]
-    );
+            [orderIDs]
+        );
 
-    /* -----------------------------------------
-       3️⃣ MAP ASSIGNMENTS BY ORDER_ID
-    ----------------------------------------- */
-    const assignmentMap = {};
-    const driverIDs = new Set();
+        /* -----------------------------------------
+           3️⃣ MAP ASSIGNMENTS BY ORDER_ID
+        ----------------------------------------- */
+        const assignmentMap = {};
+        const driverIDs = new Set();
 
-    assignments.forEach(a => {
-      const vehicles = safeParseJSON(a.assigned_vehicle_data);
+        assignments.forEach(a => {
+            const vehicles = safeParseJSON(a.assigned_vehicle_data);
 
-      vehicles.forEach(v => {
-        if (v.dri_ID) driverIDs.add(v.dri_ID);
-      });
+            vehicles.forEach(v => {
+                if (v.dri_ID) driverIDs.add(v.dri_ID);
+            });
 
-      if (!assignmentMap[a.order_ID]) {
-        assignmentMap[a.order_ID] = [];
-      }
+            if (!assignmentMap[a.order_ID]) {
+                assignmentMap[a.order_ID] = [];
+            }
 
-      assignmentMap[a.order_ID].push({
-        assign_ID: a.assign_ID,
-        vehicles,
-        pod: a.pod,
-        pod_doc: a.pod_doc,
-        a_order_status:a.assigned_order_status
-      });
-    });
+            assignmentMap[a.order_ID].push({
+                assign_ID: a.assign_ID,
+                vehicles,
+                pod: a.pod,
+                pod_doc: a.pod_doc,
+                a_order_status: a.assigned_order_status
+            });
+        });
 
-    /* -----------------------------------------
-       4️⃣ FETCH DRIVERS
-    ----------------------------------------- */
-    let driverMap = {};
-    if (driverIDs.size) {
-      const [drivers] = await db.query(
-        `SELECT dri_ID, driver_name, locations, vehicle_types,
+        /* -----------------------------------------
+           4️⃣ FETCH DRIVERS
+        ----------------------------------------- */
+        let driverMap = {};
+        if (driverIDs.size) {
+            const [drivers] = await db.query(
+                `SELECT dri_ID, driver_name, locations, vehicle_types,
                 driver_correspondence, logged_in, driver_availability
          FROM master_drivers
          WHERE dri_ID IN (?)`,
-        [[...driverIDs]]
-      );
+                [[...driverIDs]]
+            );
 
-      drivers.forEach(d => {
-        driverMap[d.dri_ID] = d;
-      });
+            drivers.forEach(d => {
+                driverMap[d.dri_ID] = d;
+            });
+        }
+
+        /* -----------------------------------------
+           5️⃣ BUILD FINAL RESPONSE
+        ----------------------------------------- */
+        const response = orders.map(order => {
+            const assigns = assignmentMap[order.order_ID] || [];
+
+            const enrichedAssignments = assigns.map(a => ({
+                ...a,
+                vehicles: a.vehicles.map(v => ({
+                    ...v,
+                    driver: driverMap[v.dri_ID] || null
+                }))
+            }));
+
+            return {
+                ...order,
+                assignments: enrichedAssignments
+            };
+        });
+
+        return res.status(200).json({
+            message: 'Self assigned orders fetched successfully',
+            page: Number(page),
+            limit: Number(limit),
+            count: response.length,
+            orders: response
+        });
+
+    } catch (error) {
+        logger.error('Error fetching self assigned orders', error);
+        return res.status(500).json({
+            message: 'Server error',
+            error: error.message
+        });
     }
-
-    /* -----------------------------------------
-       5️⃣ BUILD FINAL RESPONSE
-    ----------------------------------------- */
-    const response = orders.map(order => {
-      const assigns = assignmentMap[order.order_ID] || [];
-
-      const enrichedAssignments = assigns.map(a => ({
-        ...a,
-        vehicles: a.vehicles.map(v => ({
-          ...v,
-          driver: driverMap[v.dri_ID] || null
-        }))
-      }));
-
-      return {
-        ...order,
-        assignments: enrichedAssignments
-      };
-    });
-
-    return res.status(200).json({
-      message: 'Self assigned orders fetched successfully',
-      page: Number(page),
-      limit: Number(limit),
-      count: response.length,
-      orders: response
-    });
-
-  } catch (error) {
-    logger.error('Error fetching self assigned orders', error);
-    return res.status(500).json({
-      message: 'Server error',
-      error: error.message
-    });
-  }
 });
 
 
 router.get('/assigned-order-by-id', jwtAuth.verifyToken, async (req, res) => {
-  try {
-    const { order_ID } = req.query;
+    try {
+        const { order_ID } = req.query;
 
-    if (!order_ID) {
-      return res.status(400).json({
-        message: 'order_ID is required'
-      });
-    }
+        if (!order_ID) {
+            return res.status(400).json({
+                message: 'order_ID is required'
+            });
+        }
 
-    /* -----------------------------------------
-       1️⃣ FETCH ORDER (SELF ASSIGNED ONLY)
-    ----------------------------------------- */
-    const [orders] = await db.query(
-      `SELECT *
+        /* -----------------------------------------
+           1️⃣ FETCH ORDER (SELF ASSIGNED ONLY)
+        ----------------------------------------- */
+        const [orders] = await db.query(
+            `SELECT *
        FROM orders
        WHERE order_ID = ?
          AND order_status = 'self assigned'
        LIMIT 1`,
-      [order_ID]
-    );
+            [order_ID]
+        );
 
-    if (!orders.length) {
-      return res.status(404).json({
-        message: 'Order not found or not self assigned'
-      });
-    }
+        if (!orders.length) {
+            return res.status(404).json({
+                message: 'Order not found or not self assigned'
+            });
+        }
 
-    const order = orders[0];
+        const order = orders[0];
 
-    /* -----------------------------------------
-       2️⃣ FETCH ASSIGNMENTS
-    ----------------------------------------- */
-    const [assignments] = await db.query(
-      `SELECT *
+        /* -----------------------------------------
+           2️⃣ FETCH ASSIGNMENTS
+        ----------------------------------------- */
+        const [assignments] = await db.query(
+            `SELECT *
        FROM assigning_orders
        WHERE order_ID = ?
          AND self_transport = 1`,
-      [order_ID]
-    );
+            [order_ID]
+        );
 
-    /* -----------------------------------------
-       3️⃣ COLLECT DRIVER IDs
-    ----------------------------------------- */
-    const driverIDs = new Set();
-    const assignmentMap = [];
+        /* -----------------------------------------
+           3️⃣ COLLECT DRIVER IDs
+        ----------------------------------------- */
+        const driverIDs = new Set();
+        const assignmentMap = [];
 
-    assignments.forEach(a => {
-      const vehicles = safeParseJSON(a.assigned_vehicle_data);
+        assignments.forEach(a => {
+            const vehicles = safeParseJSON(a.assigned_vehicle_data);
 
-      vehicles.forEach(v => {
-        if (v.dri_ID) driverIDs.add(v.dri_ID);
-      });
+            vehicles.forEach(v => {
+                if (v.dri_ID) driverIDs.add(v.dri_ID);
+            });
 
-      assignmentMap.push({
-        assign_ID: a.assign_ID,
-        vehicles,
-        pod: a.pod,
-        pod_doc: a.pod_doc,
-        a_order_status:a.assigned_order_status
-      });
-    });
+            assignmentMap.push({
+                assign_ID: a.assign_ID,
+                vehicles,
+                pod: a.pod,
+                pod_doc: a.pod_doc,
+                a_order_status: a.assigned_order_status
+            });
+        });
 
-    /* -----------------------------------------
-       4️⃣ FETCH DRIVERS
-    ----------------------------------------- */
-    let driverMap = {};
-    if (driverIDs.size) {
-      const [drivers] = await db.query(
-        `SELECT dri_ID, driver_name, locations, vehicle_types,
+        /* -----------------------------------------
+           4️⃣ FETCH DRIVERS
+        ----------------------------------------- */
+        let driverMap = {};
+        if (driverIDs.size) {
+            const [drivers] = await db.query(
+                `SELECT dri_ID, driver_name, locations, vehicle_types,
                 driver_correspondence, logged_in, driver_availability
          FROM master_drivers
          WHERE dri_ID IN (?)`,
-        [[...driverIDs]]
-      );
+                [[...driverIDs]]
+            );
 
-      drivers.forEach(d => {
-        driverMap[d.dri_ID] = d;
-      });
+            drivers.forEach(d => {
+                driverMap[d.dri_ID] = d;
+            });
+        }
+
+        /* -----------------------------------------
+           5️⃣ ENRICH ASSIGNMENTS
+        ----------------------------------------- */
+        const enrichedAssignments = assignmentMap.map(a => ({
+            ...a,
+            vehicles: a.vehicles.map(v => ({
+                ...v,
+                driver: driverMap[v.dri_ID] || null
+            }))
+        }));
+
+        /* -----------------------------------------
+           6️⃣ FINAL RESPONSE
+        ----------------------------------------- */
+        return res.status(200).json({
+            message: 'Order retrieved successfully',
+            order: {
+                ...order,
+                assignments: enrichedAssignments
+            }
+        });
+
+    } catch (error) {
+        logger.error('Error fetching order by ID', error);
+        return res.status(500).json({
+            message: 'Server error',
+            error: error.message
+        });
     }
-
-    /* -----------------------------------------
-       5️⃣ ENRICH ASSIGNMENTS
-    ----------------------------------------- */
-    const enrichedAssignments = assignmentMap.map(a => ({
-      ...a,
-      vehicles: a.vehicles.map(v => ({
-        ...v,
-        driver: driverMap[v.dri_ID] || null
-      }))
-    }));
-
-    /* -----------------------------------------
-       6️⃣ FINAL RESPONSE
-    ----------------------------------------- */
-    return res.status(200).json({
-      message: 'Order retrieved successfully',
-      order: {
-        ...order,
-        assignments: enrichedAssignments
-      }
-    });
-
-  } catch (error) {
-    logger.error('Error fetching order by ID', error);
-    return res.status(500).json({
-      message: 'Server error',
-      error: error.message
-    });
-  }
 });
 
 
@@ -416,9 +416,9 @@ router.get('/assigned-order', jwtAuth.verifyToken, async (req, res) => {
 
         const query = `
             SELECT 
-                ao.assigning_id, ao.assign_ID, ao.order_ID, ao.assigned_vehicle_data, ao.self_transport, ao.pod, ao.pod_doc,
+                ao.assigning_id, ao.assign_ID, ao.order_ID, ao.assigned_vehicle_data, ao.self_transport, ao.pod, ao.pod_doc,ao.assigned_order_status
                 o.scenario_label, o.total_cost, o.allocations, o.allocated_packages,
-                o.unallocated_packages, o.allocated_vehicles, o.created_at, o.updated_at, o.order_status, o.order_docs, o.assigned_order_status
+                o.unallocated_packages, o.allocated_vehicles, o.created_at, o.updated_at, o.order_status, o.order_docs,
             FROM assigning_orders ao
             LEFT JOIN orders o ON ao.order_ID = o.order_ID
             WHERE ${condition}
@@ -467,7 +467,7 @@ router.put('/update-assigned-order', jwtAuth.verifyToken, async (req, res) => {
             updateFields.push("pod_doc = ?");
             values.push(pod_doc);
         }
-         if (assigned_order_status) {
+        if (assigned_order_status) {
             updateFields.push("assigned_order_status = ?");
             values.push(assigned_order_status);
         }

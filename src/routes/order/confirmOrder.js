@@ -115,9 +115,9 @@ router.post('/confirm-order', jwtAuth.verifyToken, async (req, res) => {
       const weightVal = alloc.occupiedWeight || 0;
 
       const firstPkg = alloc.packages?.[0];
-      const lastPkg  = alloc.packages?.[alloc.packages.length - 1];
+      const lastPkg = alloc.packages?.[alloc.packages.length - 1];
       const startLocID = packToLocMap[firstPkg]?.ship_from || null;
-      const endLocID   = packToLocMap[lastPkg]?.ship_to   || null;
+      const endLocID = packToLocMap[lastPkg]?.ship_to || null;
 
       // package_dest_radius
       const packageRadiusData = (alloc.packages || []).map(packID => {
@@ -214,11 +214,11 @@ router.post('/confirm-order', jwtAuth.verifyToken, async (req, res) => {
       unallocated_packages: unallocated_packages || []
     });
   } catch (error) {
-    try { await conn.rollback(); } catch {}
+    try { await conn.rollback(); } catch { }
     logger.error('Error confirming order:', error);
     return res.status(500).json({ message: error.message || 'Server error.' });
   } finally {
-    try { conn.release(); } catch {}
+    try { conn.release(); } catch { }
   }
 });
 
@@ -371,21 +371,21 @@ router.post('/confirm-order', jwtAuth.verifyToken, async (req, res) => {
 
 
 router.get('/all-orders', jwtAuth.verifyToken, async (req, res) => {
-    try {
-        const { page, limit } = req.query;
-        let query = `SELECT * FROM orders ORDER BY created_at DESC`;
-        query = applyPagination(query, page, limit);
+  try {
+    const { page, limit } = req.query;
+    let query = `SELECT * FROM orders ORDER BY created_at DESC`;
+    query = applyPagination(query, page, limit);
 
-        const [orders] = await db.query(query);
-        if (!orders.length) {
-            return res.status(404).json({ message: 'No orders found.' });
-        }
-
-        return res.status(200).json({ message: 'Orders retrieved successfully.', orders });
-    } catch (error) {
-        logger.error('Error fetching all orders:', error);
-        return res.status(500).json({ message: 'Server error.', error: error.message });
+    const [orders] = await db.query(query);
+    if (!orders.length) {
+      return res.status(404).json({ message: 'No orders found.' });
     }
+
+    return res.status(200).json({ message: 'Orders retrieved successfully.', orders });
+  } catch (error) {
+    logger.error('Error fetching all orders:', error);
+    return res.status(500).json({ message: 'Server error.', error: error.message });
+  }
 });
 
 
@@ -671,9 +671,9 @@ router.get('/order-by-id', jwtAuth.verifyToken, async (req, res) => {
       order_ID: r.order_ID,
       ship_from: r.ship_from,
       ship_to: r.ship_to,
-      packages_in_data: (() => { 
-        try { return JSON.parse(r.packages_in_data); } 
-        catch { return r.packages_in_data; } 
+      packages_in_data: (() => {
+        try { return JSON.parse(r.packages_in_data); }
+        catch { return r.packages_in_data; }
       })()
     }));
 
@@ -693,74 +693,73 @@ router.get('/order-by-id', jwtAuth.verifyToken, async (req, res) => {
 });
 
 
-
 router.put('/edit-order', jwtAuth.verifyToken, async (req, res) => {
-    try {
-        const { order_ID } = req.query;
-        const {
-            order_status,
-            allocated_packages,
-            allocated_vehicles,
-            order_docs,
-            bill_of_lading
-        } = req.body;
+  try {
+    const { order_ID } = req.query;
+    const {
+      order_status,
+      allocated_packages,
+      allocated_vehicles,
+      order_docs,
+      bill_of_lading
+    } = req.body;
 
-        if (!order_ID) {
-            return res.status(400).json({ message: 'Missing required query parameter: order_ID' });
-        }
-
-        const [orderExists] = await db.query(`SELECT * FROM orders WHERE order_ID = ?`, [order_ID]);
-        if (!orderExists.length) {
-            return res.status(404).json({ message: 'Order not found.' });
-        }
-
-        let updateFields = [];
-        let values = [];
-
-        if (order_status) {
-            updateFields.push('order_status = ?');
-            values.push(order_status);
-        }
-
-        if (allocated_packages) {
-            updateFields.push('allocated_packages = ?');
-            values.push(JSON.stringify(allocated_packages));
-        }
-
-        if (allocated_vehicles) {
-            updateFields.push('allocated_vehicles = ?');
-            values.push(JSON.stringify(allocated_vehicles));
-        }
-
-        if (order_docs) {
-            updateFields.push('order_docs = ?');
-            values.push(JSON.stringify(order_docs));
-        }
-
-        if (bill_of_lading) {
-            updateFields.push('bill_of_lading = ?');
-            values.push(JSON.stringify(bill_of_lading));
-        }
-
-        // Always update the timestamp
-        const now = new Date().toISOString();
-        updateFields.push('updated_at = ?');
-        values.push(now);
-
-        if (updateFields.length === 0) {
-            return res.status(400).json({ message: 'No fields provided for update.' });
-        }
-
-        values.push(order_ID);
-        const query = `UPDATE orders SET ${updateFields.join(', ')} WHERE order_ID = ?`;
-
-        await db.query(query, values);
-
-        return res.status(200).json({ message: 'Order updated successfully.', order_ID });
-    } catch (error) {
-        logger.error('Error updating order:', error);
-        return res.status(500).json({ message: 'Server error.', error: error.message });
+    if (!order_ID) {
+      return res.status(400).json({ message: 'Missing required query parameter: order_ID' });
     }
+
+    const [orderExists] = await db.query(`SELECT * FROM orders WHERE order_ID = ?`, [order_ID]);
+    if (!orderExists.length) {
+      return res.status(404).json({ message: 'Order not found.' });
+    }
+
+    let updateFields = [];
+    let values = [];
+
+    if (order_status) {
+      updateFields.push('order_status = ?');
+      values.push(order_status);
+    }
+
+    if (allocated_packages) {
+      updateFields.push('allocated_packages = ?');
+      values.push(JSON.stringify(allocated_packages));
+    }
+
+    if (allocated_vehicles) {
+      updateFields.push('allocated_vehicles = ?');
+      values.push(JSON.stringify(allocated_vehicles));
+    }
+
+    if (order_docs) {
+      updateFields.push('order_docs = ?');
+      values.push(JSON.stringify(order_docs));
+    }
+
+    if (bill_of_lading) {
+      updateFields.push('bill_of_lading = ?');
+      values.push(JSON.stringify(bill_of_lading));
+    }
+
+    // Always update the timestamp
+    const now = new Date().toISOString();
+    updateFields.push('updated_at = ?');
+    values.push(now);
+
+    if (updateFields.length === 0) {
+      return res.status(400).json({ message: 'No fields provided for update.' });
+    }
+
+    values.push(order_ID);
+    const query = `UPDATE orders SET ${updateFields.join(', ')} WHERE order_ID = ?`;
+
+    await db.query(query, values);
+
+    return res.status(200).json({ message: 'Order updated successfully.', order_ID });
+  } catch (error) {
+    logger.error('Error updating order:', error);
+    return res.status(500).json({ message: 'Server error.', error: error.message });
+  }
 });
 
 
@@ -835,7 +834,7 @@ router.put('/edit-lr-invoice', jwtAuth.verifyToken, async (req, res) => {
 
     const row = after[0];
     let parsed = row.packages_in_data;
-    try { parsed = JSON.parse(parsed); } catch {}
+    try { parsed = JSON.parse(parsed); } catch { }
 
     return res.status(200).json({
       message: 'LR updated successfully.',
@@ -856,24 +855,24 @@ router.put('/edit-lr-invoice', jwtAuth.verifyToken, async (req, res) => {
 
 
 router.delete('/delete-order', jwtAuth.verifyToken, async (req, res) => {
-    try {
-        const { order_ID } = req.query;
-        if (!order_ID) {
-            return res.status(400).json({ message: 'Missing required query parameter: order_ID' });
-        }
-
-        const [orderExists] = await db.query(`SELECT * FROM orders WHERE order_ID = ?`, [order_ID]);
-        if (!orderExists.length) {
-            return res.status(404).json({ message: 'Order not found.' });
-        }
-
-        await db.query(`DELETE FROM orders WHERE order_ID = ?`, [order_ID]);
-
-        return res.status(200).json({ message: 'Order deleted successfully.', order_ID });
-    } catch (error) {
-        logger.error('Error deleting order:', error);
-        return res.status(500).json({ message: 'Server error.', error: error.message });
+  try {
+    const { order_ID } = req.query;
+    if (!order_ID) {
+      return res.status(400).json({ message: 'Missing required query parameter: order_ID' });
     }
+
+    const [orderExists] = await db.query(`SELECT * FROM orders WHERE order_ID = ?`, [order_ID]);
+    if (!orderExists.length) {
+      return res.status(404).json({ message: 'Order not found.' });
+    }
+
+    await db.query(`DELETE FROM orders WHERE order_ID = ?`, [order_ID]);
+
+    return res.status(200).json({ message: 'Order deleted successfully.', order_ID });
+  } catch (error) {
+    logger.error('Error deleting order:', error);
+    return res.status(500).json({ message: 'Server error.', error: error.message });
+  }
 });
 
 module.exports = router;

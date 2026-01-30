@@ -86,6 +86,58 @@ router.get('/assigned-orders', jwtAuth.verifyToken, async (req, res) => {
 });
 
 
+router.get('/orders-by-status', jwtAuth.verifyToken, async (req, res) => {
+    try {
+        let { page, limit, order_status } = req.query;
+
+        page = parseInt(page) || 1;
+        limit = parseInt(limit) || 10;
+
+        if (!order_status) {
+            return res.status(400).json({
+                message: 'order_status is required in query'
+            });
+        }
+
+        // Base query
+        let query = `
+            SELECT *
+            FROM orders
+            WHERE order_status = ?
+            ORDER BY created_at DESC
+        `;
+
+        // Apply pagination
+        query = applyPagination(query, page, limit);
+
+        const [orders] = await db.query(query, [order_status]);
+
+        if (!orders.length) {
+            return res.status(404).json({
+                message: `No orders found with order_status = ${order_status}`,
+                data: []
+            });
+        }
+
+        return res.status(200).json({
+            message: 'Orders fetched successfully',
+            page,
+            limit,
+            order_status,
+            data: orders
+        });
+
+    } catch (error) {
+        logger.error('Error fetching orders by status:', error);
+        return res.status(500).json({
+            message: 'Internal Server Error',
+            error: error.message
+        });
+    }
+});
+
+
+
 router.get('/all-assigned-orders', jwtAuth.verifyToken, async (req, res) => {
     try {
         const { page = 1, limit = 10 } = req.query;

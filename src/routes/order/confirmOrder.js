@@ -692,7 +692,6 @@ router.get('/order-by-id', jwtAuth.verifyToken, async (req, res) => {
   }
 });
 
-
 router.put('/edit-order', jwtAuth.verifyToken, async (req, res) => {
   try {
     const { order_ID } = req.query;

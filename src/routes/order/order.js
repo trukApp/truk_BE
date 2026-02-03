@@ -405,6 +405,90 @@ function checkPackageVehicleCompatibility(pkgF, vehF) {
   return true;
 }
 
+/* ---------------- UNALLOCATION REASON HELPER ---------------- */
+
+function generateUnallocationReason(pkgInfo, vehicles) {
+  try {
+    if (!pkgInfo) return 'Unknown allocation failure';
+
+    /* 1️⃣ No vehicles at pickup location */
+    if (!vehicles || !vehicles.length) {
+      return 'No vehicles available at pickup location';
+    }
+
+    const pkgFlags = pkgInfo.specialFlags || {};
+
+    /* 2️⃣ Special-goods incompatibility */
+    const hasCompatibleVehicle = vehicles.some(v =>
+      checkPackageVehicleCompatibility(pkgFlags, getVehicleSpecialFlags(v))
+    );
+
+    if (!hasCompatibleVehicle) {
+      const reasons = [];
+      if (pkgFlags.fragile) reasons.push('fragile');
+      if (pkgFlags.dangerous) reasons.push('dangerous');
+      if (pkgFlags.hazardous) reasons.push('hazardous');
+      if (pkgFlags.tempCtrl) reasons.push('temperature-controlled');
+
+      return reasons.length
+        ? `No compatible vehicle available for ${reasons.join(', ')} goods`
+        : 'No compatible vehicle available for package type';
+    }
+
+    /* 3️⃣ Weight capacity exceeded */
+    const fitsWeight = vehicles.some(v =>
+      pkgInfo.totalWeight <= v.weightCapKg
+    );
+    if (!fitsWeight) {
+      return 'Package weight exceeds payload capacity of all available vehicles';
+    }
+
+    /* 4️⃣ Volume / usable volume exceeded */
+    const fitsVolume = vehicles.some(v =>
+      pkgInfo.totalVolume <= v.usableVol
+    );
+    if (!fitsVolume) {
+      return 'Package volume exceeds usable capacity of all available vehicles';
+    }
+
+    /* 5️⃣ Physical dimension / orientation failure */
+    const fitsPhysically = vehicles.some(v => {
+      const truckDims = getTruckDimsFromVehicle(v);
+      return (pkgInfo.products || []).every(line => {
+        const dims = line.packagingDimensions;
+        if (!dims) return true;
+        return canRectFitInTruck(dims.lengthM, dims.widthM, truckDims);
+      });
+    });
+
+    if (!fitsPhysically) {
+      return 'Package dimensions do not fit inside any available vehicle';
+    }
+
+    /* 6️⃣ Stacking / height constraint failure */
+    const fitsHeight = vehicles.some(v => {
+      const truckDims = getTruckDimsFromVehicle(v);
+      return (pkgInfo.products || []).every(line => {
+        const dims = line.packagingDimensions;
+        if (!dims?.heightM) return true;
+        return dims.heightM <= truckDims.heightM;
+      });
+    });
+
+    if (!fitsHeight) {
+      return 'Package height or stacking constraints exceed vehicle limits';
+    }
+
+    /* 7️⃣ Solver exhausted all combinations */
+    return 'No feasible vehicle combination found for this package';
+
+  } catch (e) {
+    // Absolute safety net — never crash allocator
+    return 'Allocation failed due to constraints';
+  }
+}
+
+
 /* ---------- packaging helpers (ONLY from master_products) --------- */
 function resolvePacIdsFromProduct(prodRow) {
   if (!prodRow) return [];

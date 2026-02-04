@@ -4,6 +4,8 @@ const db = require('../../../dbConnection');
 const { logger } = require('../../logger/logger');
 const { applyPagination } = require('../../pagination/paginate');
 const jwtAuth = require('../../JWT/jwtAuth');
+const { createTrackingSession } = require('./trackingService');
+
 
 // ===== LR helpers =====
 const LR_PREFIX = 'TALRN';
@@ -118,6 +120,17 @@ router.post('/confirm-order', jwtAuth.verifyToken, async (req, res) => {
       const lastPkg = alloc.packages?.[alloc.packages.length - 1];
       const startLocID = packToLocMap[firstPkg]?.ship_from || null;
       const endLocID = packToLocMap[lastPkg]?.ship_to || null;
+
+      await createTrackingSession({
+        conn,
+        order_ID: newOrderID,
+        vehicle_ID: alloc.vehicle_ID,
+        device_ID: alloc.device_ID || null, // later from assignment
+        loadArrangement: alloc.loadArrangement,
+        packToLocMap,
+        route: alloc.route
+      });
+
 
       // package_dest_radius
       const packageRadiusData = (alloc.packages || []).map(packID => {

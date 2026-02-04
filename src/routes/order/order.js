@@ -488,7 +488,6 @@ function generateUnallocationReason(pkgInfo, vehicles) {
   }
 }
 
-
 /* ---------- packaging helpers (ONLY from master_products) --------- */
 function resolvePacIdsFromProduct(prodRow) {
   if (!prodRow) return [];

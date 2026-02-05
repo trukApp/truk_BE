@@ -87,54 +87,133 @@ router.get('/assigned-orders', jwtAuth.verifyToken, async (req, res) => {
 
 
 router.get('/orders-by-status', jwtAuth.verifyToken, async (req, res) => {
-    try {
-        let { page, limit, order_status } = req.query;
+  try {
+    let { page = 1, limit = 10, order_status } = req.query;
 
-        page = parseInt(page) || 1;
-        limit = parseInt(limit) || 10;
+    page = Number(page);
+    limit = Number(limit);
+    const offset = (page - 1) * limit;
 
-        if (!order_status) {
-            return res.status(400).json({
-                message: 'order_status is required in query'
-            });
-        }
-
-        // Base query
-        let query = `
-            SELECT *
-            FROM orders
-            WHERE order_status = ?
-            ORDER BY created_at DESC
-        `;
-
-        // Apply pagination
-        query = applyPagination(query, page, limit);
-
-        const [orders] = await db.query(query, [order_status]);
-
-        if (!orders.length) {
-            return res.status(404).json({
-                message: `No orders found with order_status = ${order_status}`,
-                data: []
-            });
-        }
-
-        return res.status(200).json({
-            message: 'Orders fetched successfully',
-            page,
-            limit,
-            order_status,
-            data: orders
-        });
-
-    } catch (error) {
-        logger.error('Error fetching orders by status:', error);
-        return res.status(500).json({
-            message: 'Internal Server Error',
-            error: error.message
-        });
+    if (!order_status) {
+      return res.status(400).json({
+        message: 'order_status is required'
+      });
     }
+
+    /* -----------------------------------------
+       1️⃣ FETCH ORDERS BY STATUS
+    ----------------------------------------- */
+    const [orders] = await db.query(
+      `SELECT *
+         FROM orders
+        WHERE order_status = ?
+        ORDER BY created_at DESC
+        LIMIT ? OFFSET ?`,
+      [order_status, limit, offset]
+    );
+
+    if (!orders.length) {
+      return res.status(404).json({
+        message: `No orders found with order_status = ${order_status}`,
+        orders: []
+      });
+    }
+
+    const orderIDs = orders.map(o => o.order_ID);
+
+    /* -----------------------------------------
+       2️⃣ FETCH ASSIGNMENTS (ALL for these orders)
+    ----------------------------------------- */
+    const [assignments] = await db.query(
+      `SELECT *
+         FROM assigning_orders
+        WHERE order_ID IN (?)`,
+      [orderIDs]
+    );
+
+    /* -----------------------------------------
+       3️⃣ MAP ASSIGNMENTS + COLLECT DRIVER IDs
+    ----------------------------------------- */
+    const assignmentMap = {};
+    const driverIDs = new Set();
+
+    assignments.forEach(a => {
+      const vehicles = safeParseJSON(a.assigned_vehicle_data);
+
+      vehicles.forEach(v => {
+        if (v.dri_ID) driverIDs.add(v.dri_ID);
+      });
+
+      if (!assignmentMap[a.order_ID]) {
+        assignmentMap[a.order_ID] = [];
+      }
+
+      assignmentMap[a.order_ID].push({
+        assign_ID: a.assign_ID,
+        vehicles,
+        pod: a.pod,
+        pod_doc: a.pod_doc,
+        a_order_status: a.assigned_order_status,
+        self_transport: a.self_transport
+      });
+    });
+
+    /* -----------------------------------------
+       4️⃣ FETCH DRIVER DETAILS
+    ----------------------------------------- */
+    let driverMap = {};
+    if (driverIDs.size) {
+      const [drivers] = await db.query(
+        `SELECT dri_ID, driver_name, locations, vehicle_types,
+                driver_correspondence, logged_in, driver_availability
+           FROM master_drivers
+          WHERE dri_ID IN (?)`,
+        [[...driverIDs]]
+      );
+
+      drivers.forEach(d => {
+        driverMap[d.dri_ID] = d;
+      });
+    }
+
+    /* -----------------------------------------
+       5️⃣ BUILD FINAL RESPONSE
+    ----------------------------------------- */
+    const response = orders.map(order => {
+      const assigns = assignmentMap[order.order_ID] || [];
+
+      const enrichedAssignments = assigns.map(a => ({
+        ...a,
+        vehicles: a.vehicles.map(v => ({
+          ...v,
+          driver: driverMap[v.dri_ID] || null
+        }))
+      }));
+
+      return {
+        ...order,
+        assignments: enrichedAssignments
+      };
+    });
+
+    return res.status(200).json({
+      message: 'Orders fetched successfully',
+      page,
+      limit,
+      count: response.length,
+      order_status,
+      orders: response
+    });
+
+  } catch (error) {
+    logger.error('Error fetching orders by status', error);
+    return res.status(500).json({
+      message: 'Server error',
+      error: error.message
+    });
+  }
 });
+
 
 
 

@@ -146,7 +146,7 @@ async function fetchGpsFromVendor(providerName, regNo) {
 
 
 
-cron.schedule('*/20 * * * * *', async () => {
+cron.schedule('*/02 * * * * *', async () => {
     //  cron.schedule('0 * * * *', async () => {
     const conn = await db.getConnection();
 

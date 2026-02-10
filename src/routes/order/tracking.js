@@ -117,7 +117,7 @@ async function fetchGpsFromVendor(providerName, regNo) {
         const res = await axios.get(url, {
             params: {
                 providerName,               // 9640881718
-                fcode:"VAMTO"
+                fcode: "VAMTO"
             },
             timeout: 5000
         });
@@ -146,8 +146,8 @@ async function fetchGpsFromVendor(providerName, regNo) {
 
 
 
-// cron.schedule('*/20 * * * * *', async () => {
- cron.schedule('0 * * * *', async () => {
+cron.schedule('*/20 * * * * *', async () => {
+    //  cron.schedule('0 * * * *', async () => {
     const conn = await db.getConnection();
 
     try {

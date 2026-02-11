@@ -71,7 +71,7 @@ const generateAssignID = async () => {
 
 router.post('/assign-order', jwtAuth.verifyToken, async (req, res) => {
   try {
-    const { order_ID, assigned_vehicle_data, self_transport } = req.body;
+    const { order_ID, assigned_vehicle_data, self_transport, assigned_order_status } = req.body;
 
     if (!order_ID) {
       return res.status(400).json({ message: "order_ID is required" });
@@ -93,13 +93,14 @@ router.post('/assign-order', jwtAuth.verifyToken, async (req, res) => {
 
     await db.query(
       `INSERT INTO assigning_orders 
-       (assign_ID, order_ID, assigned_vehicle_data, self_transport)
-       VALUES (?, ?, ?, ?)`,
+       (assign_ID, order_ID, assigned_vehicle_data, self_transport, assigned_order_status)
+       VALUES (?, ?, ?, ?, ?)`,
       [
         assign_ID,
         order_ID,
         JSON.stringify(assigned_vehicle_data),
-        self_transport
+        self_transport,
+        assigned_order_status
       ]
     );
 
@@ -174,7 +175,7 @@ router.get('/orders-by-status', jwtAuth.verifyToken, async (req, res) => {
     const orderIDs = orders.map(o => o.order_ID);
 
     /* -----------------------------------------
-       2️⃣ FETCH ASSIGNMENTS (ALL for these orders)
+       2️⃣ FETCH ASSIGNMENTS
     ----------------------------------------- */
     const [assignments] = await db.query(
       `SELECT *
@@ -183,9 +184,6 @@ router.get('/orders-by-status', jwtAuth.verifyToken, async (req, res) => {
       [orderIDs]
     );
 
-    /* -----------------------------------------
-       3️⃣ MAP ASSIGNMENTS + COLLECT DRIVER IDs
-    ----------------------------------------- */
     const assignmentMap = {};
     const driverIDs = new Set();
 
@@ -211,7 +209,7 @@ router.get('/orders-by-status', jwtAuth.verifyToken, async (req, res) => {
     });
 
     /* -----------------------------------------
-       4️⃣ FETCH DRIVER DETAILS
+       3️⃣ FETCH DRIVER DETAILS
     ----------------------------------------- */
     let driverMap = {};
     if (driverIDs.size) {
@@ -229,10 +227,57 @@ router.get('/orders-by-status', jwtAuth.verifyToken, async (req, res) => {
     }
 
     /* -----------------------------------------
-       5️⃣ BUILD FINAL RESPONSE
+       4️⃣ FETCH TRACKING SESSIONS
+    ----------------------------------------- */
+    const [trackingRows] = await db.query(
+      `SELECT tracking_id, order_id, status,
+              trip_started_at, trip_ended_at,
+              last_gps_time, vehicle_num, device_id
+         FROM order_tracking_sessions
+        WHERE order_id IN (?)`,
+      [orderIDs]
+    );
+
+    const trackingMap = {};
+    const trackingIds = [];
+
+    trackingRows.forEach(t => {
+      trackingMap[t.order_id] = t;
+      trackingIds.push(t.tracking_id);
+    });
+
+    /* -----------------------------------------
+       5️⃣ FETCH STOP TRACKING
+    ----------------------------------------- */
+    const stopMap = {};
+    if (trackingIds.length) {
+      const [stops] = await db.query(
+        `SELECT tracking_id, stop_no, loc_ID,
+                latitude, longitude, radius_m,
+                status, actual_arrival,
+                unloading_start, unloading_end,
+                unloading_duration_sec
+           FROM order_stop_tracking
+          WHERE tracking_id IN (?)
+          ORDER BY tracking_id, stop_no`,
+        [trackingIds]
+      );
+
+      stops.forEach(s => {
+        if (!stopMap[s.tracking_id]) stopMap[s.tracking_id] = [];
+        stopMap[s.tracking_id].push(s);
+      });
+    }
+
+    /* -----------------------------------------
+       6️⃣ BUILD FINAL RESPONSE (NO BREAKAGE)
     ----------------------------------------- */
     const response = orders.map(order => {
       const assigns = assignmentMap[order.order_ID] || [];
+      const tracking = trackingMap[order.order_ID] || null;
+      const stops = tracking
+        ? stopMap[tracking.tracking_id] || []
+        : [];
 
       const enrichedAssignments = assigns.map(a => ({
         ...a,
@@ -244,6 +289,8 @@ router.get('/orders-by-status', jwtAuth.verifyToken, async (req, res) => {
 
       return {
         ...order,
+        tracking,   // ✅ added
+        stops,      // ✅ added
         assignments: enrichedAssignments
       };
     });
@@ -265,6 +312,7 @@ router.get('/orders-by-status', jwtAuth.verifyToken, async (req, res) => {
     });
   }
 });
+
 
 
 

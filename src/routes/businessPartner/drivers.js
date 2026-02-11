@@ -220,6 +220,67 @@ router.get('/get-drivers', jwtAuth.verifyToken, async (req, res) => {
 });
 
 
+router.get('/available-drivers', jwtAuth.verifyToken, async (req, res) => {
+  const conn = await db.getConnection();
+  try {
+    let { page = 1, limit = 10 } = req.query;
+    page = parseInt(page);
+    limit = parseInt(limit);
+    const offset = (page - 1) * limit;
+
+    // 1️⃣ Get BUSY driver IDs
+    const [busyRows] = await conn.query(`
+      SELECT DISTINCT
+        JSON_UNQUOTE(JSON_EXTRACT(ao.assigned_vehicle_data, '$[0].dri_ID')) AS dri_ID
+      FROM assigning_orders ao
+      JOIN orders o ON o.order_ID = ao.order_ID
+      LEFT JOIN order_tracking_sessions ots ON ots.order_id = ao.order_ID
+      WHERE
+        o.order_status IN ('self assigned', 'assignment pending')
+        OR ots.status IN ('created', 'IN_TRANSIT')
+    `);
+
+    const busyDriverIds = busyRows
+      .map(r => r.dri_ID)
+      .filter(Boolean);
+
+    // 2️⃣ Fetch AVAILABLE drivers
+    let query = `
+      SELECT *
+      FROM master_drivers
+      WHERE driver_availability = 1
+        AND logged_in = 1
+    `;
+
+    const params = [];
+
+    if (busyDriverIds.length) {
+      query += ` AND dri_ID NOT IN (${busyDriverIds.map(() => '?').join(',')})`;
+      params.push(...busyDriverIds);
+    }
+
+    query += ` ORDER BY driver_name ASC LIMIT ? OFFSET ?`;
+    params.push(limit, offset);
+
+    const [drivers] = await conn.query(query, params);
+
+    return res.json({
+      message: 'Available drivers fetched successfully',
+      page,
+      limit,
+      count: drivers.length,
+      drivers
+    });
+
+  } catch (err) {
+    logger.error('available-drivers failed', err);
+    res.status(500).json({ message: 'Server error' });
+  } finally {
+    conn.release();
+  }
+});
+
+
 router.get('/search-drivers', jwtAuth.verifyToken, async (req, res) => {
     try {
         const { searchKey, page, limit } = req.query;

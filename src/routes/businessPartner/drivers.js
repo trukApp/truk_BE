@@ -223,12 +223,10 @@ router.get('/get-drivers', jwtAuth.verifyToken, async (req, res) => {
 router.get('/available-drivers', jwtAuth.verifyToken, async (req, res) => {
   const conn = await db.getConnection();
   try {
-    let { page = 1, limit = 10 } = req.query;
-    page = parseInt(page);
-    limit = parseInt(limit);
-    const offset = (page - 1) * limit;
 
-    // 1️⃣ Get BUSY driver IDs
+    /* -------------------------------------------------
+       1️⃣ GET BUSY DRIVER IDs
+    -------------------------------------------------- */
     const [busyRows] = await conn.query(`
       SELECT DISTINCT
         JSON_UNQUOTE(JSON_EXTRACT(ao.assigned_vehicle_data, '$[0].dri_ID')) AS dri_ID
@@ -244,7 +242,9 @@ router.get('/available-drivers', jwtAuth.verifyToken, async (req, res) => {
       .map(r => r.dri_ID)
       .filter(Boolean);
 
-    // 2️⃣ Fetch AVAILABLE drivers
+    /* -------------------------------------------------
+       2️⃣ FETCH AVAILABLE DRIVERS
+    -------------------------------------------------- */
     let query = `
       SELECT *
       FROM master_drivers
@@ -259,15 +259,12 @@ router.get('/available-drivers', jwtAuth.verifyToken, async (req, res) => {
       params.push(...busyDriverIds);
     }
 
-    query += ` ORDER BY driver_name ASC LIMIT ? OFFSET ?`;
-    params.push(limit, offset);
+    query += ` ORDER BY driver_name ASC`;
 
     const [drivers] = await conn.query(query, params);
 
     return res.json({
       message: 'Available drivers fetched successfully',
-      page,
-      limit,
       count: drivers.length,
       drivers
     });
@@ -279,6 +276,7 @@ router.get('/available-drivers', jwtAuth.verifyToken, async (req, res) => {
     conn.release();
   }
 });
+
 
 
 router.get('/search-drivers', jwtAuth.verifyToken, async (req, res) => {

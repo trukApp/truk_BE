@@ -40,33 +40,85 @@ const generateAssignID = async () => {
     }
 };
 
+// router.post('/assign-order', jwtAuth.verifyToken, async (req, res) => {
+//     try {
+//         const { order_ID, assigned_vehicle_data, self_transport, pod, pod_doc } = req.body;
+
+//         if (!order_ID) {
+//             return res.status(400).json({ message: "order_ID is required." });
+//         }
+
+//         const assign_ID = await generateAssignID();
+
+//         await db.query(
+//             `INSERT INTO assigning_orders (assign_ID, order_ID, assigned_vehicle_data, self_transport, pod, pod_doc)
+//              VALUES (?, ?, ?, ?, ?, ?)`,
+//             [assign_ID, order_ID, JSON.stringify(assigned_vehicle_data), self_transport, JSON.stringify(pod), pod_doc]
+//         );
+
+//         await db.query(
+//             `UPDATE orders SET order_status = ? WHERE order_ID = ?`,
+//             ['self assigned', order_ID]
+//         );
+
+//         res.status(201).json({ message: "Assigned order created successfully", assign_ID });
+//     } catch (error) {
+//         logger.error("Error assigning order:", error);
+//         res.status(500).json({ message: "Internal Server Error", error: error.message });
+//     }
+// });
+
+
 router.post('/assign-order', jwtAuth.verifyToken, async (req, res) => {
-    try {
-        const { order_ID, assigned_vehicle_data, self_transport, pod, pod_doc } = req.body;
+  try {
+    const { order_ID, assigned_vehicle_data, self_transport } = req.body;
 
-        if (!order_ID) {
-            return res.status(400).json({ message: "order_ID is required." });
-        }
-
-        const assign_ID = await generateAssignID();
-
-        await db.query(
-            `INSERT INTO assigning_orders (assign_ID, order_ID, assigned_vehicle_data, self_transport, pod, pod_doc)
-             VALUES (?, ?, ?, ?, ?, ?)`,
-            [assign_ID, order_ID, JSON.stringify(assigned_vehicle_data), self_transport, JSON.stringify(pod), pod_doc]
-        );
-
-        await db.query(
-            `UPDATE orders SET order_status = ? WHERE order_ID = ?`,
-            ['self assigned', order_ID]
-        );
-
-        res.status(201).json({ message: "Assigned order created successfully", assign_ID });
-    } catch (error) {
-        logger.error("Error assigning order:", error);
-        res.status(500).json({ message: "Internal Server Error", error: error.message });
+    if (!order_ID) {
+      return res.status(400).json({ message: "order_ID is required" });
     }
+
+    if (!Array.isArray(assigned_vehicle_data) || !assigned_vehicle_data.length) {
+      return res.status(400).json({ message: "assigned_vehicle_data required" });
+    }
+
+    const v = assigned_vehicle_data[0];
+
+    if (!v.dev_ID || !v.self_vehicle_num) {
+      return res.status(400).json({
+        message: "assigned_vehicle_data must include dev_ID and self_vehicle_num"
+      });
+    }
+
+    const assign_ID = await generateAssignID();
+
+    await db.query(
+      `INSERT INTO assigning_orders 
+       (assign_ID, order_ID, assigned_vehicle_data, self_transport)
+       VALUES (?, ?, ?, ?)`,
+      [
+        assign_ID,
+        order_ID,
+        JSON.stringify(assigned_vehicle_data),
+        self_transport
+      ]
+    );
+
+    await db.query(
+      `UPDATE orders SET order_status = 'self assigned' WHERE order_ID = ?`,
+      [order_ID]
+    );
+
+    res.status(201).json({
+      message: "Assigned order created successfully",
+      assign_ID
+    });
+
+  } catch (err) {
+    logger.error("assign-order failed", err);
+    res.status(500).json({ message: "Server error" });
+  }
 });
+
 
 router.get('/assigned-orders', jwtAuth.verifyToken, async (req, res) => {
     try {

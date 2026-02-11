@@ -62,7 +62,6 @@ router.post('/start-trip', jwtAuth.verifyToken, async (req, res) => {
 
         let assignedData = assignRows[0].assigned_vehicle_data;
 
-        // 🔥 FIX: handle JSON/object safely
         if (typeof assignedData === 'string') {
             try {
                 assignedData = JSON.parse(assignedData);
@@ -76,21 +75,22 @@ router.post('/start-trip', jwtAuth.verifyToken, async (req, res) => {
         }
 
         const device_ID = assignedData[0]?.dev_ID;
+        const vehicle_num = assignedData[0]?.self_vehicle_num;
 
-        if (!device_ID) {
+        if (!device_ID || !vehicle_num) {
             return res.status(400).json({
-                message: 'Device ID not found in assigned vehicle data'
+                message: 'Device ID or Vehicle Number missing in assignment'
             });
         }
 
-        // 3. Start trip
         await conn.query(
             `UPDATE order_tracking_sessions
-          SET device_id = ?,
-              trip_started_at = NOW(),
-              status = 'IN_TRANSIT'
-        WHERE order_id = ?`,
-            [device_ID, order_ID]
+             SET device_id = ?,
+             vehicle_num = ?,
+             trip_started_at = NOW(),
+             status = 'IN_TRANSIT'
+             WHERE order_id = ?`,
+            [device_ID, vehicle_num, order_ID]
         );
 
         return res.json({
@@ -117,7 +117,7 @@ async function fetchGpsFromVendor(providerName, regNo) {
         const res = await axios.get(url, {
             params: {
                 providerName,               // 9640881718
-                fcode:"VAMTO"
+                fcode: "VAMTO"
             },
             timeout: 5000
         });
@@ -147,144 +147,129 @@ async function fetchGpsFromVendor(providerName, regNo) {
 
 
 // cron.schedule('*/20 * * * * *', async () => {
- cron.schedule('0 * * * *', async () => {
-    const conn = await db.getConnection();
+     cron.schedule('0 * * * *', async () => {
+  const conn = await db.getConnection();
 
-    try {
-        // 1️⃣ Fetch ONLY active trips
-        const [sessions] = await conn.query(`
-  SELECT 
-    ots.tracking_id,
-    ao.assigned_vehicle_data
-  FROM order_tracking_sessions ots
-  JOIN assigning_orders ao ON ao.order_ID = ots.order_id
-  WHERE ots.status IN ('trip_started','in_transit')
-`);
+  try {
+    const [sessions] = await conn.query(`
+      SELECT tracking_id, device_id, vehicle_num
+      FROM order_tracking_sessions
+      WHERE status = 'IN_TRANSIT'
+        AND device_id IS NOT NULL
+        AND vehicle_num IS NOT NULL
+    `);
 
+    for (const s of sessions) {
+      const gps = await fetchGpsFromVendor(
+        s.device_id,     // providerName
+        s.vehicle_num    // regNo
+      );
 
-        for (const s of sessions) {
-            let vehicles = s.assigned_vehicle_data;
+      if (!gps) continue;
 
-            if (typeof vehicles === 'string') {
-                vehicles = JSON.parse(vehicles);
-            }
-
-            const { dev_ID, self_vehicle_num } = vehicles[0];
-
-            const gps = await fetchGpsFromVendor(
-                dev_ID,               // providerName
-                self_vehicle_num      // regNo
-            );
-
-            if (!gps) continue;
-
-            await axios.post(
-                `http://13.127.36.10:8088/truk/track/gps-ping`,
-                {
-                    deviceId: dev_ID,   // stays same for your system
-                    lat: gps.lat,
-                    lng: gps.lng,
-                    speed: gps.speed,
-                    timestamp: gps.timestamp
-                },
-                { timeout: 3000 }
-            );
-        }
-
-    } catch (err) {
-        logger.error('GPS cron failed:', err);
-    } finally {
-        conn.release();
+      await axios.post(
+        `http://13.127.36.10:8088/truk/track/gps-ping`,
+        {
+          deviceId: s.device_id,      
+          vehicle_num: s.vehicle_num, 
+          lat: gps.lat,
+          lng: gps.lng,
+          speed: gps.speed,
+          timestamp: gps.timestamp
+        },
+        { timeout: 3000 }
+      );
     }
+
+  } catch (err) {
+    logger.error('GPS cron failed:', err);
+  } finally {
+    conn.release();
+  }
 });
+
 
 
 router.post('/gps-ping', async (req, res) => {
-    const conn = await db.getConnection();
-    try {
-        const { deviceId, lat, lng, speed, timestamp } = req.body;
+  const conn = await db.getConnection();
+  try {
+    const { deviceId, vehicle_num, lat, lng, speed, timestamp } = req.body;
 
-        if (!deviceId || lat == null || lng == null || !timestamp) {
-            return res.status(400).json({ message: 'Invalid GPS payload' });
-        }
-
-        // 1. Active trip
-        const [sessions] = await conn.query(
-            `SELECT tracking_id
-         FROM order_tracking_sessions
-        WHERE device_id = ?
-          AND status = 'IN_TRANSIT'`,
-            [deviceId]
-        );
-
-        if (!sessions.length) {
-            return res.json({ message: 'No active trip for device' });
-        }
-
-        const trackingId = sessions[0].tracking_id;
-
-        // 2. Store GPS
-        await conn.query(
-            `INSERT INTO vehicle_gps_logs
-   (tracking_id, device_id, latitude, longitude, speed, recorded_at)
-   VALUES (?, ?, ?, ?, ?, FROM_UNIXTIME(?/1000))`,
-            [trackingId, deviceId, lat, lng, speed || 0, timestamp]
-        );
-
-
-        // 3. Heartbeat
-        await conn.query(
-            `UPDATE order_tracking_sessions
-          SET last_gps_time = FROM_UNIXTIME(?/1000)
-        WHERE tracking_id = ?`,
-            [timestamp, trackingId]
-        );
-
-        // 4. Next pending stop
-        const [stops] = await conn.query(
-            `SELECT id, stop_no, latitude, longitude, radius_m
-         FROM order_stop_tracking
-        WHERE tracking_id = ?
-          AND status = 'PLANNED'
-        ORDER BY stop_no
-        LIMIT 1`,
-            [trackingId]
-        );
-
-        if (!stops.length) {
-            return res.json({ message: 'All stops completed or arrived' });
-        }
-
-        const stop = stops[0];
-        const distance = haversine(
-            lat,
-            lng,
-            stop.latitude,
-            stop.longitude
-        );
-
-        if (distance <= stop.radius_m) {
-            await conn.query(
-                `UPDATE order_stop_tracking
-      SET actual_latitude = ?,
-          actual_longitude = ?,
-          actual_arrival = NOW(),
-          status = 'ARRIVED'
-    WHERE id = ?`,
-                [lat, lng, stop.id]
-            );
-
-        }
-
-        return res.json({ message: 'GPS processed' });
-
-    } catch (err) {
-        logger.error('gps-ping failed', err);
-        return res.status(500).json({ message: 'Server error' });
-    } finally {
-        conn.release();
+    if (!vehicle_num || lat == null || lng == null || !timestamp) {
+      return res.status(400).json({ message: 'Invalid GPS payload' });
     }
+
+    // 1️⃣ Identify active trip USING VEHICLE NUMBER (CORRECT)
+    const [rows] = await conn.query(
+      `SELECT tracking_id
+       FROM order_tracking_sessions
+       WHERE vehicle_num = ?
+         AND status = 'IN_TRANSIT'
+       LIMIT 1`,
+      [vehicle_num]
+    );
+
+    if (!rows.length) {
+      return res.json({ message: 'Trip not active' });
+    }
+
+    const tracking_id = rows[0].tracking_id; // ✅ FIX
+
+    // 2️⃣ Insert GPS log
+    await conn.query(
+      `INSERT INTO vehicle_gps_logs
+       (tracking_id, latitude, longitude, speed, recorded_at)
+       VALUES (?, ?, ?, ?, FROM_UNIXTIME(?/1000))`,
+      [tracking_id, lat, lng, speed || 0, timestamp]
+    );
+
+    // 3️⃣ Heartbeat update
+    await conn.query(
+      `UPDATE order_tracking_sessions
+       SET last_gps_time = FROM_UNIXTIME(?/1000)
+       WHERE tracking_id = ?`,
+      [timestamp, tracking_id]
+    );
+
+    // 4️⃣ Auto ARRIVED check
+    const [stops] = await conn.query(
+      `SELECT id, latitude, longitude, radius_m
+       FROM order_stop_tracking
+       WHERE tracking_id = ?
+         AND status = 'PLANNED'
+       ORDER BY stop_no
+       LIMIT 1`,
+      [tracking_id]
+    );
+
+    if (stops.length) {
+      const stop = stops[0];
+      const distance = haversine(lat, lng, stop.latitude, stop.longitude);
+
+      if (distance <= stop.radius_m) {
+        await conn.query(
+          `UPDATE order_stop_tracking
+           SET actual_latitude = ?,
+               actual_longitude = ?,
+               actual_arrival = NOW(),
+               status = 'ARRIVED'
+           WHERE id = ?`,
+          [lat, lng, stop.id]
+        );
+      }
+    }
+
+    return res.json({ message: 'GPS processed' });
+
+  } catch (err) {
+    logger.error('gps-ping failed', err);
+    res.status(500).json({ message: 'Server error' });
+  } finally {
+    conn.release();
+  }
 });
+
+
 
 
 function haversine(lat1, lon1, lat2, lon2) {

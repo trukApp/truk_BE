@@ -1365,7 +1365,7 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
     try { await emit('plan.optimized', { totalCost, allocations: enriched, at: Date.now() }); } catch { }
 
     return res.status(200).json({
-      message: enriched.length ? 'Best Combinational Scenario' : 'No vehicles available at pickup location',
+      message: enriched.length ? 'Best Combinational Scenario' : 'No suitable vehicles found',
       totalCost: enriched.length ? totalCost : null,
       allocations: enriched,
       unallocatedPackages: unallocated

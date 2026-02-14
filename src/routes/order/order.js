@@ -308,10 +308,10 @@ async function getOptimizedRouteWithLoad(locations, shipmentLoads, {
 
   // return { optimizedRoute: recomputed, sampledCoords, trafficSummary };
   return {
-  optimizedRoute: recomputed,
-  sampledCoords,       // now FULL route
-  trafficSummary
-};
+    optimizedRoute: recomputed,
+    sampledCoords,       // now FULL route
+    trafficSummary
+  };
 
 }
 
@@ -742,7 +742,7 @@ async function findMinCostArrangement(cluster, vehicles, sourceLoc) {
       subsets.push({ chosen, sumW, sumV, flags });
     }
 
-    for(const {chosen,sumW,sumCW} of subsets){
+    for (const { chosen, sumW, sumCW } of subsets) {
       if (!chosen.length) continue;
 
       chosen.sort((a, b) => a.distFromSource - b.distFromSource);
@@ -750,7 +750,7 @@ async function findMinCostArrangement(cluster, vehicles, sourceLoc) {
       const shipments = new Array(chosen.length).fill(1);
       const { optimizedRoute } = await getOptimizedRouteWithLoad(locs, shipments);
       const totalDist = optimizedRoute.reduce((s, leg) => s + parseDistanceText(leg.distance), 0);
-      const tonsChargeable = (sumCW>0 ? sumCW : sumW) / 1000;
+      const tonsChargeable = (sumCW > 0 ? sumCW : sumW) / 1000;
       const cost = tonsChargeable * v.cost_per_ton * totalDist;
 
       let loadArr = [], remainIDs = chosen.map(x => x.pack_ID);
@@ -771,7 +771,7 @@ async function findMinCostArrangement(cluster, vehicles, sourceLoc) {
         totalWeightCapacity: v.totalWeightCapacity,
         totalVolumeCapacity: v.totalVolumeCapacity,
         occupiedWeight: sumW,
-        chargeableWeight:sumCW,
+        chargeableWeight: sumCW,
         occupiedVolume: chosen.reduce((s, p) => s + p.totalVolume, 0),
         leftoverWeight: v.weightCapKg - sumW,
         leftoverVolume: v.volumeCapM3 - chosen.reduce((s, p) => s + p.totalVolume, 0),
@@ -1365,43 +1365,43 @@ router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
     try { await emit('plan.optimized', { totalCost, allocations: enriched, at: Date.now() }); } catch { }
 
     return res.status(200).json({
-      message: enriched.length ? 'Best Combinational Scenario' : 'No suitable vehicles found',
+      message: enriched.length ? 'Best Combinational Scenario' : 'No vehicles available at pickup location',
       totalCost: enriched.length ? totalCost : null,
       allocations: enriched,
       unallocatedPackages: unallocated
     });
- } catch (err) {
-  const ms = Date.now() - t0;
-  try { await logApiPerf('/create-order', ms, false); } catch {}
+  } catch (err) {
+    const ms = Date.now() - t0;
+    try { await logApiPerf('/create-order', ms, false); } catch { }
 
-  // ✅ Business validation: packages already ordered
-  if (err?.code === 'PACKAGE_ALREADY_ORDERED') {
-    logger.warn('Create-order blocked: packages already ordered', {
-      orderedPackages: err.orderedPackages,
-      message: err.message
+    // ✅ Business validation: packages already ordered
+    if (err?.code === 'PACKAGE_ALREADY_ORDERED') {
+      logger.warn('Create-order blocked: packages already ordered', {
+        orderedPackages: err.orderedPackages,
+        message: err.message
+      });
+
+      return res.status(409).json({
+        error: err.message,
+        orderedPackages: err.orderedPackages
+      });
+    }
+
+    // ✅ Other validation errors (optional)
+    if (err?.message?.includes('All packages must share')) {
+      logger.warn('Create-order validation failed', { message: err.message });
+      return res.status(400).json({ error: err.message });
+    }
+
+    // ❌ Real server error
+    logger.error('Error creating order', {
+      message: err.message,
+      code: err.code,
+      stack: err.stack
     });
 
-    return res.status(409).json({
-      error: err.message,
-      orderedPackages: err.orderedPackages
-    });
+    return res.status(500).json({ error: 'Internal server error' });
   }
-
-  // ✅ Other validation errors (optional)
-  if (err?.message?.includes('All packages must share')) {
-    logger.warn('Create-order validation failed', { message: err.message });
-    return res.status(400).json({ error: err.message });
-  }
-
-  // ❌ Real server error
-  logger.error('Error creating order', {
-    message: err.message,
-    code: err.code,
-    stack: err.stack
-  });
-
-  return res.status(500).json({ error: 'Internal server error' });
-}
 });
 
 /* ---- Sample route ---- */

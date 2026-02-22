@@ -110,7 +110,7 @@ router.post('/start-trip', jwtAuth.verifyToken, async (req, res) => {
 
 
 
-async function fetchGpsFromVendor(providerName, regNo) {
+async function fetchGpsFromVendor(providerName, vehicleId) {
     const url = `https://api.vamosys.com/mobile/getGrpDataForTrustedClients`;
 
     try {
@@ -126,7 +126,7 @@ async function fetchGpsFromVendor(providerName, regNo) {
 
         // 🔍 FILTER by vehicle number (regNo)
         const vehicle = res.data.find(
-            v => v.regNo === regNo
+            v => v.vehicleId === vehicleId
         );
 
         if (!vehicle) return null;

@@ -204,7 +204,7 @@ router.post('/gps-ping', async (req, res) => {
       `SELECT tracking_id
        FROM order_tracking_sessions
        WHERE vehicle_num = ?
-         AND status = 'IN_TRANSIT'
+         AND status = 'in_transit'
        LIMIT 1`,
       [vehicle_num]
     );
@@ -236,7 +236,7 @@ router.post('/gps-ping', async (req, res) => {
       `SELECT id, latitude, longitude, radius_m
        FROM order_stop_tracking
        WHERE tracking_id = ?
-         AND status = 'PLANNED'
+         AND status = 'planned'
        ORDER BY stop_no
        LIMIT 1`,
       [tracking_id]
@@ -258,6 +258,8 @@ router.post('/gps-ping', async (req, res) => {
         );
       }
     }
+
+    console.log("STOP QUERY RESULT:", stops);
 
     return res.json({ message: 'GPS processed' });
 

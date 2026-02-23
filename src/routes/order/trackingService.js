@@ -29,18 +29,23 @@ async function createTrackingSession({
     const pkgMeta = packToLocMap[firstPack];
     if (!pkgMeta) continue;
 
-    await conn.query(
-      `INSERT INTO order_stop_tracking
-       (tracking_id, stop_no, loc_ID, radius_m, planned_eta, status)
-       VALUES (?, ?, ?, ?, ?, 'PLANNED')`,
-      [
-        trackingId,
-        stopNo,
-        pkgMeta.ship_to,
-        parseRadius(pkgMeta.destination_radius),
-        stop.eta || null
-      ]
-    );
+  await conn.query(
+  `
+  INSERT INTO order_stop_tracking
+  (tracking_id, stop_no, loc_ID, latitude, longitude, radius_m, planned_eta, status)
+  SELECT
+    ?, ?, ml.loc_ID, ml.latitude, ml.longitude, ?, ?, 'PLANNED'
+  FROM master_locations ml
+  WHERE ml.loc_ID = ?
+  `,
+  [
+    trackingId,
+    stopNo,
+    parseRadius(pkgMeta.destination_radius),
+    stop.eta || null,
+    pkgMeta.ship_to
+  ]
+);
   }
 
   return trackingId;

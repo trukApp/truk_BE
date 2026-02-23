@@ -146,8 +146,8 @@ async function fetchGpsFromVendor(providerName, vehicleId) {
 
 
 
-// cron.schedule('*/20 * * * * *', async () => {
-     cron.schedule('0 * * * *', async () => {
+cron.schedule('*/20 * * * * *', async () => {
+    //  cron.schedule('0 * * * *', async () => {
   const conn = await db.getConnection();
 
   try {
@@ -213,6 +213,8 @@ router.post('/gps-ping', async (req, res) => {
       return res.json({ message: 'Trip not active' });
     }
 
+    console.log("TRACKING ROWS:", rows);
+
     const tracking_id = rows[0].tracking_id; // ✅ FIX
 
     // 2️⃣ Insert GPS log
@@ -242,23 +244,21 @@ router.post('/gps-ping', async (req, res) => {
       [tracking_id]
     );
 
-    if (stops.length) {
-      const stop = stops[0];
-      const distance = haversine(lat, lng, stop.latitude, stop.longitude);
+  if (stops.length) {
+  const stop = stops[0];
+  const distance = haversine(lat, lng, stop.latitude, stop.longitude);
 
-      if (distance <= stop.radius_m) {
-        await conn.query(
-          `UPDATE order_stop_tracking
-           SET actual_latitude = ?,
-               actual_longitude = ?,
-               actual_arrival = NOW(),
-               status = 'ARRIVED'
-           WHERE id = ?`,
-          [lat, lng, stop.id]
-        );
-      }
-    }
-
+  if (distance <= stop.radius_m) {
+    await conn.query(
+      `UPDATE order_stop_tracking
+       SET actual_arrival = NOW(),
+           arrival_confirmed_by = 'gps',
+           status = 'arrived'
+       WHERE id = ?`,
+      [stop.id]
+    );
+  }
+}
     console.log("STOP QUERY RESULT:", stops);
 
     return res.json({ message: 'GPS processed' });

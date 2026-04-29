@@ -148,47 +148,47 @@ async function fetchGpsFromVendor(providerName, vehicleId) {
 
 // cron.schedule('*/20 * * * * *', async () => {   //20 secs
 // cron.schedule('0 * * * *', async () => {           // 1 hr
-cron.schedule('0 * * * * *', async () => {     // 1 min
+// cron.schedule('0 * * * * *', async () => {     // 1 min
 
-    const conn = await db.getConnection();
+//     const conn = await db.getConnection();
 
-    try {
-        const [sessions] = await conn.query(`
-      SELECT tracking_id, device_id, vehicle_num
-      FROM order_tracking_sessions
-      WHERE status = 'IN_TRANSIT'
-        AND device_id IS NOT NULL
-        AND vehicle_num IS NOT NULL
-    `);
+//     try {
+//         const [sessions] = await conn.query(`
+//       SELECT tracking_id, device_id, vehicle_num
+//       FROM order_tracking_sessions
+//       WHERE status = 'IN_TRANSIT'
+//         AND device_id IS NOT NULL
+//         AND vehicle_num IS NOT NULL
+//     `);
 
-        for (const s of sessions) {
-            const gps = await fetchGpsFromVendor(
-                s.device_id,     // providerName
-                s.vehicle_num    // regNo
-            );
+//         for (const s of sessions) {
+//             const gps = await fetchGpsFromVendor(
+//                 s.device_id,     // providerName
+//                 s.vehicle_num    // regNo
+//             );
 
-            if (!gps) continue;
+//             if (!gps) continue;
 
-            await axios.post(
-                `http://13.127.36.10:8088/truk/track/gps-ping`,
-                {
-                    deviceId: s.device_id,
-                    vehicle_num: s.vehicle_num,
-                    lat: gps.lat,
-                    lng: gps.lng,
-                    speed: gps.speed,
-                    timestamp: gps.timestamp
-                },
-                { timeout: 3000 }
-            );
-        }
+//             await axios.post(
+//                 `http://13.127.36.10:8088/truk/track/gps-ping`,
+//                 {
+//                     deviceId: s.device_id,
+//                     vehicle_num: s.vehicle_num,
+//                     lat: gps.lat,
+//                     lng: gps.lng,
+//                     speed: gps.speed,
+//                     timestamp: gps.timestamp
+//                 },
+//                 { timeout: 3000 }
+//             );
+//         }
 
-    } catch (err) {
-        logger.error('GPS cron failed:', err);
-    } finally {
-        conn.release();
-    }
-});
+//     } catch (err) {
+//         logger.error('GPS cron failed:', err);
+//     } finally {
+//         conn.release();
+//     }
+// });
 
 
 

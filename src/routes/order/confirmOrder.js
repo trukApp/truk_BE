@@ -1777,6 +1777,77 @@ router.put('/edit-lr-invoice', jwtAuth.verifyToken, async (req, res) => {
   }
 });
 
+
+router.put('/update-order-allocations', jwtAuth.verifyToken, async (req, res) => {
+  try {
+    const { order_ID } = req.query;
+    const { allocations, allocation } = req.body;
+
+    if (!order_ID) {
+      return res.status(400).json({
+        message: 'Missing required query parameter: order_ID'
+      });
+    }
+
+    let finalAllocations;
+
+    if (Array.isArray(allocations)) {
+      finalAllocations = allocations;
+    } else if (allocation && typeof allocation === 'object') {
+      finalAllocations = [allocation];
+    } else {
+      return res.status(400).json({
+        message: 'Please provide allocations as an array or allocation as an object.'
+      });
+    }
+
+    if (!finalAllocations.length) {
+      return res.status(400).json({
+        message: 'allocations cannot be empty.'
+      });
+    }
+
+    const [orderRows] = await db.query(
+      `SELECT order_ID, draft, order_status
+         FROM orders
+        WHERE order_ID = ?`,
+      [order_ID]
+    );
+
+    if (!orderRows.length) {
+      return res.status(404).json({
+        message: 'Order not found.'
+      });
+    }
+
+    await db.query(
+      `UPDATE orders
+          SET allocations = ?,
+              updated_at = ?
+        WHERE order_ID = ?`,
+      [
+        JSON.stringify(finalAllocations),
+        new Date().toISOString(),
+        order_ID
+      ]
+    );
+
+    return res.status(200).json({
+      message: 'Order allocations updated successfully.',
+      order_ID,
+      allocations: finalAllocations
+    });
+
+  } catch (error) {
+    logger.error('Error updating order allocations:', error);
+
+    return res.status(500).json({
+      message: 'Server error.',
+      error: error.message
+    });
+  }
+});
+
 /* Deleting a draft releases its packages. Existing confirmed deletion behaviour
    remains unchanged; add stricter restrictions later if confirmed orders must
    not be physically deleted. */

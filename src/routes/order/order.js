@@ -2641,6 +2641,7 @@ function buildProductLegend(loadArrangement, packageInfoDetails, colorByProdPkg)
 
 /* -------------------------- ROUTES --------------------------- */
 
+
 // Create order (allocations) with optional traffic + weather
 router.post('/create-order', jwtAuth.verifyToken, async (req, res) => {
   const t0 = Date.now();

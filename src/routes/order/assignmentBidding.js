@@ -33,6 +33,39 @@ async function getLatestNonCancelledBid(order_ID) {
   return rows[0];
 }
 
+function jsonArray(value) {
+  if (!value) return [];
+
+  if (Array.isArray(value)) return value;
+
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return String(value)
+      .replace(/[\[\]"]/g, '')
+      .split(',')
+      .map(item => item.trim())
+      .filter(Boolean);
+  }
+}
+
+function tryJson(value, fallback = {}) {
+  if (value == null) return fallback;
+
+  if (typeof value === 'object') return value;
+
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
+function uniqueStrings(values = []) {
+  return [...new Set(values.filter(Boolean).map(String))];
+}
+
 /* =========================================================
    Create (initiate) open bidding
    - sets bid_status='open'
@@ -393,6 +426,193 @@ router.get('/bids-order-id', jwtAuth.verifyToken, async (req, res) => {
   } catch (error) {
     logger.error('Error fetching assigning_orders:', error);
     res.status(500).json({ message: 'Internal Server Error', error: error.message });
+  }
+});
+
+
+router.get('/order-with-bids', jwtAuth.verifyToken, async (req, res) => {
+  try {
+    const { order_ID } = req.query;
+
+    if (!order_ID) {
+      return res.status(400).json({
+        message: 'Missing required query parameter: order_ID'
+      });
+    }
+
+    /* ============================================================
+       1) Fetch order
+    ============================================================ */
+    const [orderRows] = await db.query(
+      `SELECT * FROM orders WHERE order_ID = ?`,
+      [order_ID]
+    );
+
+    if (!orderRows.length) {
+      return res.status(404).json({
+        message: 'Order not found.'
+      });
+    }
+
+    const order = orderRows[0];
+
+    /* ============================================================
+       2) Parse allocated packages and vehicles
+    ============================================================ */
+    const allocatedPackages = jsonArray(order.allocated_packages);
+    const allocatedVehicles = jsonArray(order.allocated_vehicles);
+
+    /* ============================================================
+       3) Fetch allocated package details
+    ============================================================ */
+    let packageDetails = [];
+
+    if (allocatedPackages.length) {
+      const placeholders = allocatedPackages.map(() => '?').join(',');
+
+      const [rows] = await db.query(
+        `SELECT 
+            p.pac_id,
+            p.pack_ID,
+            p.ship_from,
+            p.ship_to,
+            p.destination_radius,
+            p.product_ID,
+            p.package_info,
+            p.bill_to,
+            p.return_label,
+            p.additional_info,
+            p.pickup_date_time,
+            p.dropoff_date_time,
+            p.tax_info,
+            p.package_status
+         FROM packages p
+         WHERE p.pack_ID IN (${placeholders})`,
+        allocatedPackages
+      );
+
+      packageDetails = rows.map(row => ({
+        ...row,
+        product_lines: jsonArray(row.product_ID),
+        additional_info: tryJson(row.additional_info, {}),
+        tax_info: tryJson(row.tax_info, {})
+      }));
+    }
+
+    /* ============================================================
+       4) Fetch product weights and calculate package weights
+    ============================================================ */
+    const productIDs = uniqueStrings(
+      packageDetails.flatMap(item =>
+        item.product_lines.map(line => line.prod_ID)
+      )
+    );
+
+    let weightMap = {};
+
+    if (productIDs.length) {
+      const [products] = await db.query(
+        `SELECT product_ID, weight, weight_uom
+           FROM master_products
+          WHERE product_ID IN (?)`,
+        [productIDs]
+      );
+
+      weightMap = Object.fromEntries(
+        products.map(product => [product.product_ID, product])
+      );
+    }
+
+    const packagesAndWeights = packageDetails.map(packageDetail => {
+      const packageWeight = packageDetail.product_lines.reduce((sum, line) => {
+        const product = weightMap[line.prod_ID];
+
+        return sum + (
+          Number(product?.weight || 0) *
+          Number(line.quantity || 0)
+        );
+      }, 0);
+
+      return {
+        pack_ID: packageDetail.pack_ID,
+        package_weight: Number(packageWeight.toFixed(2)),
+        weight_uom:
+          weightMap[packageDetail.product_lines[0]?.prod_ID]?.weight_uom ||
+          null
+      };
+    });
+
+    /* ============================================================
+       5) Fetch allocated vehicle details
+    ============================================================ */
+    let vehicleDetails = [];
+
+    if (allocatedVehicles.length) {
+      const [vehicles] = await db.query(
+        `SELECT *
+           FROM master_resources
+          WHERE vehicle_ID IN (?)`,
+        [allocatedVehicles]
+      );
+
+      vehicleDetails = vehicles;
+    }
+
+    /* ============================================================
+       6) Fetch LR invoices
+    ============================================================ */
+    const [lrRows] = await db.query(
+      `SELECT 
+          lr_id,
+          lr_num,
+          order_ID,
+          ship_from,
+          ship_to,
+          packages_in_data
+       FROM lr_invoice
+       WHERE order_ID = ?
+       ORDER BY lr_id ASC`,
+      [order_ID]
+    );
+
+    const lrInvoices = lrRows.map(row => ({
+      ...row,
+      packages_in_data: jsonArray(row.packages_in_data)
+    }));
+
+    /* ============================================================
+       7) Fetch bidding details for this order
+       Exclude cancelled bids
+    ============================================================ */
+    const [bids] = await db.query(
+      `SELECT *
+         FROM assignment_bidding
+        WHERE order_ID = ?
+          AND (bid_status IS NULL OR bid_status <> 'cancelled')
+        ORDER BY bid_id DESC`,
+      [order_ID]
+    );
+
+    /* ============================================================
+       8) Final response
+    ============================================================ */
+    return res.status(200).json({
+      message: 'Order and bid details retrieved successfully.',
+      order,
+      allocated_packages_details: packageDetails,
+      packages_and_weights: packagesAndWeights,
+      allocated_vehicles: vehicleDetails,
+      lr_invoices: lrInvoices,
+      bids
+    });
+
+  } catch (error) {
+    logger.error('Error fetching order with bids:', error);
+
+    return res.status(500).json({
+      message: 'Server error.',
+      error: error.message
+    });
   }
 });
 

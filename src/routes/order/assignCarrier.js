@@ -1128,10 +1128,10 @@ router.put('/edit-assignment', jwtAuth.verifyToken, async (req, res) => {
             vehicle_num,
             driver_data,
             device_ID,
-            total_cost,
+            assignment_cost,
             assigned_time,
             confirmed_time,
-            order_status
+            assignment_status
         } = req.body;
 
         if (!ca_id) {
@@ -1165,9 +1165,9 @@ router.put('/edit-assignment', jwtAuth.verifyToken, async (req, res) => {
             updateFields.push("device_ID = ?");
             values.push(device_ID);
         }
-        if (total_cost) {
-            updateFields.push("total_cost = ?");
-            values.push(total_cost);
+        if (assignment_cost) {
+            updateFields.push("assignment_cost = ?");
+            values.push(assignment_cost);
         }
         if (assigned_time) {
             updateFields.push("assigned_time = ?");
@@ -1177,9 +1177,9 @@ router.put('/edit-assignment', jwtAuth.verifyToken, async (req, res) => {
             updateFields.push("confirmed_time = ?");
             values.push(confirmed_time);
         }
-        if (order_status) {
-            updateFields.push("order_status = ?");
-            values.push(order_status);
+        if (assignment_status) {
+            updateFields.push("assignment_status = ?");
+            values.push(assignment_status);
         }
         if (updateFields.length === 0) {
             return res.status(400).json({ message: "No fields provided for update." });

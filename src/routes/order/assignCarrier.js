@@ -986,24 +986,41 @@ router.get('/all-assignments', jwtAuth.verifyToken, async (req, res) => {
 });
 
 // Get single assignment by cas_ID or order_ID
+
 router.get('/assignment', jwtAuth.verifyToken, async (req, res) => {
     try {
         const { carrier_ID } = req.query;
 
         if (!carrier_ID) {
-            return res.status(400).json({ message: 'Please provide carrier_ID in query.' });
+            return res.status(400).json({
+                message: 'Please provide carrier_ID in query.'
+            });
         }
 
         const [result] = await db.query(`
-            SELECT * FROM carrier_assignments 
-            WHERE confirmed_to = ? 
-               OR JSON_CONTAINS(req_sent_to, JSON_QUOTE(?), '$')
+            SELECT
+                ca.*,
+                o.order_status
+            FROM carrier_assignments ca
+            LEFT JOIN orders o
+                ON ca.order_ID = o.order_ID
+            WHERE
+                ca.confirmed_to = ?
+                OR JSON_CONTAINS(ca.req_sent_to, JSON_QUOTE(?), '$')
+            ORDER BY ca.ca_id DESC
         `, [carrier_ID, carrier_ID]);
 
-        res.status(200).json({ data: result });
+        return res.status(200).json({
+            message: 'Assignments fetched successfully.',
+            data: result
+        });
+
     } catch (error) {
         logger.error("Error fetching assignment:", error);
-        res.status(500).json({ message: "Internal Server Error", error: error.message });
+        return res.status(500).json({
+            message: "Internal Server Error",
+            error: error.message
+        });
     }
 });
 

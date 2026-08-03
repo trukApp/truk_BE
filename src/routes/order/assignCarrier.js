@@ -1000,7 +1000,7 @@ router.get('/assignment', jwtAuth.verifyToken, async (req, res) => {
         const [result] = await db.query(`
             SELECT
                 ca.*,
-                o.order_status
+                o.*
             FROM carrier_assignments ca
             LEFT JOIN orders o
                 ON ca.order_ID = o.order_ID
@@ -1023,7 +1023,6 @@ router.get('/assignment', jwtAuth.verifyToken, async (req, res) => {
         });
     }
 });
-
 
 
 //carrier side pending to book a dock

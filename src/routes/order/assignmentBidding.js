@@ -662,79 +662,79 @@ router.get('/finalised-bids-with-dock', jwtAuth.verifyToken, async (req, res) =>
 
     const [results] = await db.query(`
       SELECT
-          ab.*,
-          o.*,
+        ab.*,
+        o.*,
 
-          ca.ca_id,
-          ca.cas_ID,
-          ca.confirmed_to,
-          ca.vehicle_num,
-          ca.driver_data,
-          ca.device_ID,
-          ca.assignment_cost,
-          ca.assignment_status,
-          ca.dock_time_requested,
-          ca.dock_allocated,
-          ca.dock_allocation_status,
-          ca.carrier_bill,
-          ca.assigned_pro_number,
+        ca.assignment_status,
+        ca.vehicle_num,
+        ca.driver_data,
+        ca.device_ID,
+        ca.assignment_cost,
+        ca.confirmed_time,
+        ca.dock_time_requested,
+        ca.dock_allocated,
+        ca.dock_allocation_status,
+        ca.assigned_pro_number,
 
-          md.*
+        md.*
 
       FROM assignment_bidding ab
 
       INNER JOIN orders o
-          ON ab.order_ID = o.order_ID
+        ON ab.order_ID = o.order_ID
 
       LEFT JOIN carrier_assignments ca
-          ON ca.order_ID = o.order_ID
+        ON ca.order_ID = o.order_ID
 
       LEFT JOIN master_docks md
-          ON md.dock_ID = ca.dock_allocated
+        ON md.dock_ID = ca.dock_allocated
 
       WHERE
-          JSON_EXTRACT(ab.finalised_bid,'$.finalised_for') = ?
-          AND ab.bid_status = 'closed'
-          AND o.order_status IN ('bidding finalised', 'carrier confirmed')
+        JSON_EXTRACT(ab.finalised_bid, '$.finalised_for') = ?
+        AND ab.bid_status IN ('closed','finalised')
+        AND o.order_status IN ('bidding finalised','carrier confirmed')
 
       ORDER BY ab.bid_id DESC
-    `,[carrier_ID]);
+    `, [carrier_ID]);
 
     if (!results.length) {
       return res.status(404).json({
-        message:'No finalised bids found.'
+        message: 'No finalised bids found for this carrier.'
       });
     }
 
-    const data = results.map(row => {
-      const {
-        bid_reqs,
-        all_bids,
-        ...rest
-      } = row;
+    const cleaned = results.map(row => {
+      const { bid_reqs, all_bids, ...rest } = row;
 
       return {
         ...rest,
-        bid_reqs: tryJson(bid_reqs, []),
-        finalised_bid: tryJson(row.finalised_bid, {}),
-        driver_data: tryJson(row.driver_data, {}),
-        assignment_cost: tryJson(row.assignment_cost, {})
+        finalised_bid:
+          typeof row.finalised_bid === 'string'
+            ? JSON.parse(row.finalised_bid)
+            : row.finalised_bid,
+        driver_data:
+          typeof row.driver_data === 'string'
+            ? JSON.parse(row.driver_data)
+            : row.driver_data,
+        assignment_cost:
+          typeof row.assignment_cost === 'string'
+            ? JSON.parse(row.assignment_cost)
+            : row.assignment_cost
       };
     });
 
-    return res.status(200).json({
-      message:'Finalised bids fetched successfully.',
+    res.status(200).json({
+      message: 'Finalised bids fetched successfully.',
       carrier_ID,
-      data
+      data: cleaned
     });
 
-  } catch(error){
-      logger.error("Error fetching finalised bids:",error);
-
-      return res.status(500).json({
-          message:'Internal Server Error',
-          error:error.message
-      });
+  } catch (error) {
+    logger.error('Error fetching finalised bids:', error);
+    res.status(500).json({
+      message: 'Internal Server Error',
+      error: error.message
+    });
   }
 });
 

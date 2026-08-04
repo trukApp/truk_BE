@@ -650,6 +650,94 @@ router.get('/finalised-bids', jwtAuth.verifyToken, async (req, res) => {
   }
 });
 
+router.get('/finalised-bids-with-dock', jwtAuth.verifyToken, async (req, res) => {
+  try {
+    const { carrier_ID } = req.query;
+
+    if (!carrier_ID) {
+      return res.status(400).json({
+        message: 'carrier_ID is required in query.'
+      });
+    }
+
+    const [results] = await db.query(`
+      SELECT
+          ab.*,
+          o.*,
+
+          ca.ca_id,
+          ca.cas_ID,
+          ca.confirmed_to,
+          ca.vehicle_num,
+          ca.driver_data,
+          ca.device_ID,
+          ca.assignment_cost,
+          ca.assignment_status,
+          ca.dock_time_requested,
+          ca.dock_allocated,
+          ca.dock_allocation_status,
+          ca.carrier_bill,
+          ca.assigned_pro_number,
+
+          md.*
+
+      FROM assignment_bidding ab
+
+      INNER JOIN orders o
+          ON ab.order_ID = o.order_ID
+
+      LEFT JOIN carrier_assignments ca
+          ON ca.order_ID = o.order_ID
+
+      LEFT JOIN master_docks md
+          ON md.dock_ID = ca.dock_allocated
+
+      WHERE
+          JSON_EXTRACT(ab.finalised_bid,'$.finalised_for') = ?
+          AND ab.bid_status = 'closed'
+          AND o.order_status IN ('bidding finalised', 'carrier confirmed')
+
+      ORDER BY ab.bid_id DESC
+    `,[carrier_ID]);
+
+    if (!results.length) {
+      return res.status(404).json({
+        message:'No finalised bids found.'
+      });
+    }
+
+    const data = results.map(row => {
+      const {
+        bid_reqs,
+        all_bids,
+        ...rest
+      } = row;
+
+      return {
+        ...rest,
+        bid_reqs: tryJson(bid_reqs, []),
+        finalised_bid: tryJson(row.finalised_bid, {}),
+        driver_data: tryJson(row.driver_data, {}),
+        assignment_cost: tryJson(row.assignment_cost, {})
+      };
+    });
+
+    return res.status(200).json({
+      message:'Finalised bids fetched successfully.',
+      carrier_ID,
+      data
+    });
+
+  } catch(error){
+      logger.error("Error fetching finalised bids:",error);
+
+      return res.status(500).json({
+          message:'Internal Server Error',
+          error:error.message
+      });
+  }
+});
+
 router.put('/edit-bid', jwtAuth.verifyToken, async (req, res) => {
   try {
     const { order_ID } = req.query;

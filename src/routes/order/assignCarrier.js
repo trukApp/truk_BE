@@ -986,7 +986,6 @@ router.get('/all-assignments', jwtAuth.verifyToken, async (req, res) => {
 });
 
 // Get single assignment by cas_ID or order_ID
-
 router.get('/assignment', jwtAuth.verifyToken, async (req, res) => {
     try {
         const { carrier_ID } = req.query;
@@ -1045,7 +1044,88 @@ router.get('/get-pending-dock', jwtAuth.verifyToken,async(req,res)=>{
     }
 });
 
+router.get('/allocated-dock', jwtAuth.verifyToken, async (req, res) => {
+    try {
+        const { order_ID } = req.query;
 
+        if (!order_ID) {
+            return res.status(400).json({
+                message: 'order_ID is required.'
+            });
+        }
+
+        // Get carrier assignment
+        const [assignmentRows] = await db.query(
+            `SELECT dock_allocated
+             FROM carrier_assignments
+             WHERE order_ID = ?
+             LIMIT 1`,
+            [order_ID]
+        );
+
+        if (!assignmentRows.length) {
+            return res.status(404).json({
+                message: 'Carrier assignment not found.'
+            });
+        }
+
+        const dockId = assignmentRows[0].dock_allocated;
+
+        // No dock allocated
+        if (!dockId) {
+            return res.status(200).json({
+                message: 'Dock not allocated.',
+                data: {
+                    dock_ID: null,
+                    dock_name: null,
+                    dock_type: null,
+                    loc_ID: null,
+                    dock_status: null,
+                    dock_capacity: null,
+                    dock_description: null,
+                    allocated_at: null
+                }
+            });
+        }
+
+        // Fetch dock details
+        const [dockRows] = await db.query(
+            `SELECT *
+             FROM master_docks
+             WHERE dock_ID = ?
+             LIMIT 1`,
+            [dockId]
+        );
+
+        if (!dockRows.length) {
+            return res.status(200).json({
+                message: 'Allocated dock not found in master.',
+                data: {
+                    dock_ID: dockId,
+                    dock_name: null,
+                    dock_type: null,
+                    loc_ID: null,
+                    dock_status: null,
+                    dock_capacity: null,
+                    dock_description: null,
+                    allocated_at: null
+                }
+            });
+        }
+
+        return res.status(200).json({
+            message: 'Allocated dock fetched successfully.',
+            data: dockRows[0]
+        });
+
+    } catch (error) {
+        logger.error('Error fetching allocated dock:', error);
+        return res.status(500).json({
+            message: 'Internal Server Error',
+            error: error.message
+        });
+    }
+});
 
 //reqs from carrier to user to allocate dock
 router.get('/get-dock-reqs', jwtAuth.verifyToken,async(req,res)=>{

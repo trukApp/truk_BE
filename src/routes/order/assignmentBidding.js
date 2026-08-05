@@ -882,54 +882,279 @@ router.post('/cancel-bid', jwtAuth.verifyToken, async (req, res) => {
    - Sets bid_status='closed', finalised_bid JSON, bid_end_time=now
    - Updates orders.order_status='bidding finalised'
    ========================================================= */
+
+
+
+// router.post('/close-bid', jwtAuth.verifyToken, async (req, res) => {
+//   try {
+//     const { order_ID } = req.body;
+//     if (!order_ID) return res.status(400).json({ message: 'order_ID is required in body.' });
+
+//     const row = await getLatestNonCancelledBid(order_ID);
+//     if (!row) return res.status(404).json({ message: 'Bidding row not found for order_ID.' });
+
+//     if (row.bid_end_time) return res.status(409).json({ message: 'Bidding already ended.' });
+//     if (row.bid_status !== 'open') return res.status(409).json({ message: `Bidding already ${row.bid_status}.` });
+
+//     const bids = parseJSONSafe(row.all_bids, []);
+//     if (!Array.isArray(bids) || bids.length === 0) {
+//       return res.status(400).json({ message: 'No bids available to close.' });
+//     }
+
+//     // choose lowest; tie-break: earliest bid_placed_at
+//     let lowest = null;
+//     for (const b of bids) {
+//       const amt = Number(b.bid_amount);
+//       if (!Number.isFinite(amt)) continue;
+//       if (!lowest || amt < lowest._amt ||
+//         (amt === lowest._amt && Date.parse(b.bid_placed_at || '') < Date.parse(lowest.bid_placed_at || ''))) {
+//         lowest = { ...b, _amt: amt };
+//       }
+//     }
+//     if (!lowest) return res.status(400).json({ message: 'No valid numeric bids to close.' });
+
+//     const finalisedObj = { finalised_bid: String(lowest._amt), finalised_for: lowest.bid_from };
+
+//     await db.query(`
+//       UPDATE assignment_bidding
+//       SET bid_status = 'closed', bid_end_time = ?, finalised_bid = ?
+//       WHERE bid_id = ? AND order_ID = ?
+//     `, [nowISO(), JSON.stringify(finalisedObj), row.bid_id, order_ID]);
+
+//     await db.query(`UPDATE orders SET order_status = 'bidding finalised' WHERE order_ID = ?`, [order_ID]);
+
+//     return res.status(200).json({
+//       message: 'Bid closed successfully.',
+//       order_ID,
+//       bid_id: row.bid_id,
+//       bid_status: 'closed',
+//       finalised: finalisedObj
+//     });
+//   } catch (error) {
+//     logger.error('Error closing bid:', error);
+//     return res.status(500).json({ message: 'Server error.', error: error.message });
+//   }
+// });
+
 router.post('/close-bid', jwtAuth.verifyToken, async (req, res) => {
   try {
     const { order_ID } = req.body;
-    if (!order_ID) return res.status(400).json({ message: 'order_ID is required in body.' });
+
+    if (!order_ID) {
+      return res.status(400).json({
+        message: 'order_ID is required in body.'
+      });
+    }
 
     const row = await getLatestNonCancelledBid(order_ID);
-    if (!row) return res.status(404).json({ message: 'Bidding row not found for order_ID.' });
 
-    if (row.bid_end_time) return res.status(409).json({ message: 'Bidding already ended.' });
-    if (row.bid_status !== 'open') return res.status(409).json({ message: `Bidding already ${row.bid_status}.` });
+    if (!row) {
+      return res.status(404).json({
+        message: 'Bidding row not found for order_ID.'
+      });
+    }
+
+    if (row.bid_end_time) {
+      return res.status(409).json({
+        message: 'Bidding already ended.'
+      });
+    }
+
+    if (row.bid_status !== 'open') {
+      return res.status(409).json({
+        message: `Bidding already ${row.bid_status}.`
+      });
+    }
 
     const bids = parseJSONSafe(row.all_bids, []);
+
     if (!Array.isArray(bids) || bids.length === 0) {
-      return res.status(400).json({ message: 'No bids available to close.' });
+      return res.status(400).json({
+        message: 'No bids available to close.'
+      });
     }
 
-    // choose lowest; tie-break: earliest bid_placed_at
+    // -------------------------------------------------
+    // Find Lowest Bid
+    // -------------------------------------------------
+
     let lowest = null;
-    for (const b of bids) {
-      const amt = Number(b.bid_amount);
-      if (!Number.isFinite(amt)) continue;
-      if (!lowest || amt < lowest._amt ||
-        (amt === lowest._amt && Date.parse(b.bid_placed_at || '') < Date.parse(lowest.bid_placed_at || ''))) {
-        lowest = { ...b, _amt: amt };
+
+    for (const bid of bids) {
+      const amount = Number(bid.bid_amount);
+
+      if (!Number.isFinite(amount)) continue;
+
+      if (
+        !lowest ||
+        amount < lowest._amount ||
+        (
+          amount === lowest._amount &&
+          Date.parse(bid.bid_placed_at || '') <
+          Date.parse(lowest.bid_placed_at || '')
+        )
+      ) {
+        lowest = {
+          ...bid,
+          _amount: amount
+        };
       }
     }
-    if (!lowest) return res.status(400).json({ message: 'No valid numeric bids to close.' });
 
-    const finalisedObj = { finalised_bid: String(lowest._amt), finalised_for: lowest.bid_from };
+    if (!lowest) {
+      return res.status(400).json({
+        message: 'No valid bids found.'
+      });
+    }
 
-    await db.query(`
+    const finalisedObj = {
+      finalised_bid: String(lowest._amount),
+      finalised_for: lowest.bid_from
+    };
+
+    // -------------------------------------------------
+    // Close Bid
+    // -------------------------------------------------
+
+    await db.query(
+      `
       UPDATE assignment_bidding
-      SET bid_status = 'closed', bid_end_time = ?, finalised_bid = ?
-      WHERE bid_id = ? AND order_ID = ?
-    `, [nowISO(), JSON.stringify(finalisedObj), row.bid_id, order_ID]);
+      SET
+          bid_status='closed',
+          bid_end_time=?,
+          finalised_bid=?
+      WHERE bid_id=? AND order_ID=?
+    `,
+      [
+        nowISO(),
+        JSON.stringify(finalisedObj),
+        row.bid_id,
+        order_ID
+      ]
+    );
 
-    await db.query(`UPDATE orders SET order_status = 'bidding finalised' WHERE order_ID = ?`, [order_ID]);
+    // -------------------------------------------------
+    // Get Order
+    // -------------------------------------------------
+
+    const [orderRows] = await db.query(
+      `
+      SELECT *
+      FROM orders
+      WHERE order_ID=?
+    `,
+      [order_ID]
+    );
+
+    if (!orderRows.length) {
+      return res.status(404).json({
+        message: 'Order not found.'
+      });
+    }
+
+    const order = orderRows[0];
+
+    // -------------------------------------------------
+    // Allocate Dock
+    // -------------------------------------------------
+
+    const pickupLocID = order.start_loc_ID;
+
+    let allocatedDock = null;
+
+    if (pickupLocID) {
+      allocatedDock = await findAvailableDockForCarrier(
+        lowest.bid_from,
+        pickupLocID
+      );
+    }
+
+    // -------------------------------------------------
+    // Create Carrier Assignment
+    // -------------------------------------------------
+
+    const assignmentID = `CA${Date.now()}`;
+
+    await db.query(
+      `
+      INSERT INTO carrier_assignments
+      (
+          cas_ID,
+          order_ID,
+          req_sent_to,
+          assignment_cost,
+          assigned_time,
+          assignment_status,
+          dock_allocated,
+          dock_allocation_status
+      )
+      VALUES
+      (
+          ?,
+          ?,
+          ?,
+          ?,
+          NOW(),
+          'Pending',
+          ?,
+          ?
+      )
+    `,
+      [
+        assignmentID,
+        order_ID,
+        JSON.stringify([lowest.bid_from]),
+        JSON.stringify({
+          cost: lowest._amount,
+          total_weight: order.total_weight,
+          total_distance: order.total_distance,
+          cost_criteria_considered: 'open bidding'
+        }),
+        allocatedDock,
+        allocatedDock ? 'allocated' : 'Pending'
+      ]
+    );
+
+    // -------------------------------------------------
+    // Update Order Status
+    // -------------------------------------------------
+
+    await db.query(
+      `
+      UPDATE orders
+      SET order_status='bidding finalised'
+      WHERE order_ID=?
+    `,
+      [order_ID]
+    );
+
+    // -------------------------------------------------
+    // Response
+    // -------------------------------------------------
 
     return res.status(200).json({
       message: 'Bid closed successfully.',
       order_ID,
       bid_id: row.bid_id,
       bid_status: 'closed',
-      finalised: finalisedObj
+      finalised: finalisedObj,
+      carrier_assignment: {
+        assignment_ID: assignmentID,
+        carrier_ID: lowest.bid_from,
+        dock_allocated: allocatedDock,
+        dock_allocation_status: allocatedDock ? 'allocated' : 'Pending'
+      }
     });
+
   } catch (error) {
+
     logger.error('Error closing bid:', error);
-    return res.status(500).json({ message: 'Server error.', error: error.message });
+
+    return res.status(500).json({
+      message: 'Server error.',
+      error: error.message
+    });
+
   }
 });
 
